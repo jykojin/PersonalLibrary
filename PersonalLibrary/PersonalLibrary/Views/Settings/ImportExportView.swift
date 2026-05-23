@@ -24,6 +24,16 @@ struct ImportExportView: View {
     @State private var storageLocation: StorageLocation = StorageManager.shared.currentLocation
     @State private var showingStorageChangeAlert = false
 
+    // 备份恢复
+    @State private var isBackingUp = false
+    @State private var isRestoring = false
+    @State private var backups: [BackupInfo] = []
+    @State private var showingBackupSuccess = false
+    @State private var lastBackupInfo: BackupInfo?
+    @State private var showingRestoreConfirm = false
+    @State private var selectedBackup: BackupInfo?
+    @State private var showingRestoreSuccess = false
+
     private let importExportService = ExcelImportExportService()
 
     var body: some View {
@@ -57,6 +67,56 @@ struct ImportExportView: View {
                 Text("数据存储位置")
             } footer: {
                 Text("切换存储位置需要重启 App 后生效。iCloud 存储可在多台设备间自动同步数据。")
+            }
+
+            // MARK: - 备份与恢复
+            Section {
+                Button {
+                    Task { await performBackup() }
+                } label: {
+                    HStack {
+                        Label("立即备份", systemImage: "icloud.and.arrow.up")
+                        Spacer()
+                        if isBackingUp {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                    }
+                }
+                .disabled(isBackingUp || isRestoring)
+
+                if !backups.isEmpty {
+                    ForEach(backups) { backup in
+                        Button {
+                            selectedBackup = backup
+                            showingRestoreConfirm = true
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(backup.formattedDate)
+                                        .font(.subheadline)
+                                        .foregroundStyle(.primary)
+                                    Text(backup.formattedSize)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if isRestoring && selectedBackup?.url == backup.url {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                } else {
+                                    Image(systemName: "arrow.counterclockwise")
+                                        .foregroundStyle(.orange)
+                                }
+                            }
+                        }
+                        .disabled(isRestoring || isBackingUp)
+                    }
+                }
+            } header: {
+                Text("备份与恢复")
+            } footer: {
+                Text("备份数据库到 iCloud Drive，恢复后需重启 App。")
             }
 
             // MARK: - 微信读书
@@ -191,6 +251,72 @@ struct ImportExportView: View {
             }
         } message: {
             Text("将数据存储位置切换为「\(storageLocation.description)」？\n\n切换后需要重启 App 才能生效。已有数据不会自动迁移到新位置。")
+        }
+        .alert("备份成功", isPresented: $showingBackupSuccess) {
+            Button("好的") {}
+        } message: {
+            if let info = lastBackupInfo {
+                Text("已备份到 iCloud Drive\n大小：\(info.formattedSize)")
+            }
+        }
+        .alert("确认恢复", isPresented: $showingRestoreConfirm) {
+            Button("恢复", role: .destructive) {
+                if let backup = selectedBackup {
+                    Task { await performRestore(from: backup) }
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            if let backup = selectedBackup {
+                Text("将恢复 \(backup.formattedDate) 的备份？\n\n当前数据将被覆盖，恢复后需重启 App。")
+            }
+        }
+        .alert("恢复成功", isPresented: $showingRestoreSuccess) {
+            Button("好的") {}
+        } message: {
+            Text("数据库已恢复，请重启 App 以加载恢复的数据。")
+        }
+        .task {
+            await loadBackups()
+        }
+    }
+
+    // MARK: - Backup & Restore
+
+    private func loadBackups() async {
+        do {
+            backups = try await BackupService.shared.listBackups()
+        } catch {
+            // iCloud 不可用时静默处理
+            backups = []
+        }
+    }
+
+    private func performBackup() async {
+        isBackingUp = true
+        defer { isBackingUp = false }
+
+        do {
+            let info = try await BackupService.shared.createBackup()
+            lastBackupInfo = info
+            showingBackupSuccess = true
+            await loadBackups()
+        } catch {
+            errorMessage = error.localizedDescription
+            showingError = true
+        }
+    }
+
+    private func performRestore(from backup: BackupInfo) async {
+        isRestoring = true
+        defer { isRestoring = false }
+
+        do {
+            try await BackupService.shared.restoreBackup(from: backup)
+            showingRestoreSuccess = true
+        } catch {
+            errorMessage = error.localizedDescription
+            showingError = true
         }
     }
 

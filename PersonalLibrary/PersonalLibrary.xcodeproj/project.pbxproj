@@ -10,6 +10,7 @@
 		10B780DEF9C5DBB65903FA05 /* WeChatAuthManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C2E9C48A0B7910575824F3F /* WeChatAuthManager.swift */; };
 		1770006A3A1C772420E36766 /* WeReadService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 077352B9E63F07D5B9FF2AE3 /* WeReadService.swift */; };
 		2386F85B97813D45A1DDD932 /* BarcodeScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29B551E5CF1C3716F351163F /* BarcodeScannerView.swift */; };
+		38ADE73E0227DB03E950A0E6 /* BackupService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89CB1AAC1ECF1D2707E175DA /* BackupService.swift */; };
 		3BFDD4CE26D896FBF8A4BEAC /* WeReadLoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88640782F12C94E8F4CD7B87 /* WeReadLoginView.swift */; };
 		4C465925427AA6A4D744FA06 /* BookDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 527950641E4AC110D1BE65C5 /* BookDetailView.swift */; };
 		52D01BBD46ACCD3E5E5ABEAA /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A2CA6A7F15841781FBFBD85 /* ContentView.swift */; };
@@ -84,6 +85,7 @@
 		843A18820B905386EE81983F /* WeReadImportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeReadImportView.swift; sourceTree = "<group>"; };
 		869DB44DE0B3D6513FD372D4 /* PersonalLibraryTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PersonalLibraryTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		88640782F12C94E8F4CD7B87 /* WeReadLoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeReadLoginView.swift; sourceTree = "<group>"; };
+		89CB1AAC1ECF1D2707E175DA /* BackupService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupService.swift; sourceTree = "<group>"; };
 		8A1027FC1EC39B3B063C02B6 /* PersonalLibraryUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalLibraryUITests.swift; sourceTree = "<group>"; };
 		8BBD6F76EC899152EEF4314A /* PersonalLibrary.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PersonalLibrary.entitlements; sourceTree = "<group>"; };
 		9144AAAF1F9DE1D5893AF89A /* PersonalLibrary.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PersonalLibrary.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -214,6 +216,7 @@
 			isa = PBXGroup;
 			children = (
 				AD70F02DDA17AEF6E793FE28 /* AuthService.swift */,
+				89CB1AAC1ECF1D2707E175DA /* BackupService.swift */,
 				DD64B2DD2CB3C57DFE3DE2FB /* BookService.swift */,
 				F77EAA99251DD746575AEE56 /* CoverFetchService.swift */,
 				4D2E3C7560B14260793E3C54 /* ExcelImportExportService.swift */,
@@ -422,6 +425,7 @@
 				B46C376CEDC2632F7B5943EB /* AddReadingRecordView.swift in Sources */,
 				9C1171958691DE41B44C355A /* AdvancedSearchView.swift in Sources */,
 				E6E6169E7D9AD9BD37E5B956 /* AuthService.swift in Sources */,
+				38ADE73E0227DB03E950A0E6 /* BackupService.swift in Sources */,
 				2386F85B97813D45A1DDD932 /* BarcodeScannerView.swift in Sources */,
 				CB816F264CEE6FC093F34C85 /* Book.swift in Sources */,
 				4C465925427AA6A4D744FA06 /* BookDetailView.swift in Sources */,
