@@ -17,8 +17,7 @@ struct ImportExportView: View {
     @State private var errorMessage: String?
     @State private var showingError = false
 
-    // 微信读书
-    @State private var showingWeReadImport = false
+    // 微信读书 (批量导入已移到 WeReadSyncView 内部)
 
     // 存储设置
     @State private var storageLocation: StorageLocation = StorageManager.shared.currentLocation
@@ -27,14 +26,20 @@ struct ImportExportView: View {
     // 备份恢复
     @State private var isBackingUp = false
     @State private var isRestoring = false
-    @State private var backups: [BackupInfo] = []
-    @State private var showingBackupSuccess = false
-    @State private var lastBackupInfo: BackupInfo?
+    @State private var showingBackupShare = false
+    @State private var backupFileURL: URL?
+    @State private var showingRestorePicker = false
     @State private var showingRestoreConfirm = false
-    @State private var selectedBackup: BackupInfo?
+    @State private var restoreFileURL: URL?
     @State private var showingRestoreSuccess = false
 
     private let importExportService = ExcelImportExportService()
+
+    private static let syncDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm"
+        return f
+    }()
 
     var body: some View {
         List {
@@ -75,7 +80,7 @@ struct ImportExportView: View {
                     Task { await performBackup() }
                 } label: {
                     HStack {
-                        Label("立即备份", systemImage: "icloud.and.arrow.up")
+                        Label("备份数据库", systemImage: "arrow.up.doc")
                         Spacer()
                         if isBackingUp {
                             ProgressView()
@@ -85,38 +90,23 @@ struct ImportExportView: View {
                 }
                 .disabled(isBackingUp || isRestoring)
 
-                if !backups.isEmpty {
-                    ForEach(backups) { backup in
-                        Button {
-                            selectedBackup = backup
-                            showingRestoreConfirm = true
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(backup.formattedDate)
-                                        .font(.subheadline)
-                                        .foregroundStyle(.primary)
-                                    Text(backup.formattedSize)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                if isRestoring && selectedBackup?.url == backup.url {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                } else {
-                                    Image(systemName: "arrow.counterclockwise")
-                                        .foregroundStyle(.orange)
-                                }
-                            }
+                Button {
+                    showingRestorePicker = true
+                } label: {
+                    HStack {
+                        Label("从备份恢复", systemImage: "arrow.down.doc")
+                        Spacer()
+                        if isRestoring {
+                            ProgressView()
+                                .controlSize(.small)
                         }
-                        .disabled(isRestoring || isBackingUp)
                     }
                 }
+                .disabled(isBackingUp || isRestoring)
             } header: {
                 Text("备份与恢复")
             } footer: {
-                Text("备份数据库到 iCloud Drive，恢复后需重启 App。")
+                Text("备份会生成文件供你存到 iCloud Drive 或其他位置。恢复时选择之前的备份文件，恢复后需重启 App。")
             }
 
             // MARK: - 微信读书
@@ -126,22 +116,16 @@ struct ImportExportView: View {
                         Label("微信读书同步", systemImage: "book.and.wreath")
                         Spacer()
                         if let lastSync = WeReadSyncService.lastSyncDate {
-                            Text(lastSync, style: .relative)
+                            Text(Self.syncDateFormatter.string(from: lastSync))
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
                     }
                 }
-
-                Button {
-                    showingWeReadImport = true
-                } label: {
-                    Label("批量导入（首次）", systemImage: "square.and.arrow.down.on.square")
-                }
             } header: {
                 Text("微信读书")
             } footer: {
-                Text("同步：自动增量更新书架和阅读进度\n批量导入：首次从微信读书导入时使用，可选择导入哪些书")
+                Text("同步和批量导入微信读书书架")
             }
 
             // MARK: - 导入
@@ -221,9 +205,6 @@ struct ImportExportView: View {
                 showingError = true
             }
         }
-        .sheet(isPresented: $showingWeReadImport) {
-            WeReadImportView()
-        }
         .sheet(isPresented: $showingExportShare) {
             if let url = exportFileURL {
                 ShareSheet(items: [url])
@@ -252,45 +233,45 @@ struct ImportExportView: View {
         } message: {
             Text("将数据存储位置切换为「\(storageLocation.description)」？\n\n切换后需要重启 App 才能生效。已有数据不会自动迁移到新位置。")
         }
-        .alert("备份成功", isPresented: $showingBackupSuccess) {
-            Button("好的") {}
-        } message: {
-            if let info = lastBackupInfo {
-                Text("已备份到 iCloud Drive\n大小：\(info.formattedSize)")
-            }
-        }
         .alert("确认恢复", isPresented: $showingRestoreConfirm) {
             Button("恢复", role: .destructive) {
-                if let backup = selectedBackup {
-                    Task { await performRestore(from: backup) }
+                if let url = restoreFileURL {
+                    Task { await performRestore(from: url) }
                 }
             }
             Button("取消", role: .cancel) {}
         } message: {
-            if let backup = selectedBackup {
-                Text("将恢复 \(backup.formattedDate) 的备份？\n\n当前数据将被覆盖，恢复后需重启 App。")
-            }
+            Text("当前数据将被覆盖，恢复后需重启 App 才能生效。确认恢复？")
         }
         .alert("恢复成功", isPresented: $showingRestoreSuccess) {
             Button("好的") {}
         } message: {
             Text("数据库已恢复，请重启 App 以加载恢复的数据。")
         }
-        .task {
-            await loadBackups()
+        .sheet(isPresented: $showingBackupShare) {
+            if let url = backupFileURL {
+                ShareSheet(items: [url])
+            }
+        }
+        .fileImporter(
+            isPresented: $showingRestorePicker,
+            allowedContentTypes: [.data],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                if let url = urls.first {
+                    restoreFileURL = url
+                    showingRestoreConfirm = true
+                }
+            case .failure(let error):
+                errorMessage = error.localizedDescription
+                showingError = true
+            }
         }
     }
 
     // MARK: - Backup & Restore
-
-    private func loadBackups() async {
-        do {
-            backups = try await BackupService.shared.listBackups()
-        } catch {
-            // iCloud 不可用时静默处理
-            backups = []
-        }
-    }
 
     private func performBackup() async {
         isBackingUp = true
@@ -298,21 +279,20 @@ struct ImportExportView: View {
 
         do {
             let info = try await BackupService.shared.createBackup()
-            lastBackupInfo = info
-            showingBackupSuccess = true
-            await loadBackups()
+            backupFileURL = info.url
+            showingBackupShare = true
         } catch {
             errorMessage = error.localizedDescription
             showingError = true
         }
     }
 
-    private func performRestore(from backup: BackupInfo) async {
+    private func performRestore(from url: URL) async {
         isRestoring = true
         defer { isRestoring = false }
 
         do {
-            try await BackupService.shared.restoreBackup(from: backup)
+            try await BackupService.shared.restoreBackup(from: url)
             showingRestoreSuccess = true
         } catch {
             errorMessage = error.localizedDescription

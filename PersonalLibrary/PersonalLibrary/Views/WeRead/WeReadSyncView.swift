@@ -13,9 +13,16 @@ struct WeReadSyncView: View {
     @State private var syncResult: WeReadSyncService.SyncResult?
     @State private var showingLogin = false
     @State private var showingLogoutAlert = false
+    @State private var showingWeReadImport = false
 
     private let service = WeReadService()
     private let syncService = WeReadSyncService()
+
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm"
+        return f
+    }()
 
     var body: some View {
         List {
@@ -44,6 +51,19 @@ struct WeReadSyncView: View {
             } footer: {
                 if !isLoggedIn {
                     Text("登录后可自动同步微信读书中的电子书和有声书")
+                }
+            }
+
+            // MARK: - 批量导入
+            if isLoggedIn {
+                Section {
+                    Button {
+                        showingWeReadImport = true
+                    } label: {
+                        Label("批量导入（首次使用）", systemImage: "square.and.arrow.down.on.square")
+                    }
+                } footer: {
+                    Text("首次从微信读书导入时使用，可选择导入哪些书")
                 }
             }
 
@@ -96,7 +116,7 @@ struct WeReadSyncView: View {
                         HStack {
                             Label("上次同步", systemImage: "clock")
                             Spacer()
-                            Text(lastSync, style: .relative)
+                            Text(Self.dateFormatter.string(from: lastSync))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -204,6 +224,9 @@ struct WeReadSyncView: View {
                     await performSync()
                 }
             }
+        }
+        .sheet(isPresented: $showingWeReadImport) {
+            WeReadImportView()
         }
         .alert("退出登录", isPresented: $showingLogoutAlert) {
             Button("取消", role: .cancel) {}
