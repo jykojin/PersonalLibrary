@@ -519,17 +519,17 @@ struct CoverWebSearchView: View {
     @State private var searchQuery: String = ""
     @State private var imageResults: [CoverSearchResult] = []
     @State private var isSearching = false
-    @State private var selectedEngine: SearchEngine = .google
+    @State private var selectedEngine: SearchEngine = .baidu
 
     enum SearchEngine: String, CaseIterable {
-        case google = "Google"
         case baidu = "百度"
+        case bing = "Bing"
     }
 
     struct CoverSearchResult: Identifiable {
         let id = UUID()
-        let url: String
         let thumbnailURL: String
+        let fullURL: String
     }
 
     var body: some View {
@@ -548,6 +548,9 @@ struct CoverWebSearchView: View {
                 HStack {
                     TextField("搜索图书封面", text: $searchQuery)
                         .textFieldStyle(.roundedBorder)
+                        .onSubmit {
+                            Task { await performSearch() }
+                        }
                     Button("搜索") {
                         Task { await performSearch() }
                     }
@@ -639,98 +642,118 @@ struct CoverWebSearchView: View {
         imageResults = []
 
         let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
-        let searchURL: String
 
         switch selectedEngine {
-        case .google:
-            searchURL = "https://www.google.com/search?q=\(encoded)&tbm=isch"
+        case .bing:
+            await searchBing(encoded: encoded)
         case .baidu:
-            searchURL = "https://image.baidu.com/search/index?tn=baiduimage&word=\(encoded)"
-        }
-
-        do {
-            guard let url = URL(string: searchURL) else {
-                isSearching = false
-                return
-            }
-            var request = URLRequest(url: url)
-            request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
-            request.timeoutInterval = 15
-
-            let (data, _) = try await URLSession.shared.data(for: request)
-            guard let html = String(data: data, encoding: .utf8) else {
-                isSearching = false
-                return
-            }
-
-            let urls = parseImageURLs(from: html, engine: selectedEngine)
-            imageResults = urls.prefix(12).map { CoverSearchResult(url: $0, thumbnailURL: $0) }
-        } catch {
-            print("[CoverSearch] Error: \(error)")
+            await searchBaidu(encoded: encoded)
         }
 
         isSearching = false
     }
 
-    private func parseImageURLs(from html: String, engine: SearchEngine) -> [String] {
-        var urls: [String] = []
+    private func searchBing(encoded: String) async {
+        guard let url = URL(string: "https://www.bing.com/images/search?q=\(encoded)&form=HDRSC2&first=1") else { return }
 
-        switch engine {
-        case .google:
-            // Google 图片搜索结果中提取
-            let pattern = #"https?://[^"'\s]+\.(?:jpg|jpeg|png|webp)"#
-            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
-                let matches = regex.matches(in: html, range: NSRange(html.startIndex..., in: html))
-                for match in matches {
-                    if let range = Range(match.range, in: html) {
-                        let url = String(html[range])
-                        if !url.contains("google.com") && !url.contains("gstatic.com") && !url.contains("googleapis.com") {
-                            urls.append(url)
-                        }
-                    }
-                }
+        do {
+            var request = URLRequest(url: url)
+            request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+            request.timeoutInterval = 15
+
+            let (data, _) = try await URLSession.shared.data(for: request)
+            guard let html = String(data: data, encoding: .utf8) else { return }
+
+            // Bing 图片搜索将原图 URL 存在 murl 字段，缩略图在 turl
+            var results: [CoverSearchResult] = []
+
+            // 提取 murl（原图）
+            let murlPattern = #"murl&quot;:&quot;(https?://[^&]+?)&quot;"#
+            let turlPattern = #"turl&quot;:&quot;(https?://[^&]+?)&quot;"#
+
+            let murls = extractMatches(from: html, pattern: murlPattern)
+            let turls = extractMatches(from: html, pattern: turlPattern)
+
+            for i in 0..<min(murls.count, 15) {
+                let thumb = i < turls.count ? turls[i] : murls[i]
+                results.append(CoverSearchResult(
+                    thumbnailURL: thumb,
+                    fullURL: murls[i]
+                ))
             }
-        case .baidu:
-            // 百度图片搜索结果
-            let pattern = #""thumbURL":"(https?://[^"]+)""#
-            if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
-                let matches = regex.matches(in: html, range: NSRange(html.startIndex..., in: html))
-                for match in matches {
-                    if match.numberOfRanges > 1, let range = Range(match.range(at: 1), in: html) {
-                        urls.append(String(html[range]))
-                    }
-                }
+
+            imageResults = results
+        } catch {
+            print("[CoverSearch] Bing error: \(error)")
+        }
+    }
+
+    private func searchBaidu(encoded: String) async {
+        guard let url = URL(string: "https://image.baidu.com/search/index?tn=baiduimage&word=\(encoded)") else { return }
+
+        do {
+            var request = URLRequest(url: url)
+            request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+            request.timeoutInterval = 15
+
+            let (data, _) = try await URLSession.shared.data(for: request)
+            guard let html = String(data: data, encoding: .utf8) else { return }
+
+            var results: [CoverSearchResult] = []
+
+            // 百度图片搜索: thumbURL 字段
+            let thumbPattern = #""thumbURL":"(https?://[^"]+)""#
+            let thumbURLs = extractMatches(from: html, pattern: thumbPattern)
+            for thumb in thumbURLs.prefix(15) {
+                results.append(CoverSearchResult(
+                    thumbnailURL: thumb,
+                    fullURL: thumb
+                ))
             }
-            // 备用
-            if urls.isEmpty {
+
+            // 备用模式：直接匹配图片 URL
+            if results.isEmpty {
                 let altPattern = #"https?://[^"'\s]+\.(?:jpg|jpeg|png)"#
                 if let regex = try? NSRegularExpression(pattern: altPattern, options: .caseInsensitive) {
                     let matches = regex.matches(in: html, range: NSRange(html.startIndex..., in: html))
                     for match in matches {
                         if let range = Range(match.range, in: html) {
-                            let url = String(html[range])
-                            if !url.contains("bdimg") && !url.contains("baidu.com") && !url.contains("bcebos") {
-                                urls.append(url)
+                            let imgURL = String(html[range])
+                            if !imgURL.contains("bdimg") && !imgURL.contains("baidu.com") && !imgURL.contains("bcebos") {
+                                results.append(CoverSearchResult(
+                                    thumbnailURL: imgURL,
+                                    fullURL: imgURL
+                                ))
                             }
                         }
+                        if results.count >= 15 { break }
                     }
                 }
             }
-        }
 
-        // 去重
-        var seen = Set<String>()
-        return urls.filter { seen.insert($0).inserted }
+            imageResults = results
+        } catch {
+            print("[CoverSearch] Baidu error: \(error)")
+        }
+    }
+
+    private func extractMatches(from text: String, pattern: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return [] }
+        let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
+        return matches.compactMap { match in
+            guard match.numberOfRanges > 1, let range = Range(match.range(at: 1), in: text) else { return nil }
+            return String(text[range])
+        }
     }
 
     private func selectImage(_ result: CoverSearchResult) async {
-        guard let url = URL(string: result.url) else { return }
+        guard let url = URL(string: result.fullURL) else { return }
         do {
             var request = URLRequest(url: url)
-            request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+            request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
             request.timeoutInterval = 15
             let (data, _) = try await URLSession.shared.data(for: request)
-            if data.count > 100 {
+            if data.count > 500 {
                 onSelect(data)
                 dismiss()
             }

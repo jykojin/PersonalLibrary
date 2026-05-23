@@ -978,6 +978,235 @@ struct WeReadSyncLogicTests {
     }
 }
 
+// MARK: - External API Contract Tests (Integration)
+
+@Suite("External API Contract Tests")
+struct ExternalAPIContractTests {
+
+    // MARK: - 豆瓣搜索建议 API
+
+    @Test("豆瓣搜索建议API返回正确格式")
+    func doubanSuggestAPI() async throws {
+        let query = "三体"
+        let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!
+        let url = URL(string: "https://book.douban.com/j/subject_suggest?q=\(encoded)")!
+
+        var request = URLRequest(url: url)
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 15
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let httpResponse = response as! HTTPURLResponse
+
+        #expect(httpResponse.statusCode == 200)
+        #expect(data.count > 10)
+
+        // 返回值应该是 JSON 数组
+        let results = try JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        #expect(results != nil, "应返回 JSON 数组")
+        #expect((results ?? []).isEmpty == false, "搜索'三体'应有结果")
+
+        // 验证每个结果的关键字段
+        if let first = results?.first(where: { ($0["type"] as? String) == "b" }) {
+            #expect(first["title"] != nil, "应包含 title 字段")
+            #expect(first["pic"] != nil, "应包含 pic 字段（封面缩略图）")
+            #expect(first["type"] as? String == "b", "图书类型应为 'b'")
+
+            // pic URL 应是有效的豆瓣图片 URL
+            if let pic = first["pic"] as? String {
+                #expect(pic.contains("doubanio.com"), "封面 URL 应来自 doubanio.com")
+                #expect(pic.contains("/view/subject/"), "封面 URL 应包含 /view/subject/ 路径")
+            }
+        }
+    }
+
+    // MARK: - 豆瓣 ISBN 页面
+
+    @Test("豆瓣ISBN查询返回书籍页面")
+    func doubanISBNPage() async throws {
+        let isbn = "9787536692930"  // 三体
+        let url = URL(string: "https://book.douban.com/isbn/\(isbn)/")!
+
+        var request = URLRequest(url: url)
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+        request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 15
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let httpResponse = response as! HTTPURLResponse
+
+        // 可能 200（直接页面）或 301/302（跳转到书籍页面后跟随到 200）
+        #expect(httpResponse.statusCode == 200, "应返回 200（跟随重定向后）")
+
+        let html = String(data: data, encoding: .utf8) ?? ""
+        #expect(!html.isEmpty)
+
+        // 验证关键 HTML 结构存在（我们的解析依赖这些）
+        let hasTitle = html.contains("v:itemreviewed") || html.contains("property=\"og:title\"")
+        #expect(hasTitle, "页面应包含书名标签（v:itemreviewed 或 og:title）")
+
+        let hasInfo = html.contains("id=\"info\"")
+        #expect(hasInfo, "页面应包含 id=\"info\" 信息区")
+    }
+
+    // MARK: - Open Library Books API
+
+    @Test("Open Library Books API返回正确格式")
+    func openLibraryBooksAPI() async throws {
+        let isbn = "9780765382030"  // The Three-Body Problem (English)
+        let url = URL(string: "https://openlibrary.org/api/books?bibkeys=ISBN:\(isbn)&format=json&jscmd=data")!
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let httpResponse = response as! HTTPURLResponse
+
+        #expect(httpResponse.statusCode == 200)
+
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(json != nil, "应返回 JSON 对象")
+
+        if let bookData = json?["ISBN:\(isbn)"] as? [String: Any] {
+            #expect(bookData["title"] != nil, "应包含 title")
+            #expect(bookData["authors"] != nil, "应包含 authors")
+
+            // 验证 cover 字段结构
+            if let cover = bookData["cover"] as? [String: Any] {
+                let hasURL = cover["large"] != nil || cover["medium"] != nil
+                #expect(hasURL, "cover 应包含 large 或 medium URL")
+            }
+        }
+    }
+
+    // MARK: - Open Library 封面下载
+
+    @Test("Open Library封面URL可下载图片")
+    func openLibraryCoverDownload() async throws {
+        let isbn = "9780765382030"
+        let url = URL(string: "https://covers.openlibrary.org/b/isbn/\(isbn)-L.jpg")!
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let httpResponse = response as! HTTPURLResponse
+
+        #expect(httpResponse.statusCode == 200)
+        // Open Library 有封面时返回 JPEG 数据（>1000 字节）
+        // 无封面时返回 1x1 pixel 图片（很小）
+        #expect(data.count > 1000, "已知ISBN应返回有效封面图片（>1KB）")
+    }
+
+    // MARK: - Bing 图片搜索
+
+    @Test("Bing图片搜索返回可解析的HTML")
+    func bingImageSearch() async throws {
+        let query = "三体 封面"
+        let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!
+        let url = URL(string: "https://www.bing.com/images/search?q=\(encoded)&form=HDRSC2&first=1")!
+
+        var request = URLRequest(url: url)
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 30
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let httpResponse = response as! HTTPURLResponse
+
+        #expect(httpResponse.statusCode == 200)
+
+        let html = String(data: data, encoding: .utf8) ?? ""
+        #expect(!html.isEmpty)
+
+        // 验证 Bing 返回的 HTML 包含 murl（原图URL）字段
+        let hasMurl = html.contains("murl&quot;:&quot;http")
+        #expect(hasMurl, "Bing HTML 应包含 murl 字段（原图URL）")
+
+        // 验证能提取出至少一个图片 URL
+        let pattern = #"murl&quot;:&quot;(https?://[^&]+?)&quot;"#
+        let regex = try NSRegularExpression(pattern: pattern)
+        let matches = regex.matches(in: html, range: NSRange(html.startIndex..., in: html))
+        #expect(matches.count > 0, "应能提取至少1个图片URL")
+
+        // 验证提取的 URL 是合法图片 URL
+        if let firstMatch = matches.first,
+           let range = Range(firstMatch.range(at: 1), in: html) {
+            let imageURL = String(html[range])
+            #expect(imageURL.hasPrefix("http"), "提取的URL应以http开头")
+        }
+    }
+
+    // MARK: - 百度图片搜索
+
+    @Test("百度图片搜索返回可解析的HTML")
+    func baiduImageSearch() async throws {
+        let query = "三体 封面"
+        let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!
+        let url = URL(string: "https://image.baidu.com/search/index?tn=baiduimage&word=\(encoded)")!
+
+        var request = URLRequest(url: url)
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 15
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let httpResponse = response as! HTTPURLResponse
+
+        #expect(httpResponse.statusCode == 200)
+
+        let html = String(data: data, encoding: .utf8) ?? ""
+
+        // 百度在非中国IP下会返回安全验证页面或空结果，此时跳过
+        let isBlocked = data.count < 10000
+            || html.contains("wappass")
+            || html.contains("captcha")
+            || html.contains("安全验证")
+            || html.contains("mkdjump")
+            || !html.contains("thumbURL")
+        if isBlocked {
+            return  // 非中国网络环境或被拦截，跳过
+        }
+
+        // 验证能提取 thumbURL
+        let pattern = #""thumbURL":"(https?://[^"]+)""#
+        let regex = try NSRegularExpression(pattern: pattern)
+        let matches = regex.matches(in: html, range: NSRange(html.startIndex..., in: html))
+        #expect(matches.count > 0, "应能提取至少1个 thumbURL")
+    }
+
+    // MARK: - 豆瓣封面图片下载
+
+    @Test("豆瓣封面图片可带Referer下载")
+    func doubanCoverDownload() async throws {
+        // 先通过搜索获取一个真实的封面URL
+        let suggestURL = URL(string: "https://book.douban.com/j/subject_suggest?q=%E4%B8%89%E4%BD%93")!
+        var suggestRequest = URLRequest(url: suggestURL)
+        suggestRequest.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+        suggestRequest.timeoutInterval = 10
+
+        let (suggestData, _) = try await URLSession.shared.data(for: suggestRequest)
+        guard let results = try? JSONSerialization.jsonObject(with: suggestData) as? [[String: Any]],
+              let first = results.first(where: { ($0["type"] as? String) == "b" }),
+              let pic = first["pic"] as? String else {
+            return  // 搜索API不可用时跳过
+        }
+
+        // 小图 → 大图
+        let largePic = pic.replacingOccurrences(of: "/view/subject/s/", with: "/view/subject/l/")
+        guard let coverURL = URL(string: largePic) else { return }
+
+        var request = URLRequest(url: coverURL)
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+        request.setValue("https://book.douban.com", forHTTPHeaderField: "Referer")
+        request.timeoutInterval = 15
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let httpResponse = response as! HTTPURLResponse
+
+        #expect(httpResponse.statusCode == 200, "带 Referer 应能下载封面")
+        #expect(data.count > 5000, "封面图片应大于5KB")
+    }
+}
+
 // MARK: - ISBNLookupResult Tests
 
 @Suite("ISBNLookupResult Tests")
