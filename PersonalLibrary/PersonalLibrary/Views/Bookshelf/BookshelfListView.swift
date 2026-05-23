@@ -447,45 +447,27 @@ struct BookshelfDetailView: View {
     }
 
     private func shelfSelectableRow(book: Book) -> some View {
-        let isSelected = selectedBooks.contains(book.persistentModelID)
-        return HStack(spacing: 8) {
-            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                .font(.title3)
-                .foregroundStyle(isSelected ? .orange : .secondary)
-            BookRowView(book: book)
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if isSelected {
-                selectedBooks.remove(book.persistentModelID)
-            } else {
-                selectedBooks.insert(book.persistentModelID)
+        SelectableBookRow(
+            book: book,
+            isSelected: selectedBooks.contains(book.persistentModelID),
+            onToggle: {
+                if selectedBooks.contains(book.persistentModelID) {
+                    selectedBooks.remove(book.persistentModelID)
+                } else {
+                    selectedBooks.insert(book.persistentModelID)
+                }
             }
-        }
+        )
         .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
     }
 
     private var shelfBatchBar: some View {
-        HStack(spacing: 0) {
-            shelfBatchBtn(icon: "tag", label: "标签") { showTagSheet = true }
-            shelfBatchBtn(icon: "arrow.right.square", label: "移动") { showMoveSheet = true }
-            shelfBatchBtn(icon: "book", label: "状态") { showStatusSheet = true }
-            shelfBatchBtn(icon: "star", label: "评分") { showRatingSheet = true }
-        }
-        .padding(.vertical, 8)
-        .background(Color(.systemBackground))
-        .overlay(alignment: .top) { Divider() }
-    }
-
-    private func shelfBatchBtn(icon: String, label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: icon).font(.title3)
-                Text(label).font(.caption)
-            }
-            .frame(maxWidth: .infinity)
-            .foregroundStyle(.orange)
-        }
+        BatchActionBar(
+            onTag: { showTagSheet = true },
+            onMove: { showMoveSheet = true },
+            onStatus: { showStatusSheet = true },
+            onRating: { showRatingSheet = true }
+        )
     }
 
     private func exitSelectMode() {
@@ -570,15 +552,12 @@ struct WeReadShelfDetailView: View {
             .listStyle(.plain)
 
             if isSelecting && !selectedBooks.isEmpty {
-                HStack(spacing: 0) {
-                    wrBatchBtn(icon: "tag", label: "标签") { showTagSheet = true }
-                    wrBatchBtn(icon: "arrow.right.square", label: "移动") { showMoveSheet = true }
-                    wrBatchBtn(icon: "book", label: "状态") { showStatusSheet = true }
-                    wrBatchBtn(icon: "star", label: "评分") { showRatingSheet = true }
-                }
-                .padding(.vertical, 8)
-                .background(Color(.systemBackground))
-                .overlay(alignment: .top) { Divider() }
+                BatchActionBar(
+                    onTag: { showTagSheet = true },
+                    onMove: { showMoveSheet = true },
+                    onStatus: { showStatusSheet = true },
+                    onRating: { showRatingSheet = true }
+                )
             }
         }
         .navigationTitle("微信读书")
@@ -635,30 +614,15 @@ struct WeReadShelfDetailView: View {
     }
 
     private func wereadSelectableRow(book: Book) -> some View {
-        let isSelected = selectedBooks.contains(book.persistentModelID)
-        return HStack(spacing: 8) {
-            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                .font(.title3)
-                .foregroundStyle(isSelected ? .orange : .secondary)
-            BookRowView(book: book)
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if isSelected { selectedBooks.remove(book.persistentModelID) }
-            else { selectedBooks.insert(book.persistentModelID) }
-        }
-        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
-    }
-
-    private func wrBatchBtn(icon: String, label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: icon).font(.title3)
-                Text(label).font(.caption)
+        SelectableBookRow(
+            book: book,
+            isSelected: selectedBooks.contains(book.persistentModelID),
+            onToggle: {
+                if selectedBooks.contains(book.persistentModelID) { selectedBooks.remove(book.persistentModelID) }
+                else { selectedBooks.insert(book.persistentModelID) }
             }
-            .frame(maxWidth: .infinity)
-            .foregroundStyle(.orange)
-        }
+        )
+        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
     }
 }
 
@@ -723,15 +687,12 @@ struct UncategorizedBooksView: View {
             .listStyle(.plain)
 
             if isSelecting && !selectedBooks.isEmpty {
-                HStack(spacing: 0) {
-                    uncatBatchBtn(icon: "tag", label: "标签") { showTagSheet = true }
-                    uncatBatchBtn(icon: "arrow.right.square", label: "移动") { showMoveSheet = true }
-                    uncatBatchBtn(icon: "book", label: "状态") { showStatusSheet = true }
-                    uncatBatchBtn(icon: "star", label: "评分") { showRatingSheet = true }
-                }
-                .padding(.vertical, 8)
-                .background(Color(.systemBackground))
-                .overlay(alignment: .top) { Divider() }
+                BatchActionBar(
+                    onTag: { showTagSheet = true },
+                    onMove: { showMoveSheet = true },
+                    onStatus: { showStatusSheet = true },
+                    onRating: { showRatingSheet = true }
+                )
             }
         }
         .navigationTitle("未分类")
@@ -788,30 +749,15 @@ struct UncategorizedBooksView: View {
     }
 
     private func uncatSelectableRow(book: Book) -> some View {
-        let isSelected = selectedBooks.contains(book.persistentModelID)
-        return HStack(spacing: 8) {
-            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                .font(.title3)
-                .foregroundStyle(isSelected ? .orange : .secondary)
-            BookRowView(book: book)
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if isSelected { selectedBooks.remove(book.persistentModelID) }
-            else { selectedBooks.insert(book.persistentModelID) }
-        }
-        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
-    }
-
-    private func uncatBatchBtn(icon: String, label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: icon).font(.title3)
-                Text(label).font(.caption)
+        SelectableBookRow(
+            book: book,
+            isSelected: selectedBooks.contains(book.persistentModelID),
+            onToggle: {
+                if selectedBooks.contains(book.persistentModelID) { selectedBooks.remove(book.persistentModelID) }
+                else { selectedBooks.insert(book.persistentModelID) }
             }
-            .frame(maxWidth: .infinity)
-            .foregroundStyle(.orange)
-        }
+        )
+        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
     }
 }
 

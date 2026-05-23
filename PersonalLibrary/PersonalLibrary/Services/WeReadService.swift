@@ -433,20 +433,9 @@ actor WeReadService {
         return ImportSummary(imported: imported, skipped: skipped)
     }
 
-    /// 查找或创建书架
+    /// 查找或创建书架（委托给 BookService）
     nonisolated private func findOrCreateBookshelf(name: String, icon: String, modelContext: ModelContext) throws -> Bookshelf {
-        let shelfName = name
-        var descriptor = FetchDescriptor<Bookshelf>(
-            predicate: #Predicate { $0.name == shelfName }
-        )
-        descriptor.fetchLimit = 1
-
-        if let existing = try modelContext.fetch(descriptor).first {
-            return existing
-        }
-        let shelf = Bookshelf(name: name, icon: icon)
-        modelContext.insert(shelf)
-        return shelf
+        try BookService.findOrCreateBookshelf(name: name, icon: icon, modelContext: modelContext)
     }
 
     struct ImportSummary {
@@ -508,33 +497,12 @@ actor WeReadService {
     }
 
     private func downloadImage(from urlString: String) async -> Data? {
-        guard let url = URL(string: urlString) else { return nil }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 10  // 10 秒超时
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200 else { return nil }
-            return data
-        } catch {
-            return nil
-        }
+        await BookService.downloadImage(from: urlString)
     }
 
-    /// 查找或创建标签（在 MainActor 上下文中调用）
+    /// 查找或创建标签（委托给 BookService）
     nonisolated private func findOrCreateTag(name: String, modelContext: ModelContext) throws -> Tag {
-        let tagName = name
-        var descriptor = FetchDescriptor<Tag>(
-            predicate: #Predicate { $0.name == tagName }
-        )
-        descriptor.fetchLimit = 1
-
-        if let existing = try modelContext.fetch(descriptor).first {
-            return existing
-        }
-        let tag = Tag(name: name)
-        modelContext.insert(tag)
-        return tag
+        try BookService.findOrCreateTag(name: name, modelContext: modelContext)
     }
 }
 

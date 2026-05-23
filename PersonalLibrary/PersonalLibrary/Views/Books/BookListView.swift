@@ -408,59 +408,28 @@ struct BookListView: View {
 
 
     private func selectableBookRow(book: Book) -> some View {
-        let isSelected = selectedBooks.contains(book.persistentModelID)
-        return HStack(spacing: 8) {
-            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                .font(.title3)
-                .foregroundStyle(isSelected ? .orange : .secondary)
-                .padding(.leading, 16)
-
-            BookRowView(book: book)
-                .padding(.leading, -16)  // 抵消 BookRowView 内部的 leading padding
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if isSelected {
-                selectedBooks.remove(book.persistentModelID)
-            } else {
-                selectedBooks.insert(book.persistentModelID)
+        SelectableBookRow(
+            book: book,
+            isSelected: selectedBooks.contains(book.persistentModelID),
+            onToggle: {
+                if selectedBooks.contains(book.persistentModelID) {
+                    selectedBooks.remove(book.persistentModelID)
+                } else {
+                    selectedBooks.insert(book.persistentModelID)
+                }
             }
-        }
+        )
     }
 
     // MARK: - 批量操作栏
 
     private var batchActionBar: some View {
-        HStack(spacing: 0) {
-            batchButton(icon: "tag", label: "标签") {
-                showTagSheet = true
-            }
-            batchButton(icon: "arrow.right.square", label: "移动") {
-                showMoveSheet = true
-            }
-            batchButton(icon: "book", label: "状态") {
-                showStatusSheet = true
-            }
-            batchButton(icon: "star", label: "评分") {
-                showRatingSheet = true
-            }
-        }
-        .padding(.vertical, 8)
-        .background(Color(.systemBackground))
-        .overlay(alignment: .top) { Divider() }
-    }
-
-    private func batchButton(icon: String, label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(.title3)
-                Text(label)
-                    .font(.caption)
-            }
-            .frame(maxWidth: .infinity)
-            .foregroundStyle(.orange)
-        }
+        BatchActionBar(
+            onTag: { showTagSheet = true },
+            onMove: { showMoveSheet = true },
+            onStatus: { showStatusSheet = true },
+            onRating: { showRatingSheet = true }
+        )
     }
 }
 

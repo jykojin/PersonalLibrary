@@ -44,4 +44,53 @@ class BookService {
 
         return (pages, minutes, booksFinished)
     }
+
+    // MARK: - Shared Data Helpers
+
+    /// 查找或创建标签（供 WeReadService / WeReadSyncService 等共用）
+    static func findOrCreateTag(name: String, modelContext: ModelContext) throws -> Tag {
+        let tagName = name
+        var descriptor = FetchDescriptor<Tag>(
+            predicate: #Predicate { $0.name == tagName }
+        )
+        descriptor.fetchLimit = 1
+
+        if let existing = try modelContext.fetch(descriptor).first {
+            return existing
+        }
+        let tag = Tag(name: name)
+        modelContext.insert(tag)
+        return tag
+    }
+
+    /// 查找或创建书架（供 WeReadService / WeReadSyncService 等共用）
+    static func findOrCreateBookshelf(name: String, icon: String, modelContext: ModelContext) throws -> Bookshelf {
+        let shelfName = name
+        var descriptor = FetchDescriptor<Bookshelf>(
+            predicate: #Predicate { $0.name == shelfName }
+        )
+        descriptor.fetchLimit = 1
+
+        if let existing = try modelContext.fetch(descriptor).first {
+            return existing
+        }
+        let shelf = Bookshelf(name: name, icon: icon)
+        modelContext.insert(shelf)
+        return shelf
+    }
+
+    /// 下载图片数据（供封面下载等共用）
+    static func downloadImage(from urlString: String) async -> Data? {
+        guard let url = URL(string: urlString) else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else { return nil }
+            return data
+        } catch {
+            return nil
+        }
+    }
 }
