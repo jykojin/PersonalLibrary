@@ -11,7 +11,6 @@ struct AuthorPublisherMaintenanceView: View {
     @State private var searchText = ""
     @State private var editingItem: NameCountItem?
     @State private var newName = ""
-    @State private var showingEditSheet = false
     @State private var showingResult = false
     @State private var resultMessage = ""
 
@@ -51,9 +50,8 @@ struct AuthorPublisherMaintenanceView: View {
             List {
                 ForEach(filteredItems) { item in
                     Button {
-                        editingItem = item
                         newName = item.name
-                        showingEditSheet = true
+                        editingItem = item
                     } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
@@ -77,8 +75,8 @@ struct AuthorPublisherMaintenanceView: View {
         }
         .navigationTitle("作者与出版社")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $showingEditSheet) {
-            editSheet
+        .sheet(item: $editingItem) { item in
+            editSheet(for: item)
         }
         .alert("修改完成", isPresented: $showingResult) {
             Button("好的") {}
@@ -134,11 +132,11 @@ struct AuthorPublisherMaintenanceView: View {
 
     // MARK: - Edit Sheet
 
-    private var editSheet: some View {
+    private func editSheet(for item: NameCountItem) -> some View {
         NavigationStack {
             Form {
                 Section("当前名称") {
-                    Text(editingItem?.name ?? "")
+                    Text(item.name)
                         .foregroundStyle(.secondary)
                 }
 
@@ -146,26 +144,24 @@ struct AuthorPublisherMaintenanceView: View {
                     TextField("输入新名称", text: $newName)
                 }
 
-                if let item = editingItem {
-                    Section("影响范围") {
-                        Text("将修改 \(item.count) 本书的\(selectedTab == 0 ? "作者" : "出版社")")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                Section("影响范围") {
+                    Text("将修改 \(item.count) 本书的\(selectedTab == 0 ? "作者" : "出版社")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("编辑\(selectedTab == 0 ? "作者" : "出版社")")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { showingEditSheet = false }
+                    Button("取消") { editingItem = nil }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("应用") {
                         applyRename()
                     }
                     .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty ||
-                              newName == editingItem?.name)
+                              newName == item.name)
                 }
             }
         }
@@ -221,7 +217,7 @@ struct AuthorPublisherMaintenanceView: View {
             try? modelContext.save()
         }
 
-        showingEditSheet = false
+        editingItem = nil
         resultMessage = "已将「\(oldName)」改为「\(trimmedNew)」，更新了 \(updatedCount) 本书"
         showingResult = true
     }
