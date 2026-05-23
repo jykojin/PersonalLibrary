@@ -92,9 +92,12 @@ struct AuthorPublisherMaintenanceView: View {
     private var authorItems: [NameCountItem] {
         var dict: [String: Int] = [:]
         for book in allBooks where !book.isArchived {
-            let name = book.author.trimmingCharacters(in: .whitespaces)
-            if !name.isEmpty && name != "未知作者" {
-                dict[name, default: 0] += 1
+            let authors = book.author.components(separatedBy: ", ")
+            for name in authors {
+                let trimmed = name.trimmingCharacters(in: .whitespaces)
+                if !trimmed.isEmpty && trimmed != "未知作者" {
+                    dict[trimmed, default: 0] += 1
+                }
             }
         }
         return dict.map { NameCountItem(name: $0.key, count: $0.value) }
@@ -104,8 +107,14 @@ struct AuthorPublisherMaintenanceView: View {
     private var publisherItems: [NameCountItem] {
         var dict: [String: Int] = [:]
         for book in allBooks where !book.isArchived {
-            if let p = book.publisher?.trimmingCharacters(in: .whitespaces), !p.isEmpty {
-                dict[p, default: 0] += 1
+            if let p = book.publisher, !p.isEmpty {
+                let publishers = p.components(separatedBy: ", ")
+                for name in publishers {
+                    let trimmed = name.trimmingCharacters(in: .whitespaces)
+                    if !trimmed.isEmpty {
+                        dict[trimmed, default: 0] += 1
+                    }
+                }
             }
         }
         return dict.map { NameCountItem(name: $0.key, count: $0.value) }
