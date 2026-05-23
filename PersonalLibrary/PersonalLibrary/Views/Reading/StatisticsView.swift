@@ -12,6 +12,11 @@ struct StatisticsView: View {
     @State private var trendFilter: BookType? = nil  // nil = 全部
     @State private var selectedYear: Int = Calendar.current.component(.year, from: Date())
 
+    // 趋势图表点击
+    @State private var trendBooksTitle: String = ""
+    @State private var trendBooks: [Book] = []
+    @State private var showingTrendBooks = false
+
     enum StatsTab: String, CaseIterable {
         case overview = "概览"
         case trends = "趋势"
@@ -244,6 +249,17 @@ struct StatisticsView: View {
                             .cornerRadius(4)
                         }
                     }
+                    .chartOverlay { proxy in
+                        GeometryReader { geo in
+                            Rectangle().fill(.clear).contentShape(Rectangle())
+                                .onTapGesture { location in
+                                    guard let xValue: String = proxy.value(atX: location.x) else { return }
+                                    if let yearInt = Int(xValue) {
+                                        showYearlyAddedBooks(year: yearInt)
+                                    }
+                                }
+                        }
+                    }
                     .frame(height: 180)
                 }
             }
@@ -283,6 +299,17 @@ struct StatisticsView: View {
                             .cornerRadius(4)
                         }
                     }
+                    .chartOverlay { proxy in
+                        GeometryReader { geo in
+                            Rectangle().fill(.clear).contentShape(Rectangle())
+                                .onTapGesture { location in
+                                    guard let xValue: String = proxy.value(atX: location.x) else { return }
+                                    if let month = Int(xValue.replacingOccurrences(of: "月", with: "")) {
+                                        showMonthlyAddedBooks(year: selectedYear, month: month)
+                                    }
+                                }
+                        }
+                    }
                     .frame(height: 220)
                 }
             }
@@ -301,7 +328,28 @@ struct StatisticsView: View {
                         .cornerRadius(4)
                     }
                 }
+                .chartOverlay { proxy in
+                    GeometryReader { geo in
+                        Rectangle().fill(.clear).contentShape(Rectangle())
+                            .onTapGesture { location in
+                                guard let xValue: String = proxy.value(atX: location.x) else { return }
+                                if let month = Int(xValue.replacingOccurrences(of: "月", with: "")) {
+                                    showMonthlyFinishedBooks(year: selectedYear, month: month)
+                                }
+                            }
+                    }
+                }
                 .frame(height: 220)
+            }
+        }
+        .sheet(isPresented: $showingTrendBooks) {
+            NavigationStack {
+                FilteredBooksView(title: trendBooksTitle, books: trendBooks)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("关闭") { showingTrendBooks = false }
+                        }
+                    }
             }
         }
     }
@@ -360,6 +408,54 @@ struct StatisticsView: View {
         case .ebook: return entry.ebook
         case .audiobook: return entry.audiobook
         }
+    }
+
+    // MARK: - 趋势图点击查看书籍
+
+    private func showYearlyAddedBooks(year: Int) {
+        let calendar = Calendar.current
+        let activeBooks = books.filter { !$0.isArchived }
+        let filtered = activeBooks.filter { book in
+            let bookYear = calendar.component(.year, from: book.addedDate)
+            guard bookYear == year else { return false }
+            if let filter = trendFilter { return book.bookType == filter }
+            return true
+        }
+        guard !filtered.isEmpty else { return }
+        trendBooksTitle = "\(year) 年入库"
+        trendBooks = filtered.sorted { $0.addedDate > $1.addedDate }
+        showingTrendBooks = true
+    }
+
+    private func showMonthlyAddedBooks(year: Int, month: Int) {
+        let calendar = Calendar.current
+        let activeBooks = books.filter { !$0.isArchived }
+        let filtered = activeBooks.filter { book in
+            let comps = calendar.dateComponents([.year, .month], from: book.addedDate)
+            guard comps.year == year && comps.month == month else { return false }
+            if let filter = trendFilter { return book.bookType == filter }
+            return true
+        }
+        guard !filtered.isEmpty else { return }
+        trendBooksTitle = "\(year) 年 \(month) 月入库"
+        trendBooks = filtered.sorted { $0.addedDate > $1.addedDate }
+        showingTrendBooks = true
+    }
+
+    private func showMonthlyFinishedBooks(year: Int, month: Int) {
+        let calendar = Calendar.current
+        let activeBooks = books.filter { !$0.isArchived }
+        let filtered = activeBooks.filter { book in
+            guard book.status == .finished, let finished = book.finishedDate else { return false }
+            let comps = calendar.dateComponents([.year, .month], from: finished)
+            guard comps.year == year && comps.month == month else { return false }
+            if let filter = trendFilter { return book.bookType == filter }
+            return true
+        }
+        guard !filtered.isEmpty else { return }
+        trendBooksTitle = "\(year) 年 \(month) 月完读"
+        trendBooks = filtered.sorted { ($0.finishedDate ?? .distantPast) > ($1.finishedDate ?? .distantPast) }
+        showingTrendBooks = true
     }
 
     // MARK: - 分布 Tab
