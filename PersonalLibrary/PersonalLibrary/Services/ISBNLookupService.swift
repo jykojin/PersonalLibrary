@@ -46,6 +46,11 @@ actor ISBNLookupService {
             return result
         }
 
+        // 备选：Goodreads（英文书覆盖率高）
+        if let result = try await lookupFromGoodreads(isbn: cleanISBN) {
+            return result
+        }
+
         return nil
     }
 
@@ -249,6 +254,12 @@ actor ISBNLookupService {
         let cover = bookData["cover"] as? [String: Any]
         let coverURL = cover?["large"] as? String ?? cover?["medium"] as? String
 
+        // 获取简介：需要从 Works API 获取
+        var description: String?
+        if let bookKey = bookData["key"] as? String {
+            description = await fetchOpenLibraryDescription(bookKey: bookKey)
+        }
+
         return ISBNLookupResult(
             title: title,
             author: authorName,
@@ -256,11 +267,49 @@ actor ISBNLookupService {
             publishDate: publishDate,
             totalPages: pages,
             price: nil,
-            bookDescription: nil,
+            bookDescription: description,
             authorDescription: nil,
             coverImageURL: coverURL ?? "https://covers.openlibrary.org/b/isbn/\(isbn)-L.jpg",
             isbn: isbn
         )
+    }
+
+    /// 从 Open Library Edition → Works 获取简介
+    private func fetchOpenLibraryDescription(bookKey: String) async -> String? {
+        // bookKey 格式: "/books/OL26818690M"，需要先获取 works key
+        guard let editionURL = URL(string: "https://openlibrary.org\(bookKey).json") else { return nil }
+
+        var request = URLRequest(url: editionURL)
+        request.timeoutInterval = 10
+        guard let (data, _) = try? await URLSession.shared.data(for: request),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+
+        // Edition 本身可能有 description
+        if let desc = json["description"] as? String, !desc.isEmpty { return desc }
+        if let descObj = json["description"] as? [String: Any],
+           let value = descObj["value"] as? String, !value.isEmpty { return value }
+
+        // 否则去 Works 层级找
+        guard let works = json["works"] as? [[String: Any]],
+              let workKey = works.first?["key"] as? String,
+              let workURL = URL(string: "https://openlibrary.org\(workKey).json") else {
+            return nil
+        }
+
+        var workRequest = URLRequest(url: workURL)
+        workRequest.timeoutInterval = 10
+        guard let (workData, _) = try? await URLSession.shared.data(for: workRequest),
+              let workJson = try? JSONSerialization.jsonObject(with: workData) as? [String: Any] else {
+            return nil
+        }
+
+        if let desc = workJson["description"] as? String, !desc.isEmpty { return desc }
+        if let descObj = workJson["description"] as? [String: Any],
+           let value = descObj["value"] as? String, !value.isEmpty { return value }
+
+        return nil
     }
 
     // MARK: - Google Books API
@@ -318,6 +367,118 @@ actor ISBNLookupService {
             coverImageURL: coverURL,
             isbn: isbn
         )
+    }
+
+    // MARK: - Goodreads
+
+    private func lookupFromGoodreads(isbn: String) async throws -> ISBNLookupResult? {
+        guard let url = URL(string: "https://www.goodreads.com/book/isbn/\(isbn)") else { return nil }
+
+        var request = URLRequest(url: url)
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+        request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 15
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            return nil
+        }
+
+        // 防止异常大响应
+        guard data.count <= 5_000_000 else { return nil }
+
+        guard let html = String(data: data, encoding: .utf8) else { return nil }
+
+        // 从 JSON-LD 提取结构化数据
+        guard let jsonLD = extractGoodreadsJsonLD(from: html) else { return nil }
+
+        let title = jsonLD["name"] as? String ?? ""
+        guard !title.isEmpty else { return nil }
+
+        // 作者
+        var authorName = "未知作者"
+        if let authorObj = jsonLD["author"] as? [[String: Any]],
+           let firstAuthor = authorObj.first,
+           let name = firstAuthor["name"] as? String {
+            authorName = name
+        } else if let authorObj = jsonLD["author"] as? [String: Any],
+                  let name = authorObj["name"] as? String {
+            authorName = name
+        }
+
+        // 页数
+        let pages = (jsonLD["numberOfPages"] as? Int)
+            ?? (jsonLD["numberOfPages"] as? String).flatMap { Int($0) }
+
+        // ISBN
+        let bookISBN = jsonLD["isbn"] as? String ?? isbn
+
+        // 描述
+        let description = extractGoodreadsDescription(from: html)
+
+        // 封面
+        let coverURL = extractPattern(#"property="og:image"\s+content="([^"]+)""#, from: html)
+            ?? extractPattern(#"content="([^"]+)"\s+property="og:image""#, from: html)
+
+        print("[ISBNLookup] Goodreads found: \(title) by \(authorName)")
+
+        return ISBNLookupResult(
+            title: title,
+            author: authorName,
+            publisher: nil,
+            publishDate: nil,
+            totalPages: pages,
+            price: nil,
+            bookDescription: description,
+            authorDescription: nil,
+            coverImageURL: coverURL,
+            isbn: bookISBN
+        )
+    }
+
+    /// 从 Goodreads 页面提取 JSON-LD 结构化数据
+    private func extractGoodreadsJsonLD(from html: String) -> [String: Any]? {
+        let pattern = #"<script type="application/ld\+json">\s*(\{[^<]{0,50000})\s*</script>"#
+        guard let jsonStr = extractPattern(pattern, from: html, options: .dotMatchesLineSeparators) else {
+            return nil
+        }
+        guard let data = jsonStr.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return json
+    }
+
+    /// 从 Goodreads 页面提取图书描述
+    private func extractGoodreadsDescription(from html: String) -> String? {
+        // 方法1: 从 BookPageMetadataSection__description 区域提取
+        let descPattern = #"BookPageMetadataSection__description[^>]{0,200}>.*?<span[^>]{0,200}class="[^"]*Formatted[^"]*"[^>]{0,100}>(.*?)</span>"#
+        if let descHTML = extractPattern(descPattern, from: html, options: .dotMatchesLineSeparators) {
+            let cleaned = cleanHTMLTags(descHTML)
+            if !cleaned.isEmpty { return cleaned }
+        }
+
+        // 方法2: 从 JSON-LD description 字段
+        let ldPattern = #""description"\s*:\s*"([^"]{1,5000})""#
+        if let desc = extractPattern(ldPattern, from: html) {
+            let unescaped = desc
+                .replacingOccurrences(of: "\\n", with: "\n")
+                .replacingOccurrences(of: "\\\"", with: "\"")
+                .replacingOccurrences(of: "\\/", with: "/")
+            if !unescaped.isEmpty { return unescaped }
+        }
+
+        return nil
+    }
+
+    /// 去除 HTML 标签，保留文本
+    private func cleanHTMLTags(_ html: String) -> String {
+        html.replacingOccurrences(of: "<[^>]{0,1000}>", with: "\n", options: .regularExpression)
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
     }
 
     // MARK: - 封面图片下载

@@ -43,9 +43,23 @@ struct EditBookView: View {
     @State private var showWebSearch = false
     @State private var selectedPhotoItem: PhotosPickerItem?
 
+    // 自动补全
+    @State private var isAutoFilling = false
+    @State private var autoFillMessage: String = ""
+
     var body: some View {
         NavigationStack {
             Form {
+                if isAutoFilling {
+                    Section {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text(autoFillMessage)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
                 coverSection
                 basicInfoSection
                 typeAndStatusSection
@@ -65,6 +79,7 @@ struct EditBookView: View {
                 }
             }
             .onAppear { loadBookData() }
+            .task { await autoFillMissingFields() }
             .sheet(isPresented: $showWebSearch) {
                 CoverWebSearchView(bookTitle: title, bookAuthor: author) { imageData in
                     coverData = imageData
@@ -359,6 +374,78 @@ struct EditBookView: View {
         selectedShelf = book.bookshelf
         selectedTags = Set((book.tags ?? []).map(\.name))
         coverData = book.coverImageData
+    }
+
+    // MARK: - 自动补全缺失字段
+
+    private func autoFillMissingFields() async {
+        // 判断是否有需要补全的字段
+        let missingPublisher = publisher.isEmpty
+        let missingPages = totalPages.isEmpty
+        let missingPrice = price.isEmpty
+        let missingDescription = bookDescription.isEmpty
+        let missingAuthorDesc = authorDescription.isEmpty
+        let missingCover = coverData == nil
+        let missingDoubanURL = doubanURL.isEmpty
+
+        let hasMissing = missingPublisher || missingPages || missingPrice
+            || missingDescription || missingAuthorDesc || missingCover || missingDoubanURL
+
+        guard hasMissing else { return }
+
+        isAutoFilling = true
+        autoFillMessage = "正在自动补全信息..."
+        defer { isAutoFilling = false }
+
+        let lookupService = ISBNLookupService()
+        var result: ISBNLookupResult?
+
+        // 1. 有 ISBN → 用 ISBNLookupService（豆瓣 → Open Library → Google Books）
+        if !isbn.isEmpty {
+            result = try? await lookupService.lookup(isbn: isbn)
+        }
+
+        // 2. 没有 ISBN 或 ISBN 查不到 → 用书名去豆瓣搜索
+        if result == nil && !title.isEmpty {
+            autoFillMessage = "正在用书名搜索豆瓣..."
+            let fetcher = DoubanDescriptionFetcher()
+            if missingDescription {
+                let desc = await fetcher.fetchBookDescriptionByTitle(title: title, author: author)
+                if let desc, !desc.isEmpty { bookDescription = desc }
+            }
+            if missingAuthorDesc {
+                let desc = await fetcher.fetchAuthorDescriptionByTitle(title: title, author: author)
+                if let desc, !desc.isEmpty { authorDescription = desc }
+            }
+        }
+
+        // 3. 用 ISBN 查询结果填充空字段
+        if let result {
+            if missingPublisher, let p = result.publisher, !p.isEmpty {
+                publisher = p
+            }
+            if missingPages, let p = result.totalPages, p > 0 {
+                totalPages = String(p)
+            }
+            if missingPrice, let p = result.price, !p.isEmpty {
+                price = p
+            }
+            if missingDescription, let d = result.bookDescription, !d.isEmpty, bookDescription.isEmpty {
+                bookDescription = d
+            }
+            if missingAuthorDesc, let d = result.authorDescription, !d.isEmpty, authorDescription.isEmpty {
+                authorDescription = d
+            }
+            if missingDoubanURL, let u = result.doubanURL, !u.isEmpty {
+                doubanURL = u
+            }
+            if missingCover, let coverURL = result.coverImageURL, !coverURL.isEmpty {
+                autoFillMessage = "正在下载封面..."
+                if let data = await lookupService.downloadCoverImage(from: coverURL), data.count > 1000 {
+                    coverData = data
+                }
+            }
+        }
     }
 
     private func saveChanges() {
