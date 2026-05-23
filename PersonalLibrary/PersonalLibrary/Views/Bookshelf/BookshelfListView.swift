@@ -4,9 +4,10 @@ import SwiftData
 /// 书架管理页面 — 展示所有书架（含微信读书虚拟书架），支持新增/删除
 struct BookshelfListView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \Bookshelf.sortOrder) private var bookshelves: [Bookshelf]
+    @Query(sort: \Bookshelf.name) private var bookshelves: [Bookshelf]
     @Query private var allBooks: [Book]
     @State private var showingAddSheet = false
+    @State private var shelfToEdit: Bookshelf?
     @State private var shelfToDelete: Bookshelf?
     @State private var showDeleteAlert = false
 
@@ -60,6 +61,9 @@ struct BookshelfListView: View {
             }
             .sheet(isPresented: $showingAddSheet) {
                 AddBookshelfView()
+            }
+            .sheet(item: $shelfToEdit) { shelf in
+                EditBookshelfView(shelf: shelf)
             }
             .alert("删除书架", isPresented: $showDeleteAlert) {
                 Button("仅删除书架", role: .destructive) {
@@ -168,6 +172,11 @@ struct BookshelfListView: View {
                     }
                     .buttonStyle(.plain)
                     .contextMenu {
+                        Button {
+                            shelfToEdit = shelf
+                        } label: {
+                            Label("编辑书架", systemImage: "pencil")
+                        }
                         Button(role: .destructive) {
                             shelfToDelete = shelf
                             showDeleteAlert = true
@@ -873,6 +882,75 @@ struct AddBookshelfView: View {
         modelContext.insert(shelf)
         try? modelContext.save()
         dismiss()
+    }
+}
+
+// MARK: - 编辑书架
+
+struct EditBookshelfView: View {
+    @Environment(\.dismiss) private var dismiss
+    let shelf: Bookshelf
+    @State private var name: String = ""
+    @State private var selectedIcon: String = ""
+
+    private let iconOptions = [
+        "books.vertical", "book.closed", "book",
+        "text.book.closed", "magazine", "newspaper",
+        "graduationcap", "brain.head.profile", "lightbulb",
+        "star", "heart", "bookmark"
+    ]
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("书架名称") {
+                    TextField("输入书架名称", text: $name)
+                }
+
+                Section("图标") {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 6), spacing: 16) {
+                        ForEach(iconOptions, id: \.self) { icon in
+                            Button {
+                                selectedIcon = icon
+                            } label: {
+                                Image(systemName: icon)
+                                    .font(.title2)
+                                    .foregroundStyle(selectedIcon == icon ? .orange : .secondary)
+                                    .frame(width: 44, height: 44)
+                                    .background(
+                                        selectedIcon == icon ?
+                                        Color.orange.opacity(0.1) : Color.clear
+                                    )
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.vertical, 8)
+                }
+            }
+            .navigationTitle("编辑书架")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        let trimmed = name.trimmingCharacters(in: .whitespaces)
+                        guard !trimmed.isEmpty else { return }
+                        shelf.name = trimmed
+                        shelf.icon = selectedIcon
+                        dismiss()
+                    }
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            .onAppear {
+                name = shelf.name
+                selectedIcon = shelf.icon
+            }
+        }
     }
 }
 

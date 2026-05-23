@@ -6,8 +6,11 @@ struct AdvancedSearchView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Book.addedDate, order: .reverse) private var allBooks: [Book]
-    @Query(sort: \Bookshelf.sortOrder) private var bookshelves: [Bookshelf]
+    @Query(sort: \Bookshelf.name) private var bookshelves: [Bookshelf]
     @Query private var allTags: [Tag]
+
+    /// 搜索结果回调：传回匹配的书籍，关闭搜索页回到藏书页展示
+    var onSearchResults: (([Book]) -> Void)?
 
     // 文本条件
     @State private var titleQuery = ""
@@ -220,6 +223,10 @@ struct AdvancedSearchView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("搜索") {
                         hasSearched = true
+                        if let callback = onSearchResults {
+                            callback(results)
+                            dismiss()
+                        }
                     }
                 }
             }

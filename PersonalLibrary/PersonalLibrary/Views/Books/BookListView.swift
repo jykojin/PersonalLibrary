@@ -32,7 +32,7 @@ enum SearchScope: CaseIterable {
 struct BookListView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Book.addedDate, order: .reverse) private var books: [Book]
-    @Query(sort: \Bookshelf.sortOrder) private var bookshelves: [Bookshelf]
+    @Query(sort: \Bookshelf.name) private var bookshelves: [Bookshelf]
     @Query private var allTags: [Tag]
     @State private var showingAddBook = false
     @State private var searchText = ""
@@ -48,6 +48,9 @@ struct BookListView: View {
     @State private var showRatingSheet = false
     @State private var showAdvancedSearch = false
 
+    // 高级搜索结果
+    @State private var advancedSearchResults: [Book]?
+
     // 纸质书筛选（默认开启，持久化）
     @AppStorage("bookList_paperOnly") private var paperOnly = true
 
@@ -56,18 +59,21 @@ struct BookListView: View {
     // 标记已读后评分
     @State private var bookForRating: Book?
 
-    /// 获取所有可用的书架名称
+    /// 获取所有可用的书架名称（按名称排序，"我的藏书"固定第一）
     private var shelfNames: [String] {
         var names: [String] = ["我的藏书"]
 
-        // 真实书架
-        for shelf in bookshelves {
+        // 真实书架（按名称字母排序）
+        let sortedShelves = bookshelves
+            .filter { $0.name != "微信读书" }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        for shelf in sortedShelves {
             if !names.contains(shelf.name) {
                 names.append(shelf.name)
             }
         }
 
-        // 微信读书虚拟书架
+        // 微信读书虚拟书架（放最后）
         let hasWeRead = books.contains { book in
             book.tags?.contains(where: { $0.name == "微信读书" }) == true
         }
@@ -80,6 +86,11 @@ struct BookListView: View {
 
     /// 当前筛选后的书籍
     private var filteredBooks: [Book] {
+        // 高级搜索结果优先
+        if let advResults = advancedSearchResults {
+            return advResults
+        }
+
         var result: [Book]
 
         if selectedShelf == "我的藏书" {
@@ -182,7 +193,9 @@ struct BookListView: View {
                 AddBookView()
             }
             .sheet(isPresented: $showAdvancedSearch) {
-                AdvancedSearchView()
+                AdvancedSearchView { results in
+                    advancedSearchResults = results
+                }
             }
             .sheet(isPresented: $showTagSheet) {
                 BatchTagView(books: selectedBookObjects) {
@@ -219,6 +232,8 @@ struct BookListView: View {
                     )
                 }
             }
+            .onChange(of: selectedShelf) { _, _ in advancedSearchResults = nil }
+            .onChange(of: searchText) { _, _ in advancedSearchResults = nil }
         }
     }
 
@@ -754,7 +769,7 @@ struct BatchTagView: View {
 struct BatchMoveShelfView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
-    @Query(sort: \Bookshelf.sortOrder) private var bookshelves: [Bookshelf]
+    @Query(sort: \Bookshelf.name) private var bookshelves: [Bookshelf]
     let books: [Book]
     let onDone: () -> Void
 

@@ -5,7 +5,7 @@ import Charts
 struct StatisticsView: View {
     @Query(sort: \Book.addedDate, order: .reverse) private var books: [Book]
     @Query private var records: [ReadingRecord]
-    @Query(sort: \Bookshelf.sortOrder) private var bookshelves: [Bookshelf]
+    @Query(sort: \Bookshelf.name) private var bookshelves: [Bookshelf]
 
     @State private var cachedStats: CachedStatistics?
     @State private var selectedTab: StatsTab = .overview
@@ -373,9 +373,6 @@ struct StatisticsView: View {
             if !topTags.isEmpty {
                 tagRankingSection
             }
-            if !stats.bookshelfStats.isEmpty {
-                bookshelfSection
-            }
             typeDetailSection
         }
     }
@@ -388,54 +385,79 @@ struct StatisticsView: View {
                 cardHeader(title: "藏书分析", icon: "chart.bar.doc.horizontal")
 
                 if !stats.topAuthors.isEmpty {
-                    rankingBlock(title: "最爱作者", icon: "person.fill", items: stats.topAuthors, color: .orange)
+                    rankingBlock(title: "最爱作者", icon: "person.fill", items: stats.topAuthors, color: .orange, filterType: .author)
                 }
 
                 if !stats.topPublishers.isEmpty {
-                    rankingBlock(title: "最爱出版社", icon: "building.2.fill", items: stats.topPublishers, color: .blue)
-                }
-
-                if !stats.topCategories.isEmpty {
-                    rankingBlock(title: "最爱题材", icon: "text.book.closed.fill", items: stats.topCategories, color: .purple)
+                    rankingBlock(title: "最爱出版社", icon: "building.2.fill", items: stats.topPublishers, color: .blue, filterType: .publisher)
                 }
             }
         }
     }
 
-    private func rankingBlock(title: String, icon: String, items: [(name: String, count: Int)], color: Color) -> some View {
+    enum RankingFilterType {
+        case author, publisher, tag
+    }
+
+    private func rankingBlock(title: String, icon: String, items: [(name: String, count: Int)], color: Color, filterType: RankingFilterType) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Label(title, systemImage: icon)
                 .font(.caption)
                 .fontWeight(.medium)
                 .foregroundStyle(.secondary)
 
-            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                HStack(spacing: 8) {
-                    Text("\(index + 1)")
-                        .font(.caption2)
-                        .fontWeight(.bold)
-                        .foregroundStyle(index == 0 ? color : .secondary)
-                        .frame(width: 16)
+            let displayItems = Array(items.prefix(5))
+            ForEach(Array(displayItems.enumerated()), id: \.offset) { index, item in
+                NavigationLink(destination: filteredBooksView(for: item.name, type: filterType)) {
+                    HStack(spacing: 8) {
+                        Text("\(index + 1)")
+                            .font(.caption2)
+                            .fontWeight(.bold)
+                            .foregroundStyle(index == 0 ? color : .secondary)
+                            .frame(width: 16)
 
-                    Text(item.name)
-                        .font(.subheadline)
-                        .lineLimit(1)
+                        Text(item.name)
+                            .font(.subheadline)
+                            .lineLimit(1)
+                            .foregroundStyle(.primary)
 
-                    Spacer()
+                        Spacer()
 
-                    Text("\(item.count) 本")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        Text("\(item.count) 本")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
 
-                    GeometryReader { geo in
-                        RoundedRectangle(cornerRadius: 3)
-                            .fill(color.opacity(0.3))
-                            .frame(width: geo.size.width * CGFloat(item.count) / CGFloat(max(items.first?.count ?? 1, 1)))
+                        Image(systemName: "chevron.right")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
                     }
-                    .frame(width: 50, height: 8)
+                }
+            }
+
+            // 查看更多
+            if items.count > 5 {
+                NavigationLink(destination: FullRankingView(title: title, items: items, color: color, filterType: filterType, books: books.filter { !$0.isArchived })) {
+                    Text("查看更多")
+                        .font(.caption)
+                        .foregroundStyle(color)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
         }
+    }
+
+    private func filteredBooksView(for name: String, type: RankingFilterType) -> some View {
+        let activeBooks = books.filter { !$0.isArchived }
+        let filtered: [Book]
+        switch type {
+        case .author:
+            filtered = activeBooks.filter { $0.author == name }
+        case .publisher:
+            filtered = activeBooks.filter { $0.publisher == name }
+        case .tag:
+            filtered = activeBooks.filter { $0.tags?.contains(where: { $0.name == name }) == true }
+        }
+        return FilteredBooksView(title: name, books: filtered)
     }
 
     // MARK: - 阅读状态
@@ -463,25 +485,23 @@ struct StatisticsView: View {
             VStack(alignment: .leading, spacing: 12) {
                 cardHeader(title: "书籍类型", icon: "square.stack.3d.up")
 
-                HStack(spacing: 0) {
-                    if paperCount > 0 {
-                        TypeBar(color: .brown, ratio: CGFloat(paperCount) / CGFloat(max(totalBooks, 1)))
-                    }
-                    if ebookCount > 0 {
-                        TypeBar(color: .blue, ratio: CGFloat(ebookCount) / CGFloat(max(totalBooks, 1)))
-                    }
-                    if audiobookCount > 0 {
-                        TypeBar(color: .purple, ratio: CGFloat(audiobookCount) / CGFloat(max(totalBooks, 1)))
-                    }
-                }
-                .frame(height: 12)
-                .clipShape(Capsule())
-
                 HStack(spacing: 16) {
-                    TypePill(label: "纸质书", count: paperCount, color: .brown)
-                    TypePill(label: "电子书", count: ebookCount, color: .blue)
-                    TypePill(label: "有声书", count: audiobookCount, color: .purple)
+                    // 饼图
+                    PieChartView(slices: [
+                        (value: Double(paperCount), color: .brown),
+                        (value: Double(ebookCount), color: .blue),
+                        (value: Double(audiobookCount), color: .purple)
+                    ].filter { $0.value > 0 })
+                    .frame(width: 100, height: 100)
+
+                    // 图例
+                    VStack(alignment: .leading, spacing: 8) {
+                        TypePill(label: "纸质书", count: paperCount, color: .brown)
+                        TypePill(label: "电子书", count: ebookCount, color: .blue)
+                        TypePill(label: "有声书", count: audiobookCount, color: .purple)
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .center)
             }
         }
     }
@@ -528,29 +548,25 @@ struct StatisticsView: View {
             VStack(alignment: .leading, spacing: 12) {
                 cardHeader(title: "加入方式", icon: "arrow.down.to.line")
 
-                HStack(spacing: 0) {
-                    if stats.manualCount > 0 {
-                        TypeBar(color: .green, ratio: CGFloat(stats.manualCount) / CGFloat(max(totalBooks, 1)))
-                    }
-                    if stats.scannedCount > 0 {
-                        TypeBar(color: .orange, ratio: CGFloat(stats.scannedCount) / CGFloat(max(totalBooks, 1)))
-                    }
-                    if stats.importedCount > 0 {
-                        TypeBar(color: .blue, ratio: CGFloat(stats.importedCount) / CGFloat(max(totalBooks, 1)))
-                    }
-                    if stats.wereadImportedCount > 0 {
-                        TypeBar(color: .teal, ratio: CGFloat(stats.wereadImportedCount) / CGFloat(max(totalBooks, 1)))
-                    }
-                }
-                .frame(height: 12)
-                .clipShape(Capsule())
+                HStack(spacing: 16) {
+                    // 饼图
+                    PieChartView(slices: [
+                        (value: Double(stats.manualCount), color: .green),
+                        (value: Double(stats.scannedCount), color: .orange),
+                        (value: Double(stats.importedCount), color: .blue),
+                        (value: Double(stats.wereadImportedCount), color: .teal)
+                    ].filter { $0.value > 0 })
+                    .frame(width: 100, height: 100)
 
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                    TypePill(label: "手动", count: stats.manualCount, color: .green)
-                    TypePill(label: "扫码", count: stats.scannedCount, color: .orange)
-                    TypePill(label: "文件导入", count: stats.importedCount, color: .blue)
-                    TypePill(label: "微信读书", count: stats.wereadImportedCount, color: .teal)
+                    // 图例
+                    VStack(alignment: .leading, spacing: 8) {
+                        TypePill(label: "手动", count: stats.manualCount, color: .green)
+                        TypePill(label: "扫码", count: stats.scannedCount, color: .orange)
+                        TypePill(label: "文件导入", count: stats.importedCount, color: .blue)
+                        TypePill(label: "微信读书", count: stats.wereadImportedCount, color: .teal)
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .center)
             }
         }
     }
@@ -564,21 +580,27 @@ struct StatisticsView: View {
 
                 HStack(alignment: .bottom, spacing: 12) {
                     ForEach(ratedBooks, id: \.rating) { item in
-                        VStack(spacing: 4) {
-                            Text("\(item.count)")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(.yellow.gradient)
-                                .frame(width: 36, height: max(CGFloat(item.count) / CGFloat(max(ratedBooksTotal, 1)) * 80, 4))
-
-                            HStack(spacing: 1) {
-                                Text("\(item.rating)")
+                        NavigationLink(destination: FilteredBooksView(
+                            title: "\(item.rating) 星书籍",
+                            books: books.filter { !$0.isArchived && $0.rating == item.rating }
+                        )) {
+                            VStack(spacing: 4) {
+                                Text("\(item.count)")
                                     .font(.caption2)
-                                Image(systemName: "star.fill")
-                                    .font(.system(size: 8))
-                                    .foregroundStyle(.yellow)
+                                    .foregroundStyle(.secondary)
+
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(.yellow.gradient)
+                                    .frame(width: 36, height: max(CGFloat(item.count) / CGFloat(max(ratedBooksTotal, 1)) * 80, 4))
+
+                                HStack(spacing: 1) {
+                                    Text("\(item.rating)")
+                                        .font(.caption2)
+                                        .foregroundStyle(.primary)
+                                    Image(systemName: "star.fill")
+                                        .font(.system(size: 8))
+                                        .foregroundStyle(.yellow)
+                                }
                             }
                         }
                     }
@@ -597,34 +619,45 @@ struct StatisticsView: View {
     private var tagRankingSection: some View {
         cardContainer {
             VStack(alignment: .leading, spacing: 12) {
-                cardHeader(title: "标签 Top 10", icon: "tag")
+                cardHeader(title: "标签排名", icon: "tag")
 
+                let displayTags = Array(topTags.prefix(5))
                 VStack(spacing: 6) {
-                    ForEach(Array(topTags.enumerated()), id: \.offset) { index, item in
-                        HStack {
-                            Text("\(index + 1)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .frame(width: 20, alignment: .center)
+                    ForEach(Array(displayTags.enumerated()), id: \.offset) { index, item in
+                        NavigationLink(destination: filteredBooksView(for: item.name, type: .tag)) {
+                            HStack {
+                                Text("\(index + 1)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 20, alignment: .center)
 
-                            Text(item.name)
-                                .font(.subheadline)
-                                .lineLimit(1)
+                                Text(item.name)
+                                    .font(.subheadline)
+                                    .lineLimit(1)
+                                    .foregroundStyle(.primary)
 
-                            Spacer()
+                                Spacer()
 
-                            Text("\(item.count) 本")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                Text("\(item.count) 本")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
 
-                            GeometryReader { geo in
-                                RoundedRectangle(cornerRadius: 3)
-                                    .fill(.blue.opacity(0.3))
-                                    .frame(width: geo.size.width * CGFloat(item.count) / CGFloat(max(topTags.first?.count ?? 1, 1)))
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
                             }
-                            .frame(width: 60, height: 8)
+                            .padding(.vertical, 2)
                         }
-                        .padding(.vertical, 2)
+                    }
+                }
+
+                // 查看更多
+                if topTags.count > 5 {
+                    NavigationLink(destination: FullRankingView(title: "标签排名", items: topTags, color: .blue, filterType: .tag, books: books.filter { !$0.isArchived })) {
+                        Text("查看更多")
+                            .font(.caption)
+                            .foregroundStyle(.blue)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
                     }
                 }
             }
@@ -831,12 +864,12 @@ struct StatisticsView: View {
     }
 
     /// 后台线程纯计算（无 SwiftData 访问）
-    private static func computeStatsOnBackground(books: [Book], records: [ReadingRecord], bookshelves: [Bookshelf]) -> CachedStatistics {
+    nonisolated private static func computeStatsOnBackground(books: [Book], records: [ReadingRecord], bookshelves: [Bookshelf]) -> CachedStatistics {
         computeStatsImpl(books: books, records: records, bookshelves: bookshelves)
     }
 
     /// 一次遍历计算所有统计数据
-    private static func computeStatsImpl(books: [Book], records: [ReadingRecord], bookshelves: [Bookshelf]) -> CachedStatistics {
+    nonisolated private static func computeStatsImpl(books: [Book], records: [ReadingRecord], bookshelves: [Bookshelf]) -> CachedStatistics {
         let calendar = Calendar.current
         let now = Date()
         // 排除已归档的书（逻辑删除）
@@ -1036,15 +1069,12 @@ struct StatisticsView: View {
             .map { ("\($0.key)", $0.value.total) }
 
         let topTagsList = tagCounts.sorted { $0.value > $1.value }
-            .prefix(10)
             .map { ($0.key, $0.value) }
 
         let topAuthorsList = authorCounts.sorted { $0.value > $1.value }
-            .prefix(5)
             .map { ($0.key, $0.value) }
 
         let topPublishersList = publisherCounts.sorted { $0.value > $1.value }
-            .prefix(5)
             .map { ($0.key, $0.value) }
 
         let topCategoriesList = categoryCounts.sorted { $0.value > $1.value }
@@ -1157,6 +1187,89 @@ struct StatusRow: View {
             }
             .frame(width: 80, height: 8)
         }
+    }
+}
+
+// MARK: - 饼图组件
+
+struct PieChartView: View {
+    let slices: [(value: Double, color: Color)]
+
+    private var total: Double {
+        slices.reduce(0) { $0 + $1.value }
+    }
+
+    var body: some View {
+        Canvas { context, size in
+            let center = CGPoint(x: size.width / 2, y: size.height / 2)
+            let radius = min(size.width, size.height) / 2
+            var startAngle = Angle.degrees(-90)
+
+            for slice in slices {
+                let proportion = total > 0 ? slice.value / total : 0
+                let endAngle = startAngle + Angle.degrees(proportion * 360)
+
+                var path = Path()
+                path.move(to: center)
+                path.addArc(center: center, radius: radius,
+                           startAngle: startAngle, endAngle: endAngle, clockwise: false)
+                path.closeSubpath()
+
+                context.fill(path, with: .color(slice.color))
+                startAngle = endAngle
+            }
+        }
+    }
+}
+
+// MARK: - 完整排名视图
+
+struct FullRankingView: View {
+    let title: String
+    let items: [(name: String, count: Int)]
+    let color: Color
+    let filterType: StatisticsView.RankingFilterType
+    let books: [Book]
+
+    var body: some View {
+        List {
+            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                NavigationLink(destination: filteredView(for: item.name)) {
+                    HStack(spacing: 12) {
+                        Text("\(index + 1)")
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundStyle(index < 3 ? color : .secondary)
+                            .frame(width: 24)
+
+                        Text(item.name)
+                            .font(.subheadline)
+                            .lineLimit(1)
+
+                        Spacer()
+
+                        Text("\(item.count) 本")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func filteredView(for name: String) -> FilteredBooksView {
+        let filtered: [Book]
+        switch filterType {
+        case .author:
+            filtered = books.filter { $0.author == name }
+        case .publisher:
+            filtered = books.filter { $0.publisher == name }
+        case .tag:
+            filtered = books.filter { $0.tags?.contains(where: { $0.name == name }) == true }
+        }
+        return FilteredBooksView(title: name, books: filtered)
     }
 }
 
