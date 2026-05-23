@@ -304,6 +304,7 @@ struct BookshelfDetailView: View {
     @State private var showTagSheet = false
     @State private var showMoveSheet = false
     @State private var showStatusSheet = false
+    @State private var showRatingSheet = false
 
     private var books: [Book] {
         (shelf.books ?? []).sorted { $0.addedDate > $1.addedDate }
@@ -417,6 +418,9 @@ struct BookshelfDetailView: View {
         .sheet(isPresented: $showStatusSheet) {
             BatchStatusView(books: selectedBookObjects) { exitSelectMode() }
         }
+        .sheet(isPresented: $showRatingSheet) {
+            BatchRatingView(books: selectedBookObjects) { exitSelectMode() }
+        }
         .overlay {
             if books.isEmpty && !isSelecting {
                 ContentUnavailableView(
@@ -449,9 +453,10 @@ struct BookshelfDetailView: View {
 
     private var shelfBatchBar: some View {
         HStack(spacing: 0) {
-            shelfBatchBtn(icon: "tag", label: "打标签") { showTagSheet = true }
+            shelfBatchBtn(icon: "tag", label: "标签") { showTagSheet = true }
             shelfBatchBtn(icon: "arrow.right.square", label: "移动") { showMoveSheet = true }
             shelfBatchBtn(icon: "book", label: "状态") { showStatusSheet = true }
+            shelfBatchBtn(icon: "star", label: "评分") { showRatingSheet = true }
         }
         .padding(.vertical, 8)
         .background(Color(.systemBackground))
@@ -501,6 +506,7 @@ struct WeReadShelfDetailView: View {
     @State private var showTagSheet = false
     @State private var showMoveSheet = false
     @State private var showStatusSheet = false
+    @State private var showRatingSheet = false
 
     private var weReadBooks: [Book] {
         allBooks.filter { book in
@@ -551,9 +557,10 @@ struct WeReadShelfDetailView: View {
 
             if isSelecting && !selectedBooks.isEmpty {
                 HStack(spacing: 0) {
-                    wrBatchBtn(icon: "tag", label: "打标签") { showTagSheet = true }
+                    wrBatchBtn(icon: "tag", label: "标签") { showTagSheet = true }
                     wrBatchBtn(icon: "arrow.right.square", label: "移动") { showMoveSheet = true }
                     wrBatchBtn(icon: "book", label: "状态") { showStatusSheet = true }
+                    wrBatchBtn(icon: "star", label: "评分") { showRatingSheet = true }
                 }
                 .padding(.vertical, 8)
                 .background(Color(.systemBackground))
@@ -598,6 +605,9 @@ struct WeReadShelfDetailView: View {
         }
         .sheet(isPresented: $showStatusSheet) {
             BatchStatusView(books: selectedBookObjects) { isSelecting = false; selectedBooks.removeAll() }
+        }
+        .sheet(isPresented: $showRatingSheet) {
+            BatchRatingView(books: selectedBookObjects) { isSelecting = false; selectedBooks.removeAll() }
         }
         .overlay {
             if weReadBooks.isEmpty {
@@ -650,6 +660,7 @@ struct UncategorizedBooksView: View {
     @State private var showTagSheet = false
     @State private var showMoveSheet = false
     @State private var showStatusSheet = false
+    @State private var showRatingSheet = false
 
     private var uncategorizedBooks: [Book] {
         allBooks.filter { $0.bookshelf == nil && !$0.isArchived && $0.wereadBookId == nil }
@@ -699,9 +710,10 @@ struct UncategorizedBooksView: View {
 
             if isSelecting && !selectedBooks.isEmpty {
                 HStack(spacing: 0) {
-                    uncatBatchBtn(icon: "tag", label: "打标签") { showTagSheet = true }
+                    uncatBatchBtn(icon: "tag", label: "标签") { showTagSheet = true }
                     uncatBatchBtn(icon: "arrow.right.square", label: "移动") { showMoveSheet = true }
                     uncatBatchBtn(icon: "book", label: "状态") { showStatusSheet = true }
+                    uncatBatchBtn(icon: "star", label: "评分") { showRatingSheet = true }
                 }
                 .padding(.vertical, 8)
                 .background(Color(.systemBackground))
@@ -746,6 +758,9 @@ struct UncategorizedBooksView: View {
         }
         .sheet(isPresented: $showStatusSheet) {
             BatchStatusView(books: selectedBookObjects) { isSelecting = false; selectedBooks.removeAll() }
+        }
+        .sheet(isPresented: $showRatingSheet) {
+            BatchRatingView(books: selectedBookObjects) { isSelecting = false; selectedBooks.removeAll() }
         }
         .overlay {
             if uncategorizedBooks.isEmpty {

@@ -576,19 +576,19 @@ struct ExportErrorTests {
 @Suite("WeReadService Import Logic Tests")
 struct WeReadServiceImportTests {
 
-    @Test("导入时跳过已存在的书籍（去重）")
+    @Test("导入时跳过已存在的电子书/有声书（去重）")
     func deduplication() async throws {
         let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [config])
         let context = ModelContext(container)
 
-        // 先插入一本已存在的书
-        let existingBook = Book(title: "已存在的书", author: "某作者")
+        // 先插入一本已存在的电子书（同类型才去重）
+        let existingBook = Book(title: "已存在的书", author: "某作者", bookType: .ebook)
         context.insert(existingBook)
         try context.save()
 
-        // 尝试导入同名同作者的书
+        // 尝试导入同名同作者的电子书 → 应该跳过
         let items = [
             WeReadImportItem(
                 id: "dup1", title: "已存在的书", author: "某作者",
@@ -604,6 +604,36 @@ struct WeReadServiceImportTests {
 
         #expect(result.imported == 0)
         #expect(result.skipped == 1)
+    }
+
+    @Test("纸质书存在时不阻止同名电子书导入")
+    func paperDoesNotBlockEbook() async throws {
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        // 先插入一本纸质书
+        let paperBook = Book(title: "同名书", author: "作者", bookType: .paper)
+        context.insert(paperBook)
+        try context.save()
+
+        // 导入同名同作者的电子书 → 不应被跳过
+        let items = [
+            WeReadImportItem(
+                id: "new1", title: "同名书", author: "作者",
+                cover: nil, publisher: nil, isbn: nil,
+                intro: nil, translator: nil, category: nil,
+                progress: 30, readingTime: 500, ttsTime: 0,
+                isFinished: false, bookType: .ebook
+            )
+        ]
+
+        let service = WeReadService()
+        let result = try await service.importBooks(items, modelContext: context)
+
+        #expect(result.imported == 1)
+        #expect(result.skipped == 0)
     }
 
     @Test("只导入选中的书籍")
@@ -991,5 +1021,62 @@ struct ISBNLookupResultTests {
         #expect(result.publisher == nil)
         #expect(result.totalPages == nil)
         #expect(result.coverImageURL == nil)
+    }
+}
+
+// MARK: - Rating Tests
+
+@Suite("Rating Tests")
+struct RatingTests {
+
+    @Test("评分范围 1-5 有效")
+    func validRatingRange() {
+        let book = Book(title: "测试", author: "测试")
+        for i in 1...5 {
+            book.rating = i
+            #expect(book.rating == i)
+        }
+    }
+
+    @Test("评分可以清除为nil")
+    func clearRating() {
+        let book = Book(title: "测试", author: "测试")
+        book.rating = 4
+        #expect(book.rating == 4)
+        book.rating = nil
+        #expect(book.rating == nil)
+    }
+
+    @Test("新书默认无评分")
+    func defaultNoRating() {
+        let book = Book(title: "测试", author: "测试")
+        #expect(book.rating == nil)
+    }
+}
+
+// MARK: - AddSource Tests
+
+@Suite("AddSource Tests")
+struct AddSourceTests {
+
+    @Test("AddSource rawValue 正确")
+    func rawValues() {
+        #expect(AddSource.manual.rawValue == "手动添加")
+        #expect(AddSource.scanned.rawValue == "扫码添加")
+        #expect(AddSource.imported.rawValue == "文件导入")
+        #expect(AddSource.wereadImported.rawValue == "微信读书导入")
+    }
+
+    @Test("AddSource allCases 包含4种")
+    func allCases() {
+        #expect(AddSource.allCases.count == 4)
+    }
+
+    @Test("旧数据兼容：'导入' 解码为 .imported")
+    func legacyDecoding() throws {
+        let json = "\"导入\""
+        let data = json.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(AddSource.self, from: data)
+        #expect(decoded == .imported)
     }
 }

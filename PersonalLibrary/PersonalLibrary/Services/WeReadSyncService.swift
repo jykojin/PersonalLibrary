@@ -138,16 +138,75 @@ actor WeReadSyncService {
             return result
         }
 
-        // 6. 逐本处理（每 20 本保存一次，避免内存压力和全量丢失）
+        // 6. 批量处理（减少 MainActor 切换次数，避免卡顿）
         let totalRemoteCount = remoteBooks.count
-        var processedCount = 0
-        var processedSinceLastSave = 0
+        onProgress?(SyncProgress(current: 0, total: totalRemoteCount, phase: "处理书籍"))
+
+        // 分离已存在和需要匹配的书
+        var existingItems: [(Book, WeReadImportItem)] = []
+        var unmatchedItems: [WeReadImportItem] = []
         for item in remoteBooks {
-            processedCount += 1
-            onProgress?(SyncProgress(current: processedCount, total: totalRemoteCount, phase: "处理书籍"))
             if let existingBook = localBookMap[item.id] {
-                // 已存在 → 补充书架/标签（修复早期导入缺失）+ 更新进度和状态
+                existingItems.append((existingBook, item))
+            } else {
+                unmatchedItems.append(item)
+            }
+        }
+
+        // 6a. 批量更新已存在的书（一次 MainActor.run 处理全部）
+        let existingResults = await MainActor.run {
+            var progressCount = 0
+            var statusCount = 0
+            for (book, item) in existingItems {
+                // 补充书架/标签（仅缺失时）
+                if book.bookshelf == nil {
+                    book.bookshelf = wereadShelf
+                }
+                if book.tags?.contains(where: { $0.name == "微信读书" }) != true {
+                    var tags = book.tags ?? []
+                    tags.append(wereadTag)
+                    book.tags = tags
+                }
+                // 更新进度
+                if item.progress > book.wereadProgress {
+                    book.wereadProgress = item.progress
+                    progressCount += 1
+                }
+                // 补充加入时间
+                if let addedTime = item.addedTime, book.addedDate > addedTime {
+                    book.addedDate = addedTime
+                }
+                // 状态更新
+                if item.isFinished && book.status != .finished && book.status != .dropped {
+                    book.status = .finished
+                    book.statusChangedDate = Date()
+                    if book.finishedDate == nil {
+                        book.finishedDate = item.finishedTime ?? Date()
+                    }
+                    statusCount += 1
+                } else if !item.isFinished && item.progress > 0 &&
+                          (book.status == .idle || book.status == .wishlist) {
+                    book.status = .reading
+                    book.statusChangedDate = Date()
+                    statusCount += 1
+                }
+            }
+            return (progressCount, statusCount)
+        }
+        result.progressUpdated = existingResults.0
+        result.statusUpdated = existingResults.1
+
+        onProgress?(SyncProgress(current: existingItems.count, total: totalRemoteCount, phase: "处理书籍"))
+
+        // 6b. 处理未匹配的书（需要逐本查数据库，但数量通常很少）
+        for (index, item) in unmatchedItems.enumerated() {
+            if index % 20 == 0 {
+                onProgress?(SyncProgress(current: existingItems.count + index, total: totalRemoteCount, phase: "处理书籍"))
+            }
+            let matched = await findExistingBook(item: item, modelContext: modelContext)
+            if let existingBook = matched {
                 await MainActor.run {
+                    existingBook.wereadBookId = item.id
                     if existingBook.bookshelf == nil {
                         existingBook.bookshelf = wereadShelf
                     }
@@ -161,40 +220,17 @@ actor WeReadSyncService {
                 if updated.progressChanged { result.progressUpdated += 1 }
                 if updated.statusChanged { result.statusUpdated += 1 }
             } else {
-                // 不存在 → 通过 ISBN+bookType 或 书名+作者+bookType 匹配
-                let matched = await findExistingBook(item: item, modelContext: modelContext)
-                if let existingBook = matched {
-                    // 补充 wereadBookId、书架、标签
-                    await MainActor.run {
-                        existingBook.wereadBookId = item.id
-                        if existingBook.bookshelf == nil {
-                            existingBook.bookshelf = wereadShelf
-                        }
-                        if existingBook.tags?.contains(where: { $0.name == "微信读书" }) != true {
-                            var tags = existingBook.tags ?? []
-                            tags.append(wereadTag)
-                            existingBook.tags = tags
-                        }
-                    }
-                    let updated = await updateExistingBook(book: existingBook, item: item)
-                    if updated.progressChanged { result.progressUpdated += 1 }
-                    if updated.statusChanged { result.statusUpdated += 1 }
-                } else {
-                    // 全新书 → 导入
-                    await importNewBook(item: item, tag: wereadTag, shelf: wereadShelf, modelContext: modelContext)
-                    result.newBooksImported += 1
-                }
+                await importNewBook(item: item, tag: wereadTag, shelf: wereadShelf, modelContext: modelContext)
+                result.newBooksImported += 1
             }
 
-            // 增量保存：每处理 20 本保存一次
-            processedSinceLastSave += 1
-            if processedSinceLastSave >= 20 {
+            // 增量保存：每 50 本新书保存一次
+            if index > 0 && index % 50 == 0 {
                 do {
                     try await MainActor.run { try modelContext.save() }
                 } catch {
                     print("[WeReadSync] 增量保存失败: \(error)")
                 }
-                processedSinceLastSave = 0
             }
         }
 

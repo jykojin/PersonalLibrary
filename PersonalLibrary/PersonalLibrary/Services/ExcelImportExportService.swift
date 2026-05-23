@@ -44,6 +44,11 @@ actor ExcelImportExportService {
 
     /// 从 XLSX 数据导入书籍
     func importBooks(data: Data, modelContext: ModelContext) throws -> ImportResult {
+        // 安全限制：最大 50MB，防止恶意超大文件耗尽内存
+        guard data.count <= 50_000_000 else {
+            throw ImportError.invalidFormat
+        }
+
         let xlsxFile: XLSXFile
         do {
             xlsxFile = try XLSXFile(data: data)

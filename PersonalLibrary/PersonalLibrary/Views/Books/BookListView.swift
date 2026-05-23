@@ -45,6 +45,7 @@ struct BookListView: View {
     @State private var showTagSheet = false
     @State private var showMoveSheet = false
     @State private var showStatusSheet = false
+    @State private var showRatingSheet = false
     @State private var showAdvancedSearch = false
 
     // 纸质书筛选（默认开启，持久化）
@@ -195,6 +196,11 @@ struct BookListView: View {
             }
             .sheet(isPresented: $showStatusSheet) {
                 BatchStatusView(books: selectedBookObjects) {
+                    exitSelectMode()
+                }
+            }
+            .sheet(isPresented: $showRatingSheet) {
+                BatchRatingView(books: selectedBookObjects) {
                     exitSelectMode()
                 }
             }
@@ -411,7 +417,7 @@ struct BookListView: View {
 
     private var batchActionBar: some View {
         HStack(spacing: 0) {
-            batchButton(icon: "tag", label: "打标签") {
+            batchButton(icon: "tag", label: "标签") {
                 showTagSheet = true
             }
             batchButton(icon: "arrow.right.square", label: "移动") {
@@ -419,6 +425,9 @@ struct BookListView: View {
             }
             batchButton(icon: "book", label: "状态") {
                 showStatusSheet = true
+            }
+            batchButton(icon: "star", label: "评分") {
+                showRatingSheet = true
             }
         }
         .padding(.vertical, 8)
@@ -557,7 +566,7 @@ struct BookRowView: View {
             if let data, data.count > 100 {
                 fetchedCoverData = data
                 book.coverImageData = data
-                try? modelContext.save()
+                // 不立即 save，由 SwiftData 自动合并或下次 save 时持久化
                 return
             }
         }
@@ -572,7 +581,6 @@ struct BookRowView: View {
         if let data {
             fetchedCoverData = data
             book.coverImageData = data
-            try? modelContext.save()
         }
     }
 
@@ -818,6 +826,74 @@ struct BatchStatusView: View {
             if status == .finished {
                 book.finishedDate = Date()
             }
+        }
+        try? modelContext.save()
+        dismiss()
+        onDone()
+    }
+}
+
+// MARK: - 批量评分
+
+struct BatchRatingView: View {
+    @Environment(\.modelContext) private var modelContext
+    @Environment(\.dismiss) private var dismiss
+    let books: [Book]
+    let onDone: () -> Void
+    @State private var rating: Int = 0
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 24) {
+                Text("为 \(books.count) 本书评分")
+                    .font(.headline)
+                    .padding(.top, 24)
+
+                HStack(spacing: 12) {
+                    ForEach(1...5, id: \.self) { star in
+                        Image(systemName: star <= rating ? "star.fill" : "star")
+                            .font(.largeTitle)
+                            .foregroundStyle(star <= rating ? .yellow : .gray.opacity(0.3))
+                            .onTapGesture {
+                                if rating == star {
+                                    rating = 0
+                                } else {
+                                    rating = star
+                                }
+                            }
+                    }
+                }
+
+                if rating == 0 {
+                    Text("点击星星设定评分")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Button("清除评分") {
+                        rating = 0
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                }
+
+                Spacer()
+            }
+            .navigationTitle("评分")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("确定") { applyRating() }
+                }
+            }
+        }
+    }
+
+    private func applyRating() {
+        for book in books {
+            book.rating = rating > 0 ? rating : nil
         }
         try? modelContext.save()
         dismiss()

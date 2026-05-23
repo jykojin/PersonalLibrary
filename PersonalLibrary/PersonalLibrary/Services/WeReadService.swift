@@ -151,16 +151,16 @@ actor WeReadService {
 
     /// 获取书籍详情
     func fetchBookInfo(bookId: String) async throws -> WeReadShelfBook {
-        let encoded = bookId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? bookId
-        let url = URL(string: "\(baseURL)/web/book/info?bookId=\(encoded)")!
+        let safeId = try validateBookId(bookId)
+        let url = URL(string: "\(baseURL)/web/book/info?bookId=\(safeId)")!
         let data = try await makeRequest(url: url)
         return try JSONDecoder().decode(WeReadShelfBook.self, from: data)
     }
 
     /// 获取书籍划线/高亮列表
     func fetchBookmarks(bookId: String) async throws -> [WeReadBookmark] {
-        let encoded = bookId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? bookId
-        let url = URL(string: "\(baseURL)/web/book/bookmarklist?bookId=\(encoded)")!
+        let safeId = try validateBookId(bookId)
+        let url = URL(string: "\(baseURL)/web/book/bookmarklist?bookId=\(safeId)")!
         let data = try await makeRequest(url: url)
         let response = try JSONDecoder().decode(WeReadBookmarkListResponse.self, from: data)
         return response.updated ?? []
@@ -421,6 +421,17 @@ actor WeReadService {
     }
 
     // MARK: - Private Helpers
+
+    /// 验证 bookId 格式（防止路径注入）
+    private func validateBookId(_ bookId: String) throws -> String {
+        // WeRead bookId 格式：字母数字、下划线、连字符（通常为纯数字或 hex）
+        guard !bookId.isEmpty,
+              bookId.count <= 64,
+              bookId.range(of: "^[a-zA-Z0-9_\\-]+$", options: .regularExpression) != nil else {
+            throw WeReadError.apiError(code: -1, message: "无效的书籍ID")
+        }
+        return bookId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? bookId
+    }
 
     private var userAgent: String {
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
