@@ -10,9 +10,14 @@ struct BookshelfListView: View {
     @State private var shelfToDelete: Bookshelf?
     @State private var showDeleteAlert = false
 
+    /// 有效书籍（排除已归档/逻辑删除）
+    private var activeBooks: [Book] {
+        allBooks.filter { !$0.isArchived }
+    }
+
     /// 微信读书虚拟书架的书籍（按 wereadBookId 判断，最可靠）
     private var weReadBooks: [Book] {
-        allBooks.filter { $0.wereadBookId != nil }
+        activeBooks.filter { $0.wereadBookId != nil }
     }
 
     /// 是否有微信读书书籍
@@ -22,7 +27,7 @@ struct BookshelfListView: View {
 
     /// 未分类书籍（无书架、未归档、且非微信读书导入的书）
     private var uncategorizedBooks: [Book] {
-        allBooks.filter { $0.bookshelf == nil && !$0.isArchived && $0.wereadBookId == nil }
+        activeBooks.filter { $0.bookshelf == nil && $0.wereadBookId == nil }
     }
 
     var body: some View {
@@ -102,7 +107,7 @@ struct BookshelfListView: View {
                 .frame(width: 0.5, height: 36)
 
             VStack(spacing: 4) {
-                Text("\(allBooks.count)")
+                Text("\(activeBooks.count)")
                     .font(.system(size: 28, weight: .bold, design: .rounded))
                     .foregroundStyle(.blue)
                 Text("本书")
@@ -152,7 +157,7 @@ struct BookshelfListView: View {
 
             VStack(spacing: 10) {
                 ForEach(bookshelves.filter { $0.name != "微信读书" }) { shelf in
-                    let shelfBooks = allBooks.filter { $0.bookshelf?.persistentModelID == shelf.persistentModelID }
+                    let shelfBooks = activeBooks.filter { $0.bookshelf?.persistentModelID == shelf.persistentModelID }
                     NavigationLink(destination: BookshelfDetailView(shelf: shelf)) {
                         ShelfCard(
                             name: shelf.name,
@@ -510,7 +515,7 @@ struct WeReadShelfDetailView: View {
 
     private var weReadBooks: [Book] {
         allBooks.filter { book in
-            book.tags?.contains(where: { $0.name == "微信读书" }) == true
+            !book.isArchived && book.tags?.contains(where: { $0.name == "微信读书" }) == true
         }.sorted { $0.addedDate > $1.addedDate }
     }
 
