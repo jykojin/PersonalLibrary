@@ -12,9 +12,10 @@ final class PersonalLibraryUITests: XCTestCase {
         app.launch()
 
         // 验证 TabBar 存在
+        XCTAssertTrue(app.tabBars.buttons["藏书"].exists)
         XCTAssertTrue(app.tabBars.buttons["书架"].exists)
-        XCTAssertTrue(app.tabBars.buttons["阅读"].exists)
         XCTAssertTrue(app.tabBars.buttons["统计"].exists)
+        XCTAssertTrue(app.tabBars.buttons["更多"].exists)
     }
 
     @MainActor
