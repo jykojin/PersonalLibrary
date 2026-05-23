@@ -452,10 +452,8 @@ struct BookListView: View {
 // MARK: - 书籍行视图
 
 struct BookRowView: View {
-    @Environment(\.modelContext) private var modelContext
     let book: Book
-    @State private var cachedImage: UIImage?
-    @State private var hasFetchedCover = false
+    @State private var coverImage: UIImage?
     @State private var fetchTask: Task<Void, Never>?
 
     var body: some View {
@@ -498,6 +496,8 @@ struct BookRowView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+        .onAppear { loadCoverOnAppear() }
+        .onDisappear { cancelFetch() }
     }
 
     // MARK: - 状态/类型/标签行
@@ -543,69 +543,67 @@ struct BookRowView: View {
 
     @ViewBuilder
     private var bookCover: some View {
-        if let image = cachedImage {
+        if let image = coverImage {
             Image(uiImage: image)
                 .resizable()
                 .scaledToFill()
         } else {
             coverPlaceholder
-                .onAppear { scheduleFetch() }
-                .onDisappear { cancelFetch() }
         }
     }
 
-    /// 延迟 0.3s 触发下载 — 快速滑过的行不会触发网络请求
-    private func scheduleFetch() {
-        guard !hasFetchedCover else { return }
+    /// 行出现时加载封面 — 全异步，不阻塞主线程布局
+    private func loadCoverOnAppear() {
+        if coverImage != nil { return }
 
-        // 先尝试从内存缓存取
-        let cacheKey = book.title + book.author
+        let cacheKey = "\(book.title)|\(book.author)"
+
+        // 1. 内存缓存命中 → 零开销，同步返回
         if let cached = CoverImageCache.shared.image(for: cacheKey) {
-            cachedImage = cached
+            coverImage = cached
             return
         }
 
-        // 本地 Data 已有，解码并缓存
-        if let data = book.coverImageData, let img = UIImage(data: data) {
-            CoverImageCache.shared.set(img, for: cacheKey)
-            cachedImage = img
-            return
-        }
-
-        // 延迟 0.3s，如果行还在屏幕上才触发网络下载
+        // 2. 其余情况全部走异步（包括读 coverImageData，避免 SwiftData 主线程 I/O）
         fetchTask = Task {
-            try? await Task.sleep(for: .milliseconds(300))
+            // 读取本地 blob（可能触发 SwiftData fault，但在 Task 内不阻塞 layout）
+            if let data = book.coverImageData, !data.isEmpty {
+                let img = await Task.detached(priority: .utility) {
+                    UIImage(data: data)
+                }.value
+                guard let img, !Task.isCancelled else { return }
+                CoverImageCache.shared.set(img, for: cacheKey)
+                coverImage = img
+                return
+            }
+
+            // 无本地数据 → 延迟 500ms 网络下载（快速滑过自动取消）
+            try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
-            await fetchAndCacheCover()
+
+            let data = await CoverFetchService.shared.fetchCoverThrottled(
+                coverImageURL: book.coverImageURL,
+                isbn: book.isbn,
+                doubanURL: book.doubanURL,
+                title: book.title,
+                author: book.author
+            )
+
+            guard let data, !Task.isCancelled else { return }
+            let img = await Task.detached(priority: .utility) {
+                UIImage(data: data)
+            }.value
+            guard let img, !Task.isCancelled else { return }
+
+            CoverImageCache.shared.set(img, for: cacheKey)
+            coverImage = img
+            book.coverImageData = data
         }
     }
 
     private func cancelFetch() {
         fetchTask?.cancel()
         fetchTask = nil
-    }
-
-    private func fetchAndCacheCover() async {
-        guard !hasFetchedCover else { return }
-        hasFetchedCover = true
-
-        let data = await CoverFetchService.shared.fetchCoverThrottled(
-            coverImageURL: book.coverImageURL,
-            isbn: book.isbn,
-            doubanURL: book.doubanURL,
-            title: book.title,
-            author: book.author
-        )
-
-        guard let data, !Task.isCancelled else { return }
-
-        if let img = UIImage(data: data) {
-            let cacheKey = book.title + book.author
-            CoverImageCache.shared.set(img, for: cacheKey)
-            cachedImage = img
-            // 写入模型持久化（不 save，由 SwiftData 自动合并）
-            book.coverImageData = data
-        }
     }
 
     private var coverPlaceholder: some View {

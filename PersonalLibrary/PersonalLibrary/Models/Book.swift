@@ -59,8 +59,8 @@ final class Book {
     var bookDescription: String?  // 书籍简介
     var authorDescription: String?  // 作者简介
 
-    // 封面
-    var coverImageData: Data?
+    // 封面（externalStorage: 大数据存外部文件，不内联 SQLite，避免 query 时加载）
+    @Attribute(.externalStorage) var coverImageData: Data?
     var coverImageURL: String?  // 封面图片 URL（备用）
 
     // 阅读状态

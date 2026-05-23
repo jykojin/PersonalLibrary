@@ -78,10 +78,25 @@ struct StatisticsView: View {
         let monthlyAddedByType: [String: (total: Int, paper: Int, ebook: Int, audiobook: Int)]
         let monthlyFinishedByType: [String: (total: Int, paper: Int, ebook: Int, audiobook: Int)]
         let yearlyAddedByType: [(year: Int, total: Int, paper: Int, ebook: Int, audiobook: Int)]
+
+        static let empty = CachedStatistics(
+            bookCount: 0, totalBooks: 0, booksRead: 0, booksReading: 0,
+            booksWishlist: 0, booksDropped: 0, booksIdle: 0,
+            paperCount: 0, ebookCount: 0, audiobookCount: 0,
+            paperStats: TypeStatusStats(total: 0, reading: 0, finished: 0, wishlist: 0, dropped: 0, idle: 0),
+            ebookStats: TypeStatusStats(total: 0, reading: 0, finished: 0, wishlist: 0, dropped: 0, idle: 0),
+            audiobookStats: TypeStatusStats(total: 0, reading: 0, finished: 0, wishlist: 0, dropped: 0, idle: 0),
+            ratedBooks: [], averageRating: 0,
+            monthlyFinished: [], yearlyAdded: [], monthlyAdded: [],
+            topTags: [], bookshelfStats: [],
+            manualCount: 0, scannedCount: 0, importedCount: 0, wereadImportedCount: 0,
+            topAuthors: [], topPublishers: [], topCategories: [],
+            allYears: [], monthlyAddedByType: [:], monthlyFinishedByType: [:], yearlyAddedByType: []
+        )
     }
 
     private var stats: CachedStatistics {
-        cachedStats ?? computeStats()
+        cachedStats ?? .empty
     }
 
     // MARK: - 基础统计
@@ -121,8 +136,8 @@ struct StatisticsView: View {
             }
             .background(Color(.systemGroupedBackground))
             .navigationTitle("阅读统计")
-            .task { cachedStats = computeStats() }
-            .onChange(of: books.count) { _, _ in cachedStats = computeStats() }
+            .task { await computeStatsAsync() }
+            .onChange(of: books.count) { _, _ in Task { await computeStatsAsync() } }
         }
     }
 
@@ -802,10 +817,30 @@ struct StatisticsView: View {
         return "\(minutes) 分钟"
     }
 
+    /// 异步计算统计数据，不阻塞主线程
+    @MainActor
+    private func computeStatsAsync() async {
+        // 捕获数据到本地变量，防止后台闭包引用 @Query
+        let booksCopy = books
+        let recordsCopy = records
+        let bookshelvesCopy = bookshelves
+        let result = await Task.detached(priority: .userInitiated) {
+            Self.computeStatsOnBackground(books: booksCopy, records: recordsCopy, bookshelves: bookshelvesCopy)
+        }.value
+        cachedStats = result
+    }
+
+    /// 后台线程纯计算（无 SwiftData 访问）
+    private static func computeStatsOnBackground(books: [Book], records: [ReadingRecord], bookshelves: [Bookshelf]) -> CachedStatistics {
+        computeStatsImpl(books: books, records: records, bookshelves: bookshelves)
+    }
+
     /// 一次遍历计算所有统计数据
-    private func computeStats() -> CachedStatistics {
+    private static func computeStatsImpl(books: [Book], records: [ReadingRecord], bookshelves: [Bookshelf]) -> CachedStatistics {
         let calendar = Calendar.current
         let now = Date()
+        // 排除已归档的书（逻辑删除）
+        let books = books.filter { !$0.isArchived }
 
         var booksRead = 0, booksReading = 0, booksWishlist = 0, booksDropped = 0, booksIdle = 0
         var paperCount = 0, ebookCount = 0, audiobookCount = 0

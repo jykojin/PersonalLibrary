@@ -37,11 +37,12 @@ actor WeReadSyncService {
         var newBooksImported: Int = 0
         var progressUpdated: Int = 0
         var statusUpdated: Int = 0
+        var booksArchived: Int = 0
         var totalRemote: Int = 0
         var error: String?
 
         var hasChanges: Bool {
-            newBooksImported > 0 || progressUpdated > 0 || statusUpdated > 0
+            newBooksImported > 0 || progressUpdated > 0 || statusUpdated > 0 || booksArchived > 0
         }
 
         var summary: String {
@@ -51,6 +52,7 @@ actor WeReadSyncService {
             if newBooksImported > 0 { parts.append("新增 \(newBooksImported) 本") }
             if progressUpdated > 0 { parts.append("进度更新 \(progressUpdated) 本") }
             if statusUpdated > 0 { parts.append("状态更新 \(statusUpdated) 本") }
+            if booksArchived > 0 { parts.append("移除 \(booksArchived) 本") }
             return parts.joined(separator: "，")
         }
     }
@@ -233,6 +235,21 @@ actor WeReadSyncService {
                 }
             }
         }
+
+        // 6c. 删除检测：本地有 wereadBookId 但远程书架中不存在 → 逻辑删除
+        let remoteBookIds = Set(remoteBooks.map(\.id))
+        let archivedCount = await MainActor.run {
+            var count = 0
+            for book in localWeReadBooks {
+                guard let wid = book.wereadBookId else { continue }
+                if !remoteBookIds.contains(wid) && !book.isArchived {
+                    book.isArchived = true
+                    count += 1
+                }
+            }
+            return count
+        }
+        result.booksArchived = archivedCount
 
         // 7. 最终保存
         do {

@@ -156,6 +156,17 @@ struct WeReadSyncView: View {
                                 .font(.subheadline)
                             }
 
+                            if result.booksArchived > 0 {
+                                HStack {
+                                    Label("已移除", systemImage: "trash.circle.fill")
+                                        .foregroundStyle(.red)
+                                    Spacer()
+                                    Text("\(result.booksArchived) 本")
+                                        .foregroundStyle(.secondary)
+                                }
+                                .font(.subheadline)
+                            }
+
                             if !result.hasChanges {
                                 Label("已是最新，无需更新", systemImage: "checkmark.circle")
                                     .foregroundStyle(.green)

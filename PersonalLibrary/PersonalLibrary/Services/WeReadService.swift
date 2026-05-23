@@ -170,7 +170,7 @@ actor WeReadService {
     func renewCookie() async throws -> Bool {
         var request = URLRequest(url: URL(string: "\(baseURL)/web/login/renewal")!)
         request.httpMethod = "POST"
-        request.setValue(cookies, forHTTPHeaderField: "Cookie")
+        request.setValue(getCookies(), forHTTPHeaderField: "Cookie")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         let body = ["rq": "%2Fweb%2Fshelf%2Fsync"]
@@ -180,6 +180,9 @@ actor WeReadService {
 
         if let httpResponse = response as? HTTPURLResponse,
            httpResponse.statusCode == 200 {
+            // 关键：从响应头获取新 Cookie 并更新存储
+            updateCookiesFromResponse(httpResponse)
+
             // 检查响应体
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let errCode = json["errCode"] as? Int {
@@ -188,6 +191,37 @@ actor WeReadService {
             return true
         }
         return false
+    }
+
+    /// 从 HTTP 响应头的 Set-Cookie 更新本地存储的 Cookie
+    private func updateCookiesFromResponse(_ response: HTTPURLResponse) {
+        guard let headerFields = response.allHeaderFields as? [String: String],
+              let url = response.url else { return }
+
+        let newCookies = HTTPCookie.cookies(withResponseHeaderFields: headerFields, for: url)
+        guard !newCookies.isEmpty else { return }
+
+        // 解析当前已有的 cookie 为字典
+        var cookieDict: [String: String] = [:]
+        let currentCookies = getCookies()
+        for pair in currentCookies.split(separator: ";") {
+            let trimmed = pair.trimmingCharacters(in: .whitespaces)
+            if let eqIndex = trimmed.firstIndex(of: "=") {
+                let key = String(trimmed[trimmed.startIndex..<eqIndex])
+                let value = String(trimmed[trimmed.index(after: eqIndex)...])
+                cookieDict[key] = value
+            }
+        }
+
+        // 用响应中的新 cookie 覆盖旧值
+        for cookie in newCookies {
+            cookieDict[cookie.name] = cookie.value
+        }
+
+        // 重新组合为 cookie 字符串并保存
+        let updatedString = cookieDict.map { "\($0.key)=\($0.value)" }.joined(separator: "; ")
+        self.cookies = updatedString
+        KeychainService.save(key: KeychainService.wereadCookieKey, string: updatedString)
     }
 
     // MARK: - 导入逻辑
@@ -449,6 +483,9 @@ actor WeReadService {
         guard let httpResponse = response as? HTTPURLResponse else {
             throw WeReadError.networkError
         }
+
+        // 从响应头更新 Cookie（服务器可能在任意请求中轮换）
+        updateCookiesFromResponse(httpResponse)
 
         // 检查 API 错误码
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
