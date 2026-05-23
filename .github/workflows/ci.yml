@@ -10,6 +10,9 @@ jobs:
   build-and-test:
     runs-on: macos-15
     timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: PersonalLibrary
 
     steps:
       - name: Checkout
@@ -41,4 +44,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-results
-          path: TestResults.xcresult
+          path: PersonalLibrary/TestResults.xcresult
