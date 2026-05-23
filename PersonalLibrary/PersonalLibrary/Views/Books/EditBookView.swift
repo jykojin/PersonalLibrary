@@ -160,9 +160,9 @@ struct EditBookView: View {
     private var basicInfoSection: some View {
         Section("基本信息") {
             EditLabeledField(label: "书名", text: $title, required: true)
-            EditLabeledField(label: "作者", text: $author)
-            EditLabeledField(label: "译者", text: $translator)
-            EditLabeledField(label: "出版社", text: $publisher)
+            MultiValueField(label: "作者", text: $author)
+            MultiValueField(label: "译者", text: $translator)
+            MultiValueField(label: "出版社", text: $publisher)
             EditLabeledField(label: "ISBN", text: $isbn)
             EditLabeledField(label: "定价", text: $price)
             EditLabeledField(label: "总页数", text: $totalPages)
@@ -408,6 +408,80 @@ struct EditBookView: View {
 
         try? modelContext.save()
         dismiss()
+    }
+}
+
+// MARK: - 多值标签字段（作者/译者/出版社）
+
+private struct MultiValueField: View {
+    let label: String
+    @Binding var text: String
+    @State private var inputText = ""
+
+    private var items: [String] {
+        text.components(separatedBy: ", ")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // 标签列表
+            if !items.isEmpty {
+                FlowLayout(spacing: 6) {
+                    ForEach(items, id: \.self) { item in
+                        HStack(spacing: 3) {
+                            Text(item)
+                                .font(.subheadline)
+                            Button {
+                                removeItem(item)
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 9, weight: .bold))
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color.blue.opacity(0.1))
+                        .foregroundStyle(.blue)
+                        .clipShape(Capsule())
+                    }
+                }
+            }
+
+            // 输入行
+            HStack {
+                Text(label)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 70, alignment: .leading)
+                TextField("添加\(label)", text: $inputText)
+                    .multilineTextAlignment(.trailing)
+                    .onSubmit { addCurrentInput() }
+                if !inputText.trimmingCharacters(in: .whitespaces).isEmpty {
+                    Button {
+                        addCurrentInput()
+                    } label: {
+                        Image(systemName: "plus.circle.fill")
+                            .foregroundStyle(.blue)
+                    }
+                }
+            }
+        }
+    }
+
+    private func addCurrentInput() {
+        let trimmed = inputText.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        var current = items
+        current.append(trimmed)
+        text = current.joined(separator: ", ")
+        inputText = ""
+    }
+
+    private func removeItem(_ item: String) {
+        var current = items
+        current.removeAll { $0 == item }
+        text = current.joined(separator: ", ")
     }
 }
 
