@@ -454,8 +454,9 @@ struct BookListView: View {
 struct BookRowView: View {
     @Environment(\.modelContext) private var modelContext
     let book: Book
-    @State private var fetchedCoverData: Data?
+    @State private var cachedImage: UIImage?
     @State private var hasFetchedCover = false
+    @State private var fetchTask: Task<Void, Never>?
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -542,44 +543,67 @@ struct BookRowView: View {
 
     @ViewBuilder
     private var bookCover: some View {
-        if let data = book.coverImageData, let uiImage = UIImage(data: data) {
-            Image(uiImage: uiImage)
-                .resizable()
-                .scaledToFill()
-        } else if let data = fetchedCoverData, let uiImage = UIImage(data: data) {
-            Image(uiImage: uiImage)
+        if let image = cachedImage {
+            Image(uiImage: image)
                 .resizable()
                 .scaledToFill()
         } else {
             coverPlaceholder
-                .task(id: book.title) { await fetchAndCacheCover() }
+                .onAppear { scheduleFetch() }
+                .onDisappear { cancelFetch() }
         }
+    }
+
+    /// 延迟 0.3s 触发下载 — 快速滑过的行不会触发网络请求
+    private func scheduleFetch() {
+        guard !hasFetchedCover else { return }
+
+        // 先尝试从内存缓存取
+        let cacheKey = book.title + book.author
+        if let cached = CoverImageCache.shared.image(for: cacheKey) {
+            cachedImage = cached
+            return
+        }
+
+        // 本地 Data 已有，解码并缓存
+        if let data = book.coverImageData, let img = UIImage(data: data) {
+            CoverImageCache.shared.set(img, for: cacheKey)
+            cachedImage = img
+            return
+        }
+
+        // 延迟 0.3s，如果行还在屏幕上才触发网络下载
+        fetchTask = Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            await fetchAndCacheCover()
+        }
+    }
+
+    private func cancelFetch() {
+        fetchTask?.cancel()
+        fetchTask = nil
     }
 
     private func fetchAndCacheCover() async {
         guard !hasFetchedCover else { return }
         hasFetchedCover = true
 
-        // 优先从 coverImageURL 直接下载（豆瓣图片需要 Referer）
-        if let urlStr = book.coverImageURL, !urlStr.isEmpty {
-            let data = await CoverFetchService.shared.downloadWithReferer(urlStr: urlStr)
-            if let data, data.count > 100 {
-                fetchedCoverData = data
-                book.coverImageData = data
-                // 不立即 save，由 SwiftData 自动合并或下次 save 时持久化
-                return
-            }
-        }
-
-        // 备用：通过豆瓣搜索、豆瓣页面、Open Library
-        let data = await CoverFetchService.shared.fetchCover(
+        let data = await CoverFetchService.shared.fetchCoverThrottled(
+            coverImageURL: book.coverImageURL,
             isbn: book.isbn,
             doubanURL: book.doubanURL,
             title: book.title,
             author: book.author
         )
-        if let data {
-            fetchedCoverData = data
+
+        guard let data, !Task.isCancelled else { return }
+
+        if let img = UIImage(data: data) {
+            let cacheKey = book.title + book.author
+            CoverImageCache.shared.set(img, for: cacheKey)
+            cachedImage = img
+            // 写入模型持久化（不 save，由 SwiftData 自动合并）
             book.coverImageData = data
         }
     }

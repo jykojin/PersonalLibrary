@@ -1,5 +1,63 @@
 import Foundation
 import SwiftData
+import UIKit
+
+// MARK: - 简易异步信号量（限制并发数）
+
+/// 轻量级异步信号量，用于限制并发任务数
+actor AsyncSemaphore {
+    private let limit: Int
+    private var count: Int
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int) {
+        self.limit = limit
+        self.count = limit
+    }
+
+    func wait() async {
+        if count > 0 {
+            count -= 1
+        } else {
+            await withCheckedContinuation { continuation in
+                waiters.append(continuation)
+            }
+        }
+    }
+
+    func signal() {
+        if waiters.isEmpty {
+            count = min(count + 1, limit)
+        } else {
+            let waiter = waiters.removeFirst()
+            waiter.resume()
+        }
+    }
+}
+
+// MARK: - 封面内存缓存
+
+/// UIImage 内存缓存，避免重复 Data→UIImage 解码
+final class CoverImageCache: @unchecked Sendable {
+    static let shared = CoverImageCache()
+
+    private let cache = NSCache<NSString, UIImage>()
+
+    init() {
+        cache.countLimit = 200  // 最多缓存 200 张
+        cache.totalCostLimit = 100 * 1024 * 1024  // 100MB 上限
+    }
+
+    func image(for key: String) -> UIImage? {
+        cache.object(forKey: key as NSString)
+    }
+
+    func set(_ image: UIImage, for key: String) {
+        cache.setObject(image, forKey: key as NSString)
+    }
+}
+
+// MARK: - 封面获取服务
 
 /// 封面图片获取服务
 /// 从豆瓣页面解析封面图片 URL，下载后缓存到本地
@@ -8,6 +66,32 @@ actor CoverFetchService {
     static let shared = CoverFetchService()
 
     private var inFlightRequests: Set<String> = []
+
+    /// 并发控制：最多同时 3 个封面下载，防止滚动时网络风暴
+    private let semaphore = AsyncSemaphore(limit: 3)
+
+    /// 带并发限制的封面获取入口（供 BookRowView 调用）
+    func fetchCoverThrottled(
+        coverImageURL: String?,
+        isbn: String?,
+        doubanURL: String?,
+        title: String?,
+        author: String?
+    ) async -> Data? {
+        await semaphore.wait()
+        defer { Task { await semaphore.signal() } }
+
+        // 优先 coverImageURL 直接下载
+        if let urlStr = coverImageURL, !urlStr.isEmpty {
+            let data = await downloadWithReferer(urlStr: urlStr)
+            if let data, data.count > 100 {
+                return data
+            }
+        }
+
+        // 备用：豆瓣搜索 + Open Library
+        return await fetchCover(isbn: isbn, doubanURL: doubanURL, title: title, author: author)
+    }
 
     /// 从豆瓣链接获取封面图片数据
     func fetchCoverFromDouban(doubanURL: String) async -> Data? {

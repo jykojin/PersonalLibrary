@@ -22,6 +22,7 @@ struct PersonalLibraryApp: App {
                     WeChatAuthManager.shared.handleOpenURL(url)
                 }
                 .task { migrateOldAddSource(); migrateWeReadBookshelf() }
+                .task { await backgroundCoverRefresh() }
         }
         .modelContainer(modelContainer)
         .onChange(of: scenePhase) { _, newPhase in
@@ -129,6 +130,59 @@ struct PersonalLibraryApp: App {
             if result.hasChanges {
                 print("[WeReadSync] 自动同步完成: \(result.summary)")
             }
+        }
+    }
+
+    /// 后台静默补全缺失封面
+    /// 启动后延迟 5s 开始，低优先级逐本下载，每本间隔 2s，不阻塞 UI
+    @MainActor
+    private func backgroundCoverRefresh() async {
+        // 延迟 5 秒，等 UI 加载完毕
+        try? await Task.sleep(for: .seconds(5))
+
+        let context = modelContainer.mainContext
+        let allBooks: [Book]
+        do {
+            allBooks = try context.fetch(FetchDescriptor<Book>())
+        } catch {
+            return
+        }
+
+        // 筛选没有封面但有 URL 或有 ISBN/豆瓣链接的书
+        let booksNeedingCover = allBooks.filter { book in
+            book.coverImageData == nil && !book.isArchived &&
+            (book.coverImageURL != nil || book.isbn != nil || book.doubanURL != nil)
+        }
+
+        guard !booksNeedingCover.isEmpty else { return }
+        print("[BackgroundCover] 开始补全 \(booksNeedingCover.count) 本书的封面")
+
+        var fetched = 0
+        for book in booksNeedingCover {
+            // 每本间隔 2s，降低对豆瓣 API 的压力
+            try? await Task.sleep(for: .seconds(2))
+
+            let data = await CoverFetchService.shared.fetchCoverThrottled(
+                coverImageURL: book.coverImageURL,
+                isbn: book.isbn,
+                doubanURL: book.doubanURL,
+                title: book.title,
+                author: book.author
+            )
+
+            if let data, data.count > 100 {
+                book.coverImageData = data
+                fetched += 1
+                // 每补全 10 本保存一次
+                if fetched % 10 == 0 {
+                    try? context.save()
+                }
+            }
+        }
+
+        if fetched > 0 {
+            try? context.save()
+            print("[BackgroundCover] 后台补全完成：\(fetched)/\(booksNeedingCover.count) 本")
         }
     }
 }
