@@ -43,6 +43,7 @@
 		C551971A4E370D924C8088A8 /* EditBookView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8094BF7B50E8C310346BD62 /* EditBookView.swift */; };
 		CB816F264CEE6FC093F34C85 /* Book.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEFD01915041338525804236 /* Book.swift */; };
 		CC8BC6559F0277E35E120C23 /* BatchActionBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA5005EFDEC15CED4F9D5889 /* BatchActionBar.swift */; };
+		E4F62D5464026A921EBCB6E4 /* DoubanDescriptionFetcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4D9FBC97AC9CCCC3F252253 /* DoubanDescriptionFetcher.swift */; };
 		E6E6169E7D9AD9BD37E5B956 /* AuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD70F02DDA17AEF6E793FE28 /* AuthService.swift */; };
 		E7E73C9ED56AB64680A0DBA6 /* AddBookView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B85318DE00198B35B0A6090 /* AddBookView.swift */; };
 		E8C05F80D343BE7A188CB096 /* WeReadSyncView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 705F4B59E1366B9C933D78BE /* WeReadSyncView.swift */; };
@@ -99,6 +100,7 @@
 		AD70F02DDA17AEF6E793FE28 /* AuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthService.swift; sourceTree = "<group>"; };
 		AE64F2E7B6950EAE60EA9D19 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		B0D15753503BAB153F60B9B6 /* Tag.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tag.swift; sourceTree = "<group>"; };
+		B4D9FBC97AC9CCCC3F252253 /* DoubanDescriptionFetcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DoubanDescriptionFetcher.swift; sourceTree = "<group>"; };
 		B72B0F0BC9341F3A436CE078 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		BA5005EFDEC15CED4F9D5889 /* BatchActionBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatchActionBar.swift; sourceTree = "<group>"; };
 		BC5361797A17134EBBC3B518 /* Bookshelf.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Bookshelf.swift; sourceTree = "<group>"; };
@@ -226,6 +228,7 @@
 				89CB1AAC1ECF1D2707E175DA /* BackupService.swift */,
 				DD64B2DD2CB3C57DFE3DE2FB /* BookService.swift */,
 				F77EAA99251DD746575AEE56 /* CoverFetchService.swift */,
+				B4D9FBC97AC9CCCC3F252253 /* DoubanDescriptionFetcher.swift */,
 				4D2E3C7560B14260793E3C54 /* ExcelImportExportService.swift */,
 				1C274353DDACF027AB1E5A87 /* ISBNLookupService.swift */,
 				7D3F152D29BC867FAF1D8381 /* KeychainService.swift */,
@@ -454,6 +457,7 @@
 				5817492A88473ABA6FB56F9B /* BookshelfListView.swift in Sources */,
 				52D01BBD46ACCD3E5E5ABEAA /* ContentView.swift in Sources */,
 				EF65473F98061A197DD20854 /* CoverFetchService.swift in Sources */,
+				E4F62D5464026A921EBCB6E4 /* DoubanDescriptionFetcher.swift in Sources */,
 				C551971A4E370D924C8088A8 /* EditBookView.swift in Sources */,
 				A490080504DE0091F1993BE0 /* ExcelImportExportService.swift in Sources */,
 				8DBF25BCFE9473223BA371E0 /* FilteredBooksView.swift in Sources */,

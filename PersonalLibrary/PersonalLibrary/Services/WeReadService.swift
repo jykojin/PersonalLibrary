@@ -242,9 +242,10 @@ actor WeReadService {
             }
         }
 
-        // 转换为导入条目
+        // 转换为导入条目（跳过格式异常的 bookId）
         var items: [WeReadImportItem] = []
         for book in books {
+            guard (try? validateBookId(book.bookId)) != nil else { continue }
             let progress = progressMap[book.bookId]
             let ttsTime = progress?.ttsTime ?? 0
             let readingTime = progress?.readingTime ?? 0

@@ -68,6 +68,9 @@ actor ISBNLookupService {
             return nil
         }
 
+        // 防止异常大响应导致内存耗尽
+        guard data.count <= 5_000_000 else { return nil }
+
         guard let html = String(data: data, encoding: .utf8) else { return nil }
 
         // 解析书名
@@ -180,7 +183,7 @@ actor ISBNLookupService {
         let content = String(afterDiv[..<divEnd.lowerBound])
 
         // 去掉 HTML 标签，保留文本
-        let text = content.replacingOccurrences(of: "<[^>]+>", with: "\n", options: .regularExpression)
+        let text = content.replacingOccurrences(of: "<[^>]{0,1000}>", with: "\n", options: .regularExpression)
             .components(separatedBy: "\n")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
@@ -199,7 +202,7 @@ actor ISBNLookupService {
         guard let divEnd = afterDiv.range(of: "</div>") else { return nil }
         let content = String(afterDiv[..<divEnd.lowerBound])
 
-        let text = content.replacingOccurrences(of: "<[^>]+>", with: "\n", options: .regularExpression)
+        let text = content.replacingOccurrences(of: "<[^>]{0,1000}>", with: "\n", options: .regularExpression)
             .components(separatedBy: "\n")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }

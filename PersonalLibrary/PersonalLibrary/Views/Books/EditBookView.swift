@@ -26,7 +26,6 @@ struct EditBookView: View {
     @State private var bookType: BookType = .paper
     @State private var status: ReadingStatus = .idle
     @State private var rating: Int = 0
-    @State private var currentPage: String = ""
 
     // 描述
     @State private var bookDescription: String = ""
@@ -167,8 +166,6 @@ struct EditBookView: View {
             EditLabeledField(label: "ISBN", text: $isbn)
             EditLabeledField(label: "定价", text: $price)
             EditLabeledField(label: "总页数", text: $totalPages)
-                .keyboardType(.numberPad)
-            EditLabeledField(label: "当前页", text: $currentPage)
                 .keyboardType(.numberPad)
 
             // 出版日期
@@ -351,7 +348,6 @@ struct EditBookView: View {
         isbn = book.isbn ?? ""
         price = book.price ?? ""
         totalPages = book.totalPages > 0 ? String(book.totalPages) : ""
-        currentPage = book.currentPage > 0 ? String(book.currentPage) : ""
         publishDate = book.publishDate
         doubanURL = book.doubanURL ?? ""
         bookType = book.bookType
@@ -373,7 +369,6 @@ struct EditBookView: View {
         book.isbn = isbn.isEmpty ? nil : isbn
         book.price = price.isEmpty ? nil : price
         book.totalPages = Int(totalPages) ?? 0
-        book.currentPage = Int(currentPage) ?? 0
         book.publishDate = publishDate
         book.doubanURL = doubanURL.isEmpty ? nil : doubanURL
         book.bookType = bookType

@@ -2,14 +2,14 @@ import SwiftUI
 import SwiftData
 
 /// 数据维护视图
-/// 三个 Tab：作者、出版社、标签
+/// 四个 Tab：作者、出版社、标签、批量工具
 /// 点击条目 → 查看关联图书；左滑 → 修改名称
 struct DataMaintenanceView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Book.addedDate, order: .reverse) private var allBooks: [Book]
     @Query private var allTags: [Tag]
 
-    @State private var selectedTab = 0  // 0=作者, 1=出版社, 2=标签
+    @State private var selectedTab = 0  // 0=作者, 1=出版社, 2=标签, 3=批量工具
     @State private var searchText = ""
 
     // 编辑
@@ -27,6 +27,13 @@ struct DataMaintenanceView: View {
     @State private var showingCleanResult = false
     @State private var cleanResultMessage = ""
 
+    // 批量增补进度
+    @State private var batchProgress: Double = 0
+    @State private var batchTotal: Int = 0
+    @State private var batchCurrent: Int = 0
+    @State private var batchStatusText: String = ""
+    @State private var isBatchRunning = false
+
     var body: some View {
         VStack(spacing: 0) {
             // Tab 切换
@@ -34,10 +41,129 @@ struct DataMaintenanceView: View {
                 Text("作者").tag(0)
                 Text("出版社").tag(1)
                 Text("标签").tag(2)
+                Text("批量工具").tag(3)
             }
             .pickerStyle(.segmented)
             .padding()
 
+            if selectedTab == 3 {
+                batchToolsView
+            } else {
+                dataListView
+            }
+        }
+        .navigationTitle("数据维护")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $editingItem) { item in
+            editSheet(for: item)
+        }
+        .alert("完成", isPresented: $showingResult) {
+            Button("好的") {}
+        } message: {
+            Text(resultMessage)
+        }
+        .alert("完成", isPresented: $showingCleanResult) {
+            Button("好的") {}
+        } message: {
+            Text(cleanResultMessage)
+        }
+        .alert("新增标签", isPresented: $showingAddTag) {
+            TextField("标签名称", text: $newTagName)
+            Button("添加") { addTag() }
+            Button("取消", role: .cancel) { newTagName = "" }
+        }
+    }
+
+    // MARK: - 批量工具 Tab
+
+    private var batchToolsView: some View {
+        List {
+            Section {
+                Button {
+                    Task { await cleanAuthorNames() }
+                } label: {
+                    HStack {
+                        Label("作者名繁转简", systemImage: "character.textbox")
+                        Spacer()
+                        if isCleaning {
+                            ProgressView().controlSize(.small)
+                        }
+                    }
+                }
+                .disabled(isCleaning || isBatchRunning)
+
+                Button {
+                    Task { await normalizeMultiValues() }
+                } label: {
+                    HStack {
+                        Label("规范分隔符", systemImage: "person.2")
+                        Spacer()
+                        if isCleaning {
+                            ProgressView().controlSize(.small)
+                        }
+                    }
+                }
+                .disabled(isCleaning || isBatchRunning)
+            } header: {
+                Text("格式修正")
+            } footer: {
+                Text("繁转简：「張愛玲」→「张爱玲」\n规范分隔符：统一用英文逗号+空格分隔")
+            }
+
+            Section {
+                Button {
+                    Task { await batchFillBookDescriptions() }
+                } label: {
+                    HStack {
+                        Label("批量增补图书简介", systemImage: "text.book.closed")
+                        Spacer()
+                        if isBatchRunning && batchStatusText.contains("图书简介") {
+                            ProgressView().controlSize(.small)
+                        }
+                    }
+                }
+                .disabled(isCleaning || isBatchRunning)
+
+                Button {
+                    Task { await batchFillAuthorDescriptions() }
+                } label: {
+                    HStack {
+                        Label("批量增补作者简介", systemImage: "person.text.rectangle")
+                        Spacer()
+                        if isBatchRunning && batchStatusText.contains("作者简介") {
+                            ProgressView().controlSize(.small)
+                        }
+                    }
+                }
+                .disabled(isCleaning || isBatchRunning)
+            } header: {
+                Text("内容增补")
+            } footer: {
+                Text("从豆瓣获取缺失的图书简介和作者简介")
+            }
+
+            // 进度区域
+            if isBatchRunning {
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(batchStatusText)
+                            .font(.subheadline)
+                        ProgressView(value: batchProgress)
+                        Text("\(batchCurrent)/\(batchTotal)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+    }
+
+    // MARK: - 数据列表 View
+
+    private var dataListView: some View {
+        VStack(spacing: 0) {
             // 搜索框
             HStack {
                 Image(systemName: "magnifyingglass")
@@ -62,41 +188,6 @@ struct DataMaintenanceView: View {
 
             // 列表
             List {
-                // 工具区（仅作者/出版社 tab）
-                if selectedTab != 2 {
-                    Section {
-                        Button {
-                            Task { await cleanAuthorNames() }
-                        } label: {
-                            HStack {
-                                Label("作者名繁转简", systemImage: "character.textbox")
-                                Spacer()
-                                if isCleaning {
-                                    ProgressView().controlSize(.small)
-                                }
-                            }
-                        }
-                        .disabled(isCleaning)
-
-                        Button {
-                            Task { await normalizeMultiValues() }
-                        } label: {
-                            HStack {
-                                Label("规范分隔符", systemImage: "person.2")
-                                Spacer()
-                                if isCleaning {
-                                    ProgressView().controlSize(.small)
-                                }
-                            }
-                        }
-                        .disabled(isCleaning)
-                    } header: {
-                        Text("批量工具")
-                    } footer: {
-                        Text("繁转简：「張愛玲」→「张爱玲」\n规范分隔符：统一用英文逗号+空格分隔")
-                    }
-                }
-
                 // 数据列表
                 Section {
                     ForEach(filteredItems) { item in
@@ -145,26 +236,6 @@ struct DataMaintenanceView: View {
                 }
             }
             .listStyle(.plain)
-        }
-        .navigationTitle("数据维护")
-        .navigationBarTitleDisplayMode(.inline)
-        .sheet(item: $editingItem) { item in
-            editSheet(for: item)
-        }
-        .alert("完成", isPresented: $showingResult) {
-            Button("好的") {}
-        } message: {
-            Text(resultMessage)
-        }
-        .alert("完成", isPresented: $showingCleanResult) {
-            Button("好的") {}
-        } message: {
-            Text(cleanResultMessage)
-        }
-        .alert("新增标签", isPresented: $showingAddTag) {
-            TextField("标签名称", text: $newTagName)
-            Button("添加") { addTag() }
-            Button("取消", role: .cancel) { newTagName = "" }
         }
     }
 
@@ -413,6 +484,140 @@ struct DataMaintenanceView: View {
             .filter { !$0.isEmpty }
         if parts.count <= 1 { return value.trimmingCharacters(in: .whitespaces) }
         return parts.joined(separator: ", ")
+    }
+
+    // MARK: - 批量增补图书简介
+
+    @MainActor
+    private func batchFillBookDescriptions() async {
+        let booksNeedingDesc = allBooks.filter { !$0.isArchived && ($0.bookDescription ?? "").isEmpty }
+        guard !booksNeedingDesc.isEmpty else {
+            cleanResultMessage = "所有图书都已有简介，无需补充"
+            showingCleanResult = true
+            return
+        }
+
+        isBatchRunning = true
+        batchTotal = booksNeedingDesc.count
+        batchCurrent = 0
+        batchProgress = 0
+        batchStatusText = "正在增补图书简介..."
+        defer { isBatchRunning = false }
+
+        var successCount = 0
+        let fetcher = DoubanDescriptionFetcher()
+
+        for book in booksNeedingDesc {
+            batchCurrent += 1
+            batchProgress = Double(batchCurrent) / Double(batchTotal)
+            batchStatusText = "正在增补图书简介（\(book.title)）..."
+
+            // 优先用 ISBN 查询，其次用书名
+            let description: String?
+            if let isbn = book.isbn, !isbn.isEmpty {
+                description = await fetcher.fetchBookDescription(isbn: isbn, title: book.title)
+            } else {
+                description = await fetcher.fetchBookDescriptionByTitle(title: book.title, author: book.author)
+            }
+
+            if let desc = description, !desc.trimmingCharacters(in: .whitespaces).isEmpty {
+                book.bookDescription = desc
+                successCount += 1
+                // 每 5 次成功保存一次，避免丢失
+                if successCount % 5 == 0 {
+                    try? modelContext.save()
+                }
+            }
+
+            // 限速：避免请求过快被豆瓣封禁
+            try? await Task.sleep(for: .milliseconds(800))
+        }
+
+        if successCount > 0 {
+            try? modelContext.save()
+        }
+
+        cleanResultMessage = "完成！成功补充 \(successCount)/\(batchTotal) 本书的简介"
+        showingCleanResult = true
+    }
+
+    // MARK: - 批量增补作者简介
+
+    @MainActor
+    private func batchFillAuthorDescriptions() async {
+        let booksNeedingAuthorDesc = allBooks.filter { !$0.isArchived && ($0.authorDescription ?? "").isEmpty }
+        guard !booksNeedingAuthorDesc.isEmpty else {
+            cleanResultMessage = "所有图书都已有作者简介，无需补充"
+            showingCleanResult = true
+            return
+        }
+
+        isBatchRunning = true
+        batchTotal = booksNeedingAuthorDesc.count
+        batchCurrent = 0
+        batchProgress = 0
+        batchStatusText = "正在增补作者简介..."
+        defer { isBatchRunning = false }
+
+        var successCount = 0
+        let fetcher = DoubanDescriptionFetcher()
+
+        // 建立本地作者简介缓存：同一作者只需查一次
+        var localAuthorCache: [String: String] = [:]
+        for book in allBooks where !book.isArchived {
+            if let desc = book.authorDescription, !desc.isEmpty {
+                let authors = book.author.components(separatedBy: ", ")
+                for author in authors {
+                    let trimmed = author.trimmingCharacters(in: .whitespaces)
+                    if !trimmed.isEmpty && localAuthorCache[trimmed] == nil {
+                        localAuthorCache[trimmed] = desc
+                    }
+                }
+            }
+        }
+
+        for book in booksNeedingAuthorDesc {
+            batchCurrent += 1
+            batchProgress = Double(batchCurrent) / Double(batchTotal)
+            batchStatusText = "正在增补作者简介（\(book.author)）..."
+
+            // 先从本地已有数据中查找
+            let primaryAuthor = book.author.components(separatedBy: ", ").first?.trimmingCharacters(in: .whitespaces) ?? book.author
+            if let localDesc = localAuthorCache[primaryAuthor] {
+                book.authorDescription = localDesc
+                successCount += 1
+                continue
+            }
+
+            // 本地没有，去豆瓣查
+            let description: String?
+            if let isbn = book.isbn, !isbn.isEmpty {
+                description = await fetcher.fetchAuthorDescription(isbn: isbn, title: book.title)
+            } else {
+                description = await fetcher.fetchAuthorDescriptionByTitle(title: book.title, author: book.author)
+            }
+
+            if let desc = description, !desc.trimmingCharacters(in: .whitespaces).isEmpty {
+                book.authorDescription = desc
+                successCount += 1
+                // 缓存到本地，后续同作者的书可直接使用
+                localAuthorCache[primaryAuthor] = desc
+                // 每 5 次成功保存一次
+                if successCount % 5 == 0 {
+                    try? modelContext.save()
+                }
+            }
+
+            // 限速
+            try? await Task.sleep(for: .milliseconds(800))
+        }
+
+        if successCount > 0 {
+            try? modelContext.save()
+        }
+
+        cleanResultMessage = "完成！成功补充 \(successCount)/\(batchTotal) 本书的作者简介"
+        showingCleanResult = true
     }
 }
 

@@ -13,12 +13,12 @@ class WeChatAuthManager {
     /// 替换为你的真实 AppID
     private let appId = "wx_YOUR_APP_ID"
 
-    /// 微信开放平台 AppSecret — 生产环境中应放在服务端！
-    /// 这里仅做架构演示，正式发布前必须迁移到后端
-    private let appSecret = "YOUR_APP_SECRET"
-
     /// Universal Link（微信要求 iOS 应用配置 Universal Link）
     private let universalLink = "https://your-domain.com/app/"
+
+    /// 后端 token 换取接口地址
+    /// AppSecret 必须存储在服务端，客户端不得持有
+    private let tokenExchangeEndpoint = "https://your-backend.com/api/wechat/token"
 
     // MARK: - 登录回调
 
@@ -100,16 +100,20 @@ class WeChatAuthManager {
     }
 
     /// 使用 authorization code 换取 access_token
-    /// 注意：生产环境中此请求应在服务端完成！
+    /// 通过后端服务完成，AppSecret 不暴露在客户端
     func exchangeToken(code: String) async throws -> TokenResult {
-        let urlString = "https://api.weixin.qq.com/sns/oauth2/access_token?appid=\(appId)&secret=\(appSecret)&code=\(code)&grant_type=authorization_code"
-
-        guard let url = URL(string: urlString) else {
+        guard let url = URL(string: tokenExchangeEndpoint) else {
             throw WeChatAuthError.invalidURL
         }
 
         var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 10
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "code": code,
+            "appId": appId
+        ])
 
         let (data, response) = try await URLSession.shared.data(for: request)
 
