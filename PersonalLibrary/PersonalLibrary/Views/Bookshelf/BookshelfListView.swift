@@ -22,51 +22,29 @@ struct BookshelfListView: View {
         !weReadBooks.isEmpty
     }
 
+    /// 未分类书籍
+    private var uncategorizedBooks: [Book] {
+        allBooks.filter { $0.bookshelf == nil && !weReadBooks.contains($0) }
+    }
+
     var body: some View {
         NavigationStack {
-            List {
-                // 真实书架
-                ForEach(bookshelves) { shelf in
-                    NavigationLink(destination: BookshelfDetailView(shelf: shelf)) {
-                        BookshelfRow(
-                            name: shelf.name,
-                            icon: shelf.icon,
-                            bookCount: shelf.books?.count ?? 0
-                        )
-                    }
-                    .swipeActions(edge: .trailing) {
-                        Button(role: .destructive) {
-                            shelfToDelete = shelf
-                            showDeleteAlert = true
-                        } label: {
-                            Label("删除", systemImage: "trash")
-                        }
-                    }
-                }
+            ScrollView {
+                VStack(spacing: 20) {
+                    // 顶部汇总
+                    summaryHeader
 
-                // 微信读书虚拟书架
-                if hasWeRead {
-                    NavigationLink(destination: WeReadShelfDetailView()) {
-                        BookshelfRow(
-                            name: "微信读书",
-                            icon: "iphone",
-                            bookCount: weReadBooks.count
-                        )
+                    // 书架列表
+                    if !bookshelves.isEmpty {
+                        shelvesSection
                     }
-                }
 
-                // 未分类书籍
-                let uncategorized = allBooks.filter { $0.bookshelf == nil && !(weReadBooks.contains($0)) }
-                if !uncategorized.isEmpty {
-                    NavigationLink(destination: UncategorizedBooksView()) {
-                        BookshelfRow(
-                            name: "未分类",
-                            icon: "tray",
-                            bookCount: uncategorized.count
-                        )
-                    }
+                    // 特殊入口
+                    specialSection
                 }
+                .padding(.bottom, 24)
             }
+            .background(Color(.systemGroupedBackground))
             .navigationTitle("书架")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -107,6 +85,138 @@ struct BookshelfListView: View {
         }
     }
 
+    // MARK: - 顶部汇总
+
+    private var summaryHeader: some View {
+        HStack(spacing: 0) {
+            VStack(spacing: 4) {
+                Text("\(bookshelves.count + (hasWeRead ? 1 : 0))")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundStyle(.orange)
+                Text("个书架")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+
+            Rectangle()
+                .fill(Color(.separator))
+                .frame(width: 0.5, height: 36)
+
+            VStack(spacing: 4) {
+                Text("\(allBooks.count)")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundStyle(.blue)
+                Text("本书")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+
+            Rectangle()
+                .fill(Color(.separator))
+                .frame(width: 0.5, height: 36)
+
+            VStack(spacing: 4) {
+                Text("\(uncategorizedBooks.count)")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundStyle(.gray)
+                Text("未分类")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .padding(.vertical, 18)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(
+                    LinearGradient(
+                        colors: [Color(.systemBackground), Color(.systemGray6)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .shadow(color: .black.opacity(0.06), radius: 8, y: 4)
+        )
+        .padding(.horizontal)
+        .padding(.top, 8)
+    }
+
+    // MARK: - 书架列表
+
+    private var shelvesSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("我的书架")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+                .padding(.horizontal)
+
+            VStack(spacing: 10) {
+                ForEach(bookshelves) { shelf in
+                    NavigationLink(destination: BookshelfDetailView(shelf: shelf)) {
+                        ShelfCard(
+                            name: shelf.name,
+                            icon: shelf.icon,
+                            bookCount: shelf.books?.count ?? 0,
+                            finishedCount: shelf.books?.filter { $0.status == .finished }.count ?? 0
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .contextMenu {
+                        Button(role: .destructive) {
+                            shelfToDelete = shelf
+                            showDeleteAlert = true
+                        } label: {
+                            Label("删除书架", systemImage: "trash")
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal)
+        }
+    }
+
+    // MARK: - 特殊入口
+
+    private var specialSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if hasWeRead || !uncategorizedBooks.isEmpty {
+                Text("其他")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .padding(.horizontal)
+
+                VStack(spacing: 10) {
+                    if hasWeRead {
+                        NavigationLink(destination: WeReadShelfDetailView()) {
+                            ShelfCard(
+                                name: "微信读书",
+                                icon: "iphone",
+                                bookCount: weReadBooks.count,
+                                finishedCount: weReadBooks.filter { $0.status == .finished }.count
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    if !uncategorizedBooks.isEmpty {
+                        NavigationLink(destination: UncategorizedBooksView()) {
+                            ShelfCard(
+                                name: "未分类",
+                                icon: "tray",
+                                bookCount: uncategorizedBooks.count,
+                                finishedCount: uncategorizedBooks.filter { $0.status == .finished }.count
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal)
+            }
+        }
+    }
+
     private func deleteShelf(withBooks: Bool) {
         guard let shelf = shelfToDelete else { return }
         if withBooks {
@@ -128,32 +238,55 @@ struct BookshelfListView: View {
     }
 }
 
-// MARK: - 书架行
+// MARK: - 书架卡片
 
-struct BookshelfRow: View {
+struct ShelfCard: View {
     let name: String
     let icon: String
     let bookCount: Int
+    let finishedCount: Int
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 14) {
+            // 图标
             Image(systemName: icon)
                 .font(.title2)
                 .foregroundStyle(.orange)
-                .frame(width: 36, height: 36)
+                .frame(width: 44, height: 44)
+                .background(Color.orange.opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
 
-            VStack(alignment: .leading, spacing: 2) {
+            // 信息
+            VStack(alignment: .leading, spacing: 4) {
                 Text(name)
                     .font(.body)
                     .fontWeight(.medium)
-                Text("\(bookCount) 本")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.primary)
+
+                HStack(spacing: 12) {
+                    Text("\(bookCount) 本")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if finishedCount > 0 {
+                        Text("已读 \(finishedCount)")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
+                }
             }
 
             Spacer()
+
+            Image(systemName: "chevron.right")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
         }
-        .padding(.vertical, 4)
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color(.systemBackground))
+                .shadow(color: .black.opacity(0.04), radius: 6, y: 2)
+        )
     }
 }
 
