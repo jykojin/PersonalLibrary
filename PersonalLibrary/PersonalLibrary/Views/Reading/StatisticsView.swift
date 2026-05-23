@@ -948,24 +948,47 @@ struct StatisticsView: View {
 
     /// 异步计算统计数据，不阻塞主线程
     @MainActor
+    /// 在主线程提取纯值快照，再送入后台纯计算
     private func computeStatsAsync() async {
-        // 捕获数据到本地变量，防止后台闭包引用 @Query
-        let booksCopy = books
-        let recordsCopy = records
-        let bookshelvesCopy = bookshelves
+        // 主线程提取所有需要的纯值（避免 @Model 跨线程访问 crash）
+        let bookSnapshots: [BookSnapshot] = books.map { book in
+            BookSnapshot(
+                isArchived: book.isArchived,
+                status: book.status,
+                bookType: book.bookType,
+                addSource: book.addSource,
+                rating: book.rating,
+                addedDate: book.addedDate,
+                finishedDate: book.finishedDate,
+                author: book.author,
+                publisher: book.publisher,
+                shelfName: book.bookshelf?.name,
+                tagNames: book.tags?.map(\.name) ?? []
+            )
+        }
         let result = await Task.detached(priority: .userInitiated) {
-            Self.computeStatsOnBackground(books: booksCopy, records: recordsCopy, bookshelves: bookshelvesCopy)
+            Self.computeStatsFromSnapshots(books: bookSnapshots)
         }.value
         cachedStats = result
     }
 
-    /// 后台线程纯计算（无 SwiftData 访问）
-    nonisolated private static func computeStatsOnBackground(books: [Book], records: [ReadingRecord], bookshelves: [Bookshelf]) -> CachedStatistics {
-        computeStatsImpl(books: books, records: records, bookshelves: bookshelves)
+    /// 纯值快照 — 不引用任何 @Model，线程安全
+    private struct BookSnapshot: Sendable {
+        let isArchived: Bool
+        let status: ReadingStatus
+        let bookType: BookType
+        let addSource: AddSource
+        let rating: Int?
+        let addedDate: Date
+        let finishedDate: Date?
+        let author: String
+        let publisher: String?
+        let shelfName: String?
+        let tagNames: [String]
     }
 
-    /// 一次遍历计算所有统计数据
-    nonisolated private static func computeStatsImpl(books: [Book], records: [ReadingRecord], bookshelves: [Bookshelf]) -> CachedStatistics {
+    /// 后台纯计算 — 只接收值类型，零 SwiftData 访问
+    nonisolated private static func computeStatsFromSnapshots(books: [BookSnapshot]) -> CachedStatistics {
         let calendar = Calendar.current
         let now = Date()
         // 排除已归档的书（逻辑删除）
@@ -1044,8 +1067,8 @@ struct StatisticsView: View {
                 }
             }
 
-            if let shelf = book.bookshelf {
-                var entry = shelfMap[shelf.name] ?? (0, 0, 0, 0, 0, 0)
+            if let shelfName = book.shelfName {
+                var entry = shelfMap[shelfName] ?? (0, 0, 0, 0, 0, 0)
                 entry.total += 1
                 if book.status == .finished { entry.finished += 1 }
                 if book.status == .reading { entry.reading += 1 }
@@ -1054,7 +1077,7 @@ struct StatisticsView: View {
                 case .ebook: entry.ebook += 1
                 case .audiobook: entry.audio += 1
                 }
-                shelfMap[shelf.name] = entry
+                shelfMap[shelfName] = entry
             }
 
             if let rating = book.rating, (1...5).contains(rating) {
@@ -1110,11 +1133,11 @@ struct StatisticsView: View {
             }
 
             // 标签统计（含题材分类）
-            for tag in book.tags ?? [] {
-                tagCounts[tag.name, default: 0] += 1
+            for tagName in book.tagNames {
+                tagCounts[tagName, default: 0] += 1
                 // 排除"微信读书"标签作为题材
-                if tag.name != "微信读书" {
-                    categoryCounts[tag.name, default: 0] += 1
+                if tagName != "微信读书" {
+                    categoryCounts[tagName, default: 0] += 1
                 }
             }
 

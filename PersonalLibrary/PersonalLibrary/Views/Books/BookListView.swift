@@ -59,76 +59,15 @@ struct BookListView: View {
     // 标记已读后评分
     @State private var bookForRating: Book?
 
-    /// 获取所有可用的书架名称（按名称排序，"我的藏书"固定第一）
-    private var shelfNames: [String] {
-        var names: [String] = ["我的藏书"]
+    // 缓存：避免每帧重算（relationship fault 是主线程 I/O）
+    @State private var cachedShelfNames: [String] = ["我的藏书"]
+    @State private var cachedFilteredBooks: [Book] = []
+    // 标记首次加载
+    @State private var needsInitialLoad = true
 
-        // 真实书架（按名称字母排序）
-        let sortedShelves = bookshelves
-            .filter { $0.name != "微信读书" }
-            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        for shelf in sortedShelves {
-            if !names.contains(shelf.name) {
-                names.append(shelf.name)
-            }
-        }
-
-        // 微信读书虚拟书架（放最后）
-        let hasWeRead = books.contains { book in
-            book.tags?.contains(where: { $0.name == "微信读书" }) == true
-        }
-        if hasWeRead && !names.contains("微信读书") {
-            names.append("微信读书")
-        }
-
-        return names
-    }
-
-    /// 当前筛选后的书籍
+    /// 当前筛选后的书籍（读缓存）
     private var filteredBooks: [Book] {
-        // 高级搜索结果优先
-        if let advResults = advancedSearchResults {
-            return advResults
-        }
-
-        var result: [Book]
-
-        if selectedShelf == "我的藏书" {
-            result = books.filter { !$0.isArchived }
-        } else if selectedShelf == "微信读书" {
-            result = books.filter { book in
-                !book.isArchived && book.tags?.contains(where: { $0.name == "微信读书" }) == true
-            }
-        } else {
-            result = books.filter { !$0.isArchived && $0.bookshelf?.name == selectedShelf }
-        }
-
-        // 纸质书筛选（仅对"我的藏书"生效）
-        if paperOnly && selectedShelf == "我的藏书" {
-            result = result.filter { $0.bookType == .paper }
-        }
-
-        if !searchText.isEmpty {
-            let query = searchText
-            result = result.filter { book in
-                switch searchScope {
-                case .all:
-                    return matchesGlobal(book: book, query: query)
-                case .title:
-                    return book.title.localizedCaseInsensitiveContains(query)
-                case .author:
-                    return book.author.localizedCaseInsensitiveContains(query)
-                case .tag:
-                    return book.tags?.contains(where: { $0.name.localizedCaseInsensitiveContains(query) }) == true
-                case .publisher:
-                    return book.publisher?.localizedCaseInsensitiveContains(query) == true
-                case .shelf:
-                    return book.bookshelf?.name.localizedCaseInsensitiveContains(query) == true
-                }
-            }
-        }
-
-        return result
+        cachedFilteredBooks
     }
 
     /// 当前选中的 Book 对象
@@ -153,6 +92,12 @@ struct BookListView: View {
                 // 多选操作栏
                 if isSelecting && !selectedBooks.isEmpty {
                     batchActionBar
+                }
+            }
+            .onAppear {
+                // 从 BookDetailView 返回时刷新（用户可能改了状态）
+                if !needsInitialLoad {
+                    recomputeFilteredBooks()
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
@@ -232,14 +177,113 @@ struct BookListView: View {
                     )
                 }
             }
-            .onChange(of: selectedShelf) { _, _ in advancedSearchResults = nil }
-            .onChange(of: searchText) { _, _ in advancedSearchResults = nil }
+            .onChange(of: selectedShelf) { _, _ in
+                advancedSearchResults = nil
+                recomputeFilteredBooks()
+            }
+            .onChange(of: searchText) { _, _ in
+                advancedSearchResults = nil
+                recomputeFilteredBooks()
+            }
+            .onChange(of: searchScope) { _, _ in recomputeFilteredBooks() }
+            .onChange(of: paperOnly) { _, _ in recomputeFilteredBooks() }
+            .onChange(of: advancedSearchResults) { _, _ in recomputeFilteredBooks() }
+            .onChange(of: books.count) { _, _ in
+                recomputeShelfNames()
+                recomputeFilteredBooks()
+            }
+            .onChange(of: bookshelves.count) { _, _ in recomputeShelfNames() }
+            .task {
+                if needsInitialLoad {
+                    needsInitialLoad = false
+                    recomputeShelfNames()
+                    recomputeFilteredBooks()
+                }
+            }
+            // 当 sheet dismiss 后（标记已读、批量操作等），刷新列表
+            .onChange(of: bookForRating) { _, new in
+                if new == nil { recomputeFilteredBooks() }
+            }
+            .onChange(of: bookForQuickTag) { _, new in
+                if new == nil { recomputeFilteredBooks() }
+            }
+            .onChange(of: isSelecting) { _, new in
+                if !new { recomputeFilteredBooks() }
+            }
         }
     }
 
     private func exitSelectMode() {
         isSelecting = false
         selectedBooks.removeAll()
+    }
+
+    // MARK: - 缓存重算
+
+    private func recomputeShelfNames() {
+        var names: [String] = ["我的藏书"]
+
+        let sortedShelves = bookshelves
+            .filter { $0.name != "微信读书" }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        for shelf in sortedShelves {
+            if !names.contains(shelf.name) {
+                names.append(shelf.name)
+            }
+        }
+
+        // 微信读书虚拟书架 — 只查 tag name，不遍历所有 book.tags
+        let hasWeRead = allTags.contains { $0.name == "微信读书" }
+        if hasWeRead && !names.contains("微信读书") {
+            names.append("微信读书")
+        }
+
+        cachedShelfNames = names
+    }
+
+    private func recomputeFilteredBooks() {
+        if let advResults = advancedSearchResults {
+            cachedFilteredBooks = advResults
+            return
+        }
+
+        var result: [Book]
+
+        if selectedShelf == "我的藏书" {
+            result = books.filter { !$0.isArchived }
+        } else if selectedShelf == "微信读书" {
+            result = books.filter { book in
+                !book.isArchived && book.tags?.contains(where: { $0.name == "微信读书" }) == true
+            }
+        } else {
+            result = books.filter { !$0.isArchived && $0.bookshelf?.name == selectedShelf }
+        }
+
+        if paperOnly && selectedShelf == "我的藏书" {
+            result = result.filter { $0.bookType == .paper }
+        }
+
+        if !searchText.isEmpty {
+            let query = searchText
+            result = result.filter { book in
+                switch searchScope {
+                case .all:
+                    return matchesGlobal(book: book, query: query)
+                case .title:
+                    return book.title.localizedCaseInsensitiveContains(query)
+                case .author:
+                    return book.author.localizedCaseInsensitiveContains(query)
+                case .tag:
+                    return book.tags?.contains(where: { $0.name.localizedCaseInsensitiveContains(query) }) == true
+                case .publisher:
+                    return book.publisher?.localizedCaseInsensitiveContains(query) == true
+                case .shelf:
+                    return book.bookshelf?.name.localizedCaseInsensitiveContains(query) == true
+                }
+            }
+        }
+
+        cachedFilteredBooks = result
     }
 
     /// 全局搜索：匹配书名、作者、出版社、标签、书架、ISBN
@@ -322,7 +366,7 @@ struct BookListView: View {
     private var shelfTabBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 0) {
-                ForEach(shelfNames, id: \.self) { name in
+                ForEach(cachedShelfNames, id: \.self) { name in
                     shelfTab(name: name)
                 }
             }
@@ -377,7 +421,6 @@ struct BookListView: View {
                     NavigationLink(destination: BookDetailView(book: book)) {
                         BookRowView(book: book)
                     }
-                    .buttonStyle(.plain)
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         Button {
                             bookForRating = book
@@ -393,10 +436,12 @@ struct BookListView: View {
                         }
                         .tint(.orange)
                     }
-                    .onLongPressGesture {
-                        if !isSelecting {
+                    .contextMenu {
+                        Button {
                             isSelecting = true
                             selectedBooks.insert(book.persistentModelID)
+                        } label: {
+                            Label("多选", systemImage: "checkmark.circle")
                         }
                     }
                 }
@@ -547,7 +592,7 @@ struct BookRowView: View {
         }
     }
 
-    /// 行出现时加载封面 — 全异步，不阻塞主线程布局
+    /// 行出现时加载封面 — 全异步 + debounce，滚动时不触发 I/O
     private func loadCoverOnAppear() {
         if coverImage != nil { return }
 
@@ -559,9 +604,12 @@ struct BookRowView: View {
             return
         }
 
-        // 2. 其余情况全部走异步（包括读 coverImageData，避免 SwiftData 主线程 I/O）
+        // 2. debounce 150ms — 快速滑过会被 onDisappear cancel，不触发任何 I/O
         fetchTask = Task {
-            // 读取本地 blob（可能触发 SwiftData fault，但在 Task 内不阻塞 layout）
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+
+            // 读取本地 blob（externalStorage fault 只在 debounce 后触发）
             if let data = book.coverImageData, !data.isEmpty {
                 let img = await Task.detached(priority: .utility) {
                     UIImage(data: data)
@@ -572,8 +620,8 @@ struct BookRowView: View {
                 return
             }
 
-            // 无本地数据 → 延迟 500ms 网络下载（快速滑过自动取消）
-            try? await Task.sleep(for: .milliseconds(500))
+            // 无本地数据 → 再等 350ms 网络下载（总共 500ms debounce）
+            try? await Task.sleep(for: .milliseconds(350))
             guard !Task.isCancelled else { return }
 
             let data = await CoverFetchService.shared.fetchCoverThrottled(
@@ -798,7 +846,6 @@ struct BatchMoveShelfView: View {
         for book in books {
             book.bookshelf = shelf
         }
-        try? modelContext.save()
         dismiss()
         onDone()
     }
@@ -844,7 +891,6 @@ struct BatchStatusView: View {
                 book.finishedDate = Date()
             }
         }
-        try? modelContext.save()
         dismiss()
         onDone()
     }
@@ -912,7 +958,6 @@ struct BatchRatingView: View {
         for book in books {
             book.rating = rating > 0 ? rating : nil
         }
-        try? modelContext.save()
         dismiss()
         onDone()
     }
@@ -982,7 +1027,6 @@ struct MarkReadRatingView: View {
                         if rating > 0 {
                             book.rating = rating
                         }
-                        try? modelContext.save()
                         dismiss()
                     }
                 }

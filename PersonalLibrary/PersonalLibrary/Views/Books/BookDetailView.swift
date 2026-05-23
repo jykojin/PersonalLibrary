@@ -33,11 +33,6 @@ struct BookDetailView: View {
                     descriptionSection(title: "作者简介", text: desc)
                 }
 
-                // 阅读进度
-                if book.totalPages > 0 {
-                    progressSection
-                }
-
                 // 备注
                 notesSection
 
@@ -229,29 +224,6 @@ struct BookDetailView: View {
                 }
             }
         }
-    }
-
-    private var progressSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("阅读进度")
-                    .font(.headline)
-                Spacer()
-                Text("\(book.currentPage) / \(book.totalPages) 页")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-
-            ProgressView(value: book.progress)
-                .tint(.blue)
-
-            Text("\(Int(book.progress * 100))% 已读")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding()
-        .background(Color(.systemGray6))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     private func descriptionSection(title: String, text: String) -> some View {

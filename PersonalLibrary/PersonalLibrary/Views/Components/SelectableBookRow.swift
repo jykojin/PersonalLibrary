@@ -1,7 +1,7 @@
 import SwiftUI
 import SwiftData
 
-/// 多选模式下的书籍行（checkbox + BookRowView）
+/// 多选模式下的书籍行（checkbox + 完整 BookRowView）
 struct SelectableBookRow: View {
     let book: Book
     let isSelected: Bool
