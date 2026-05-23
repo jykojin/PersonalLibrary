@@ -7,6 +7,8 @@ struct ImportExportView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Book.addedDate, order: .reverse) private var allBooks: [Book]
 
+    private var activeBooks: [Book] { allBooks.filter { !$0.isArchived } }
+
     @State private var showingImportPicker = false
     @State private var showingExportShare = false
     @State private var isImporting = false
@@ -161,13 +163,13 @@ struct ImportExportView: View {
                             ProgressView()
                                 .controlSize(.small)
                         } else {
-                            Text("\(allBooks.count) 本书")
+                            Text("\(activeBooks.count) 本书")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                     }
                 }
-                .disabled(isExporting || allBooks.isEmpty)
+                .disabled(isExporting || activeBooks.isEmpty)
             } header: {
                 Text("导出")
             } footer: {
@@ -183,10 +185,10 @@ struct ImportExportView: View {
 
             // MARK: - 数据统计
             Section("数据概览") {
-                LabeledContent("总藏书", value: "\(allBooks.count) 本")
-                LabeledContent("正在读", value: "\(allBooks.filter { $0.status == .reading }.count) 本")
-                LabeledContent("已读", value: "\(allBooks.filter { $0.status == .finished }.count) 本")
-                LabeledContent("想读", value: "\(allBooks.filter { $0.status == .wishlist }.count) 本")
+                LabeledContent("总藏书", value: "\(activeBooks.count) 本")
+                LabeledContent("正在读", value: "\(activeBooks.filter { $0.status == .reading }.count) 本")
+                LabeledContent("已读", value: "\(activeBooks.filter { $0.status == .finished }.count) 本")
+                LabeledContent("想读", value: "\(activeBooks.filter { $0.status == .wishlist }.count) 本")
             }
         }
         .navigationTitle("设置")
@@ -335,7 +337,7 @@ struct ImportExportView: View {
         defer { isExporting = false }
 
         do {
-            let data = try await importExportService.exportBooks(books: allBooks)
+            let data = try await importExportService.exportBooks(books: activeBooks)
 
             // 保存到临时文件
             let fileName = "书单导出_\(formattedDate()).tsv"

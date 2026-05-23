@@ -36,6 +36,8 @@
 		<string>weixin</string>
 		<string>weixinULAPI</string>
 	</array>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>需要使用摄像头扫描图书条形码</string>
 	<key>UIApplicationSceneManifest</key>
@@ -43,6 +45,8 @@
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<false/>
 	</dict>
+	<key>UIFileSharingEnabled</key>
+	<true/>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>

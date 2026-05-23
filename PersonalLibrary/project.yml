@@ -58,6 +58,8 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         NSCameraUsageDescription: "需要使用摄像头扫描图书条形码"
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
         CFBundleDisplayName: "私人图书馆"
     settings:
       base:
