@@ -51,30 +51,34 @@ struct ImportExportView: View {
                 ProfileView()
             }
 
-            // MARK: - 存储位置
+            // MARK: - 微信读书
             Section {
-                ForEach(StorageLocation.allCases, id: \.self) { location in
-                    Button {
-                        if location != storageLocation {
-                            storageLocation = location
-                            showingStorageChangeAlert = true
-                        }
-                    } label: {
-                        HStack {
-                            Label(location.description, systemImage: location.icon)
-                                .foregroundStyle(.primary)
-                            Spacer()
-                            if location == storageLocation {
-                                Image(systemName: "checkmark")
-                                    .foregroundStyle(.blue)
-                            }
+                NavigationLink(destination: WeReadSyncView()) {
+                    HStack {
+                        Label("微信读书同步", systemImage: "book.and.wreath")
+                        Spacer()
+                        if let lastSync = WeReadSyncService.lastSyncDate {
+                            Text(Self.syncDateFormatter.string(from: lastSync))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
             } header: {
-                Text("数据存储位置")
+                Text("微信读书")
             } footer: {
-                Text("切换存储位置需要重启 App 后生效。iCloud 存储可在多台设备间自动同步数据。")
+                Text("同步和批量导入微信读书书架")
+            }
+
+            // MARK: - 数据维护
+            Section {
+                NavigationLink(destination: DataMaintenanceView()) {
+                    Label("数据维护", systemImage: "wrench.and.screwdriver")
+                }
+            } header: {
+                Text("数据维护")
+            } footer: {
+                Text("管理作者、出版社、标签，批量修改名称，繁转简等")
             }
 
             // MARK: - 备份与恢复
@@ -110,25 +114,6 @@ struct ImportExportView: View {
                 Text("备份与恢复")
             } footer: {
                 Text("备份会生成文件供你存到 iCloud Drive 或其他位置。恢复时选择之前的备份文件，恢复后需重启 App。")
-            }
-
-            // MARK: - 微信读书
-            Section {
-                NavigationLink(destination: WeReadSyncView()) {
-                    HStack {
-                        Label("微信读书同步", systemImage: "book.and.wreath")
-                        Spacer()
-                        if let lastSync = WeReadSyncService.lastSyncDate {
-                            Text(Self.syncDateFormatter.string(from: lastSync))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            } header: {
-                Text("微信读书")
-            } footer: {
-                Text("同步和批量导入微信读书书架")
             }
 
             // MARK: - 导入
@@ -184,15 +169,30 @@ struct ImportExportView: View {
                 }
             }
 
-            // MARK: - 数据维护
+            // MARK: - 存储位置
             Section {
-                NavigationLink(destination: DataMaintenanceView()) {
-                    Label("数据维护", systemImage: "wrench.and.screwdriver")
+                ForEach(StorageLocation.allCases, id: \.self) { location in
+                    Button {
+                        if location != storageLocation {
+                            storageLocation = location
+                            showingStorageChangeAlert = true
+                        }
+                    } label: {
+                        HStack {
+                            Label(location.description, systemImage: location.icon)
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            if location == storageLocation {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(.blue)
+                            }
+                        }
+                    }
                 }
             } header: {
-                Text("数据维护")
+                Text("数据存储位置")
             } footer: {
-                Text("管理作者、出版社、标签，批量修改名称，繁转简等")
+                Text("切换存储位置需要重启 App 后生效。iCloud 存储可在多台设备间自动同步数据。")
             }
         }
         .navigationTitle("设置")

@@ -299,11 +299,11 @@ actor WeReadSyncService {
                     await MainActor.run { try? bgContext.save() }
                 }
 
-                // 9b. 详情补全（每次最多 50 本，每 3 个请求暂停 1 秒）
+                // 9b. 详情补全（每次最多 10 本，每 3 个请求暂停 1 秒）
                 var infoDescriptor = FetchDescriptor<Book>(
                     predicate: #Predicate<Book> { $0.wereadBookId != nil && $0.publisher == nil }
                 )
-                infoDescriptor.fetchLimit = 50
+                infoDescriptor.fetchLimit = 10
                 let booksNeedInfo = (try? await MainActor.run { try bgContext.fetch(infoDescriptor) }) ?? []
                 for (index, book) in booksNeedInfo.enumerated() {
                     guard let bookId = book.wereadBookId else { continue }

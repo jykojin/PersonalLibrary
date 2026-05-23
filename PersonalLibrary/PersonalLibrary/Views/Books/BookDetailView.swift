@@ -124,6 +124,9 @@ struct BookDetailView: View {
         } message: {
             Text("取消收藏后，此书将不再显示在藏书列表中。\n你可以通过高级搜索找回并恢复收藏。")
         }
+        .task {
+            await fetchWeReadInfoIfNeeded()
+        }
     }
 
     private var bookInfoSection: some View {
@@ -324,6 +327,51 @@ struct BookDetailView: View {
                     ReadingRecordRow(record: record)
                 }
             }
+        }
+    }
+
+    // MARK: - WeRead 详情按需补全
+
+    private func fetchWeReadInfoIfNeeded() async {
+        // 只对微信读书导入、缺出版社的书触发
+        guard let bookId = book.wereadBookId,
+              (book.publisher == nil || book.publisher?.isEmpty == true) else {
+            return
+        }
+
+        let service = WeReadService()
+        guard await service.isLoggedIn() else { return }
+
+        do {
+            let info = try await service.fetchBookInfo(bookId: bookId)
+            if let publisher = info.publisher, !publisher.isEmpty {
+                book.publisher = publisher
+            }
+            if let isbn = info.isbn, !isbn.isEmpty, book.isbn == nil {
+                book.isbn = isbn
+            }
+            if let intro = info.intro, !intro.isEmpty, book.bookDescription == nil {
+                book.bookDescription = intro
+            }
+            if let price = info.price, price > 0, book.price == nil {
+                book.price = "¥\(String(format: "%.2f", price))"
+            }
+            if let publishTime = info.publishTime, !publishTime.isEmpty, book.publishDate == nil {
+                let formatter = DateFormatter()
+                for format in ["yyyy-MM-dd", "yyyy-MM", "yyyy"] {
+                    formatter.dateFormat = format
+                    if let date = formatter.date(from: publishTime) {
+                        book.publishDate = date
+                        break
+                    }
+                }
+            }
+            if let type = info.type, (type == 2 || type == 3), book.bookType != .audiobook {
+                book.bookType = .audiobook
+            }
+            try? modelContext.save()
+        } catch {
+            print("[BookDetail] WeRead info fetch failed: \(error)")
         }
     }
 }
