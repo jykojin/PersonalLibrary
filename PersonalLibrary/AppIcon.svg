@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#FFF5E6;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#FFECD2;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#FCE4C8;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="pageGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#FFFDF9;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#F5EDE3;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="spineGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#8B6914;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#A0782C;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="leafGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#7CB342;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#558B2F;stop-opacity:1" />
+    </linearGradient>
+    <radialGradient id="flowerGradient" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:#FFB74D;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#F4845F;stop-opacity:1" />
+    </radialGradient>
+  </defs>
+
+  <!-- 背景圆角方块 -->
+  <rect width="1024" height="1024" rx="224" ry="224" fill="url(#bgGradient)"/>
+
+  <!-- 装饰：左上角小花苞 -->
+  <circle cx="220" cy="200" r="18" fill="#F4845F" opacity="0.5"/>
+  <circle cx="190" cy="230" r="12" fill="#FFB74D" opacity="0.4"/>
+  <circle cx="250" cy="175" r="10" fill="#FF8A65" opacity="0.35"/>
+
+  <!-- 装饰：右上角小圆点 -->
+  <circle cx="800" cy="180" r="14" fill="#FFB74D" opacity="0.4"/>
+  <circle cx="830" cy="220" r="9" fill="#F4845F" opacity="0.3"/>
+  <circle cx="770" cy="210" r="11" fill="#FFCC80" opacity="0.45"/>
+
+  <!-- 翻开的书 — 左页 -->
+  <path d="M512 620 Q512 580 510 420 Q505 380 430 360 Q350 340 260 370 Q250 375 250 385 L250 600 Q250 615 265 618 Q350 640 430 625 Q500 610 512 620 Z"
+        fill="url(#pageGradient)"
+        stroke="#5D4037" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- 翻开的书 — 右页 -->
+  <path d="M512 620 Q512 580 514 420 Q519 380 594 360 Q674 340 764 370 Q774 375 774 385 L774 600 Q774 615 759 618 Q674 640 594 625 Q524 610 512 620 Z"
+        fill="url(#pageGradient)"
+        stroke="#5D4037" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- 书脊 -->
+  <path d="M508 415 Q512 410 516 415 L516 625 Q512 630 508 625 Z"
+        fill="url(#spineGradient)" opacity="0.7"/>
+
+  <!-- 左页文字线 -->
+  <line x1="310" y1="420" x2="460" y2="415" stroke="#C4A882" stroke-width="3" stroke-linecap="round" opacity="0.6"/>
+  <line x1="300" y1="450" x2="470" y2="445" stroke="#C4A882" stroke-width="3" stroke-linecap="round" opacity="0.5"/>
+  <line x1="295" y1="480" x2="475" y2="475" stroke="#C4A882" stroke-width="3" stroke-linecap="round" opacity="0.45"/>
+  <line x1="290" y1="510" x2="478" y2="505" stroke="#C4A882" stroke-width="3" stroke-linecap="round" opacity="0.4"/>
+  <line x1="288" y1="540" x2="480" y2="535" stroke="#C4A882" stroke-width="3" stroke-linecap="round" opacity="0.35"/>
+  <line x1="285" y1="570" x2="482" y2="565" stroke="#C4A882" stroke-width="2.5" stroke-linecap="round" opacity="0.3"/>
+
+  <!-- 右页文字线 -->
+  <line x1="564" y1="415" x2="714" y2="420" stroke="#C4A882" stroke-width="3" stroke-linecap="round" opacity="0.6"/>
+  <line x1="554" y1="445" x2="724" y2="450" stroke="#C4A882" stroke-width="3" stroke-linecap="round" opacity="0.5"/>
+  <line x1="549" y1="475" x2="729" y2="480" stroke="#C4A882" stroke-width="3" stroke-linecap="round" opacity="0.45"/>
+  <line x1="546" y1="505" x2="734" y2="510" stroke="#C4A882" stroke-width="3" stroke-linecap="round" opacity="0.4"/>
+  <line x1="544" y1="535" x2="736" y2="540" stroke="#C4A882" stroke-width="3" stroke-linecap="round" opacity="0.35"/>
+  <line x1="542" y1="565" x2="738" y2="570" stroke="#C4A882" stroke-width="2.5" stroke-linecap="round" opacity="0.3"/>
+
+  <!-- 上方装饰枝条 -->
+  <path d="M512 310 Q500 270 460 240 Q440 225 430 210"
+        fill="none" stroke="#6D4C41" stroke-width="4" stroke-linecap="round" opacity="0.7"/>
+  <path d="M512 310 Q520 265 555 235 Q570 220 585 210"
+        fill="none" stroke="#6D4C41" stroke-width="4" stroke-linecap="round" opacity="0.7"/>
+  <path d="M512 310 Q512 280 512 250 Q512 230 510 215"
+        fill="none" stroke="#6D4C41" stroke-width="3.5" stroke-linecap="round" opacity="0.6"/>
+
+  <!-- 左边树叶 -->
+  <path d="M435 215 Q410 200 415 175 Q420 155 440 160 Q460 165 455 190 Q450 210 435 215 Z"
+        fill="url(#leafGradient)" opacity="0.85"
+        stroke="#4E7A27" stroke-width="1.5"/>
+  <path d="M435 215 Q425 195 430 175" fill="none" stroke="#4E7A27" stroke-width="1.5" opacity="0.6"/>
+
+  <!-- 右边树叶 -->
+  <path d="M580 215 Q605 195 600 170 Q595 150 575 158 Q555 165 560 190 Q565 210 580 215 Z"
+        fill="url(#leafGradient)" opacity="0.8"
+        stroke="#4E7A27" stroke-width="1.5"/>
+  <path d="M580 215 Q590 192 585 170" fill="none" stroke="#4E7A27" stroke-width="1.5" opacity="0.6"/>
+
+  <!-- 中间小花 -->
+  <circle cx="512" cy="210" r="20" fill="url(#flowerGradient)" opacity="0.9"/>
+  <circle cx="512" cy="210" r="8" fill="#FFF3E0"/>
+  <ellipse cx="512" cy="188" rx="8" ry="12" fill="#FFB74D" opacity="0.8"/>
+  <ellipse cx="530" cy="198" rx="8" ry="12" fill="#FF8A65" opacity="0.7" transform="rotate(60,530,198)"/>
+  <ellipse cx="530" cy="222" rx="8" ry="12" fill="#FFB74D" opacity="0.7" transform="rotate(120,530,222)"/>
+  <ellipse cx="512" cy="232" rx="8" ry="12" fill="#FF8A65" opacity="0.8" transform="rotate(180,512,232)"/>
+  <ellipse cx="494" cy="222" rx="8" ry="12" fill="#FFB74D" opacity="0.7" transform="rotate(240,494,222)"/>
+  <ellipse cx="494" cy="198" rx="8" ry="12" fill="#FF8A65" opacity="0.7" transform="rotate(300,494,198)"/>
+
+  <!-- 左小叶片 -->
+  <path d="M460 250 Q450 240 445 225 Q455 230 465 245 Z"
+        fill="#8BC34A" opacity="0.7"/>
+
+  <!-- 右小叶片 -->
+  <path d="M564 250 Q574 240 579 225 Q569 230 559 245 Z"
+        fill="#8BC34A" opacity="0.7"/>
+
+  <!-- 底部装饰线条 -->
+  <path d="M350 700 Q430 680 512 690 Q594 700 674 685"
+        fill="none" stroke="#C4A882" stroke-width="3" stroke-linecap="round" opacity="0.4"/>
+
+  <!-- 中文标题 -->
+  <text x="512" y="790" font-family="STKaiti, Kaiti SC, serif" font-size="72" fill="#5D4037"
+        text-anchor="middle" opacity="0.85">私人图书馆</text>
+
+  <!-- 底部小装饰 -->
+  <circle cx="390" cy="740" r="5" fill="#FFB74D" opacity="0.4"/>
+  <circle cx="634" cy="735" r="5" fill="#F4845F" opacity="0.35"/>
+  <circle cx="512" cy="830" r="6" fill="#FFCC80" opacity="0.3"/>
+</svg>

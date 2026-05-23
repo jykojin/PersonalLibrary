@@ -1,0 +1,269 @@
+import Foundation
+import SwiftData
+
+/// 封面图片获取服务
+/// 从豆瓣页面解析封面图片 URL，下载后缓存到本地
+actor CoverFetchService {
+
+    static let shared = CoverFetchService()
+
+    private var inFlightRequests: Set<String> = []
+
+    /// 从豆瓣链接获取封面图片数据
+    func fetchCoverFromDouban(doubanURL: String) async -> Data? {
+        guard let url = URL(string: doubanURL) else { return nil }
+
+        // 防止重复请求
+        guard !inFlightRequests.contains(doubanURL) else { return nil }
+        inFlightRequests.insert(doubanURL)
+        defer { inFlightRequests.remove(doubanURL) }
+
+        do {
+            // 必须用桌面 UA，移动端 UA 会被豆瓣重定向到 404
+            var request = URLRequest(url: url)
+            request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+            request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
+            request.timeoutInterval = 15
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else {
+                print("[CoverFetch] Douban HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+                return nil
+            }
+
+            guard let html = String(data: data, encoding: .utf8) else { return nil }
+            guard let imageURL = parseCoverImageURL(from: html) else {
+                print("[CoverFetch] No cover URL found in douban page")
+                return nil
+            }
+
+            print("[CoverFetch] Found cover URL: \(imageURL)")
+            return await downloadImage(from: imageURL)
+        } catch {
+            print("[CoverFetch] Error fetching douban page: \(error)")
+            return nil
+        }
+    }
+
+    /// 从 Open Library 获取封面
+    func fetchCoverFromOpenLibrary(isbn: String) async -> Data? {
+        let cleanISBN = isbn.replacingOccurrences(of: "[^0-9Xx]", with: "", options: .regularExpression)
+        guard cleanISBN.count == 10 || cleanISBN.count == 13 else { return nil }
+
+        let urlStr = "https://covers.openlibrary.org/b/isbn/\(cleanISBN)-L.jpg"
+        return await downloadImage(from: urlStr)
+    }
+
+    /// 尝试所有来源获取封面
+    func fetchCover(isbn: String?, doubanURL: String?, title: String? = nil, author: String? = nil) async -> Data? {
+        // 优先豆瓣页面解析（如果有链接）
+        if let doubanURL, !doubanURL.isEmpty {
+            if let data = await fetchCoverFromDouban(doubanURL: doubanURL) {
+                return data
+            }
+        }
+
+        // 豆瓣搜索 API（用书名搜索，中文书覆盖率高）
+        if let title, !title.isEmpty {
+            if let data = await fetchCoverFromDoubanSearch(title: title, author: author) {
+                return data
+            }
+        }
+
+        // 备用 Open Library
+        if let isbn, !isbn.isEmpty {
+            if let data = await fetchCoverFromOpenLibrary(isbn: isbn) {
+                // Open Library 返回 1x1 pixel 表示没有封面，过滤小文件
+                if data.count > 1000 {
+                    return data
+                }
+            }
+        }
+        return nil
+    }
+
+    /// 通过豆瓣搜索建议 API 获取封面
+    func fetchCoverFromDoubanSearch(title: String, author: String?) async -> Data? {
+        // 清理书名：去掉括号内容（中英文括号），这些通常是用户自加的备注
+        let cleanTitle = cleanSearchTitle(title)
+        guard !cleanTitle.isEmpty else { return nil }
+
+        // 先用清理后的书名搜索
+        if let data = await searchDoubanCover(query: cleanTitle, originalTitle: title, author: author) {
+            return data
+        }
+
+        // 如果清理后的标题和原标题不同，且第一次没搜到，尝试原标题
+        if cleanTitle != title {
+            return await searchDoubanCover(query: title, originalTitle: title, author: author)
+        }
+
+        return nil
+    }
+
+    /// 清理书名用于搜索：去掉括号及其内容
+    private func cleanSearchTitle(_ title: String) -> String {
+        var result = title
+        // 去掉中文括号 （...）
+        result = result.replacingOccurrences(of: #"（[^）]*）"#, with: "", options: .regularExpression)
+        // 去掉英文括号 (...)
+        result = result.replacingOccurrences(of: #"\([^)]*\)"#, with: "", options: .regularExpression)
+        // 去掉中文书名号内的副标题之后的部分不处理，只清理括号
+        return result.trimmingCharacters(in: .whitespaces)
+    }
+
+    private func searchDoubanCover(query: String, originalTitle: String, author: String?) async -> Data? {
+        guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "https://book.douban.com/j/subject_suggest?q=\(encoded)") else {
+            return nil
+        }
+
+        do {
+            var request = URLRequest(url: url)
+            request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+            request.timeoutInterval = 10
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else {
+                return nil
+            }
+
+            guard let results = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+                  !results.isEmpty else {
+                return nil
+            }
+
+            // 找到最匹配的结果
+            let cleanQuery = cleanSearchTitle(originalTitle)
+            var bestMatch: [String: Any]?
+            for result in results {
+                guard result["type"] as? String == "b" else { continue }
+                let resultTitle = result["title"] as? String ?? ""
+                // 完全匹配清理后的书名
+                if resultTitle == cleanQuery || resultTitle == originalTitle {
+                    if let author, !author.isEmpty {
+                        let resultAuthor = result["author_name"] as? String ?? ""
+                        if resultAuthor.contains(String(author.prefix(2))) {
+                            bestMatch = result
+                            break
+                        }
+                    }
+                    bestMatch = result
+                    break
+                }
+                // 部分包含匹配
+                if bestMatch == nil && (resultTitle.contains(cleanQuery) || cleanQuery.contains(resultTitle)) {
+                    bestMatch = result
+                }
+            }
+
+            let match = bestMatch ?? results.first(where: { ($0["type"] as? String) == "b" }) ?? results[0]
+
+            guard let picURL = match["pic"] as? String, !picURL.isEmpty else {
+                return nil
+            }
+
+            // 将小图 URL (/s/) 替换为大图 (/l/)
+            let largePicURL = picURL.replacingOccurrences(of: "/view/subject/s/", with: "/view/subject/l/")
+
+            print("[CoverFetch] Douban search found cover: \(largePicURL)")
+            return await downloadImage(from: largePicURL)
+        } catch {
+            print("[CoverFetch] Douban search error: \(error)")
+            return nil
+        }
+    }
+
+    /// 下载豆瓣封面图片
+    /// 将 lpic URL 转换为可用的 view/subject URL，并带 Referer 下载
+    func downloadWithReferer(urlStr: String) async -> Data? {
+        // 转换 URL: /lpic/sXXX.jpg → /view/subject/l/public/sXXX.jpg
+        let convertedURL = convertDoubanCoverURL(urlStr)
+        guard let url = URL(string: convertedURL) else { return nil }
+
+        do {
+            var request = URLRequest(url: url)
+            request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+            request.setValue("https://book.douban.com/", forHTTPHeaderField: "Referer")
+            request.timeoutInterval = 15
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else {
+                return nil
+            }
+            return data
+        } catch {
+            print("[CoverFetch] Direct download failed: \(error)")
+            return nil
+        }
+    }
+
+    /// 转换豆瓣封面 URL
+    /// "https://img3.doubanio.com/lpic/s28688273.jpg" → "https://img3.doubanio.com/view/subject/l/public/s28688273.jpg"
+    private func convertDoubanCoverURL(_ urlStr: String) -> String {
+        if urlStr.contains("/lpic/") {
+            return urlStr.replacingOccurrences(of: "/lpic/", with: "/view/subject/l/public/")
+        }
+        return urlStr
+    }
+
+    // MARK: - Private
+
+    private func parseCoverImageURL(from html: String) -> String? {
+        // 模式1: property="og:image" content="..."
+        if let range = html.range(of: #"property="og:image"\s+content="([^"]+)""#, options: .regularExpression) {
+            let matched = String(html[range])
+            if let urlRange = matched.range(of: #"content="([^"]+)""#, options: .regularExpression) {
+                var url = String(matched[urlRange])
+                url = url.replacingOccurrences(of: "content=\"", with: "")
+                url = url.replacingOccurrences(of: "\"", with: "")
+                if url.hasPrefix("http") {
+                    return url
+                }
+            }
+        }
+
+        // 模式2: content="..." property="og:image"
+        if let range = html.range(of: #"content="(https?://[^"]+)" property="og:image""#, options: .regularExpression) {
+            let matched = String(html[range])
+            if let start = matched.range(of: "content=\"")?.upperBound,
+               let end = matched.range(of: "\" property")?.lowerBound {
+                let url = String(matched[start..<end])
+                if url.hasPrefix("http") {
+                    return url
+                }
+            }
+        }
+
+        // 模式3: 直接匹配豆瓣大图 URL
+        if let range = html.range(of: #"https://img\d\.doubanio\.com/view/subject/l/public/s\d+\.jpg"#, options: .regularExpression) {
+            return String(html[range])
+        }
+
+        return nil
+    }
+
+    private func downloadImage(from urlStr: String) async -> Data? {
+        guard let url = URL(string: urlStr) else { return nil }
+        do {
+            var request = URLRequest(url: url)
+            request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+            request.setValue("https://book.douban.com", forHTTPHeaderField: "Referer")
+            request.timeoutInterval = 15
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else {
+                print("[CoverFetch] Image download HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+                return nil
+            }
+            return data
+        } catch {
+            print("[CoverFetch] Download failed: \(error)")
+            return nil
+        }
+    }
+}
