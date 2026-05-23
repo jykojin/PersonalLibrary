@@ -130,6 +130,13 @@ struct ImportExportView: View {
                 Text("导出为制表符分隔的文本文件（.tsv），可用 Excel 或 Numbers 打开")
             }
 
+            // MARK: - 操作历史
+            Section {
+                NavigationLink(destination: ImportHistoryView()) {
+                    Label("导入/添加历史", systemImage: "clock.arrow.circlepath")
+                }
+            }
+
             // MARK: - 数据统计
             Section("数据概览") {
                 LabeledContent("总藏书", value: "\(allBooks.count) 本")
@@ -196,6 +203,18 @@ struct ImportExportView: View {
         do {
             let result = try await importExportService.importBooks(from: url, modelContext: modelContext)
             importResult = result
+
+            // 记录导入历史
+            let record = ImportRecord(
+                source: "文件导入",
+                totalCount: result.successCount + result.failedCount,
+                successCount: result.successCount,
+                skippedCount: result.failedCount,
+                note: url.lastPathComponent
+            )
+            modelContext.insert(record)
+            try? modelContext.save()
+
             showingImportResult = true
         } catch {
             errorMessage = "导入失败：\(error.localizedDescription)"

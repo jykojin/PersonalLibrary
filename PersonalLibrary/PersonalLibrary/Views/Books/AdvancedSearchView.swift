@@ -23,6 +23,19 @@ struct AdvancedSearchView: View {
     @State private var selectedTag: Tag?
     @State private var filterNoShelf = false
 
+    // 评分条件
+    @State private var ratingFilter: RatingFilter = .any
+    @State private var minRating: Int = 1
+    @State private var maxRating: Int = 5
+
+    enum RatingFilter: String, CaseIterable {
+        case any = "不限"
+        case hasRating = "有评分"
+        case noRating = "未评分"
+        case exact = "指定星数"
+        case range = "分数区间"
+    }
+
     // 特殊条件
     @State private var missingAuthor = false
     @State private var missingPublisher = false
@@ -154,6 +167,21 @@ struct AdvancedSearchView: View {
                 }
             }
 
+            // 评分筛选
+            switch ratingFilter {
+            case .any:
+                break
+            case .hasRating:
+                if book.rating == nil { return false }
+            case .noRating:
+                if book.rating != nil { return false }
+            case .exact:
+                if book.rating != minRating { return false }
+            case .range:
+                guard let r = book.rating else { return false }
+                if r < minRating || r > maxRating { return false }
+            }
+
             // 加入时间范围
             if let after = addedAfter, book.addedDate < after {
                 return false
@@ -264,6 +292,55 @@ struct AdvancedSearchView: View {
                     }
                 }
                 .pickerStyle(.menu)
+            }
+
+            // 评分
+            HStack {
+                Label("评分", systemImage: "star")
+                Spacer()
+                Picker("", selection: $ratingFilter) {
+                    ForEach(RatingFilter.allCases, id: \.self) { filter in
+                        Text(filter.rawValue).tag(filter)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+
+            if ratingFilter == .exact {
+                HStack {
+                    Text("星数")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    ForEach(1...5, id: \.self) { star in
+                        Button {
+                            minRating = star
+                        } label: {
+                            Image(systemName: star <= minRating ? "star.fill" : "star")
+                                .foregroundStyle(star <= minRating ? .yellow : .gray)
+                        }
+                    }
+                }
+            }
+
+            if ratingFilter == .range {
+                HStack {
+                    Text("最低")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Picker("", selection: $minRating) {
+                        ForEach(1...5, id: \.self) { Text("\($0) 星").tag($0) }
+                    }
+                    .pickerStyle(.menu)
+                    Text("~")
+                    Text("最高")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Picker("", selection: $maxRating) {
+                        ForEach(1...5, id: \.self) { Text("\($0) 星").tag($0) }
+                    }
+                    .pickerStyle(.menu)
+                }
             }
         }
     }

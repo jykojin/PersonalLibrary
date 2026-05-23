@@ -24,9 +24,24 @@ struct WeReadShelfBook: Codable {
     let intro: String?
     let isbn: String?
     let price: Double?
-    let finished: Int?  // 1 = 已读完
+    let finished: Int?  // 1 = 已读完（不可靠，需配合 progress 判断）
     let format: String?  // epub, txt, pdf
     let type: Int?  // 0=电子书, 2=有声书(推测)
+    let readUpdateTime: Int?  // 加入书架时间（Unix 时间戳）
+    let finishReadingTime: Int?  // 读完时间（Unix 时间戳）
+}
+
+/// 划线/高亮列表响应
+struct WeReadBookmarkListResponse: Codable {
+    let updated: [WeReadBookmark]?
+}
+
+/// 单条划线
+struct WeReadBookmark: Codable {
+    let bookmarkId: String?
+    let markText: String?
+    let chapterName: String?
+    let createTime: Int?  // Unix 时间戳
 }
 
 /// 阅读进度
@@ -36,8 +51,9 @@ struct WeReadBookProgress: Codable {
     let chapterUid: Int?
     let chapterIdx: Int?
     let readingTime: Int?  // 秒
-    let updateTime: Int?  // Unix 时间戳
+    let updateTime: Int?  // Unix 时间戳（最后阅读时间）
     let ttsTime: Int?  // 有声书收听时间（秒）
+    let finishedDate: Int?  // 读完时间（Unix 时间戳）
 }
 
 /// 用于 UI 展示的导入条目
@@ -56,7 +72,36 @@ struct WeReadImportItem: Identifiable {
     let ttsTime: Int  // 有声书时长（秒）
     let isFinished: Bool
     let bookType: BookType  // 电子书或有声书（微信读书不会有纸质书）
+    let addedTime: Date?  // 加入书架时间
+    let finishedTime: Date?  // 读完时间
     var isSelected: Bool = true
+
+    /// 便捷初始化（addedTime/finishedTime 默认为 nil）
+    init(id: String, title: String, author: String, cover: String? = nil,
+         publisher: String? = nil, isbn: String? = nil, intro: String? = nil,
+         translator: String? = nil, category: String? = nil,
+         progress: Int = 0, readingTime: Int = 0, ttsTime: Int = 0,
+         isFinished: Bool = false, bookType: BookType = .ebook,
+         addedTime: Date? = nil, finishedTime: Date? = nil,
+         isSelected: Bool = true) {
+        self.id = id
+        self.title = title
+        self.author = author
+        self.cover = cover
+        self.publisher = publisher
+        self.isbn = isbn
+        self.intro = intro
+        self.translator = translator
+        self.category = category
+        self.progress = progress
+        self.readingTime = readingTime
+        self.ttsTime = ttsTime
+        self.isFinished = isFinished
+        self.bookType = bookType
+        self.addedTime = addedTime
+        self.finishedTime = finishedTime
+        self.isSelected = isSelected
+    }
 }
 
 // MARK: - WeRead API Service
@@ -112,6 +157,15 @@ actor WeReadService {
         return try JSONDecoder().decode(WeReadShelfBook.self, from: data)
     }
 
+    /// 获取书籍划线/高亮列表
+    func fetchBookmarks(bookId: String) async throws -> [WeReadBookmark] {
+        let encoded = bookId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? bookId
+        let url = URL(string: "\(baseURL)/web/book/bookmarklist?bookId=\(encoded)")!
+        let data = try await makeRequest(url: url)
+        let response = try JSONDecoder().decode(WeReadBookmarkListResponse.self, from: data)
+        return response.updated ?? []
+    }
+
     /// 刷新 Cookie
     func renewCookie() async throws -> Bool {
         var request = URLRequest(url: URL(string: "\(baseURL)/web/login/renewal")!)
@@ -160,14 +214,44 @@ actor WeReadService {
             let progress = progressMap[book.bookId]
             let ttsTime = progress?.ttsTime ?? 0
             let readingTime = progress?.readingTime ?? 0
+            let progressPercent = progress?.progress ?? 0
 
-            // 判断书籍类型：有 ttsTime > 0 或 type==2 为有声书，其余为电子书
+            // 判断书籍类型：type==2/3 或有 ttsTime 为有声书，其余为电子书
             // 微信读书导入的书不会是纸质书
             let bookType: BookType
-            if book.type == 2 || ttsTime > readingTime {
+            if book.type == 2 || book.type == 3 || ttsTime > 0 {
                 bookType = .audiobook
             } else {
                 bookType = .ebook
+            }
+
+            // 判断是否读完：progress == 100 或 finished == 1 且有 finishReadingTime
+            // 仅 finished==1 不可靠（书架 API 可能对所有书返回 1）
+            let isFinished = progressPercent >= 100
+                || (book.finished == 1 && (book.finishReadingTime != nil || progress?.finishedDate != nil))
+
+            // 加入书架时间
+            let addedTime: Date?
+            if let ts = book.readUpdateTime, ts > 0 {
+                addedTime = Date(timeIntervalSince1970: TimeInterval(ts))
+            } else {
+                addedTime = nil
+            }
+
+            // 读完时间：优先 book.finishReadingTime，其次 progress.finishedDate，最后 progress.updateTime（仅当已读完时）
+            let finishedTime: Date?
+            if isFinished {
+                if let ts = book.finishReadingTime, ts > 0 {
+                    finishedTime = Date(timeIntervalSince1970: TimeInterval(ts))
+                } else if let ts = progress?.finishedDate, ts > 0 {
+                    finishedTime = Date(timeIntervalSince1970: TimeInterval(ts))
+                } else if let ts = progress?.updateTime, ts > 0 {
+                    finishedTime = Date(timeIntervalSince1970: TimeInterval(ts))
+                } else {
+                    finishedTime = nil
+                }
+            } else {
+                finishedTime = nil
             }
 
             let item = WeReadImportItem(
@@ -180,11 +264,13 @@ actor WeReadService {
                 intro: book.intro,
                 translator: book.translator,
                 category: book.category,
-                progress: progress?.progress ?? 0,
+                progress: progressPercent,
                 readingTime: readingTime,
                 ttsTime: ttsTime,
-                isFinished: book.finished == 1,
-                bookType: bookType
+                isFinished: isFinished,
+                bookType: bookType,
+                addedTime: addedTime,
+                finishedTime: finishedTime
             )
             items.append(item)
         }
@@ -198,21 +284,25 @@ actor WeReadService {
         var imported = 0
         var skipped = 0
 
-        // 获取或创建"微信读书"标签（MainActor 操作）
-        let wereadTag = try await MainActor.run {
-            try findOrCreateTag(name: "微信读书", modelContext: modelContext)
+        // 获取或创建"微信读书"标签和书架（MainActor 操作）
+        let (wereadTag, wereadShelf) = try await MainActor.run {
+            let tag = try findOrCreateTag(name: "微信读书", modelContext: modelContext)
+            let shelf = try findOrCreateBookshelf(name: "微信读书", icon: "iphone", modelContext: modelContext)
+            return (tag, shelf)
         }
 
+        // 先插入所有书籍（不下载封面），速度优先
         for item in items where item.isSelected {
-            // 检查是否已存在（通过书名+作者去重）— MainActor 操作
+            // 检查是否已存在（只匹配电子书/有声书，不与纸质书混淆）
             let exists = try await MainActor.run {
                 let title = item.title
                 let author = item.author
                 var descriptor = FetchDescriptor<Book>(
                     predicate: #Predicate { $0.title == title && $0.author == author }
                 )
-                descriptor.fetchLimit = 1
-                return try !modelContext.fetch(descriptor).isEmpty
+                let matches = try modelContext.fetch(descriptor)
+                // 只有已存在同类型（电子书/有声书）才算重复
+                return matches.contains(where: { $0.bookType == .ebook || $0.bookType == .audiobook })
             }
 
             if exists {
@@ -220,40 +310,39 @@ actor WeReadService {
                 continue
             }
 
-            // 下载封面（网络操作，在 actor 上执行）
-            var coverData: Data?
-            if let coverURL = item.cover {
-                coverData = await downloadImage(from: coverURL)
-            }
-
-            // 创建新书并插入 — MainActor 操作
+            // 创建新书并插入（不等封面下载）
             try await MainActor.run {
-                // 微信读书导入的书类型为电子书或有声书，绝不是纸质书
                 let book = Book(
                     title: item.title,
                     author: item.author,
                     translator: item.translator,
                     isbn: item.isbn,
                     publisher: item.publisher,
-                    bookType: item.bookType,  // .ebook 或 .audiobook
+                    bookType: item.bookType,
                     bookDescription: item.intro,
                     coverImageURL: item.cover
                 )
-                book.wereadBookId = item.id  // 保存微信读书 ID 供后续同步匹配
+                book.wereadBookId = item.id
+                book.addSource = .wereadImported
 
-                // 设置阅读状态
+                // 加入时间：优先微信读书的加入书架时间
+                if let addedTime = item.addedTime {
+                    book.addedDate = addedTime
+                }
+
+                // 阅读状态：已读完→已读，有阅读时间/进度→正在读，其余→闲置
                 if item.isFinished {
                     book.status = .finished
-                    book.finishedDate = Date()
+                    book.finishedDate = item.finishedTime ?? Date()
                 } else if item.progress > 0 || item.readingTime > 0 || item.ttsTime > 0 {
                     book.status = .reading
                 } else {
-                    book.status = .wishlist
+                    book.status = .idle
                 }
                 book.statusChangedDate = Date()
 
-                // 封面数据
-                book.coverImageData = coverData
+                // 书架
+                book.bookshelf = wereadShelf
 
                 // 标签
                 var bookTags: [Tag] = [wereadTag]
@@ -267,15 +356,63 @@ actor WeReadService {
             }
 
             imported += 1
-
-            // 控制请求频率（封面下载之间）
-            try await Task.sleep(for: .milliseconds(50))
         }
 
+        // 记录导入历史
+        let totalSelected = items.filter { $0.isSelected }.count
         try await MainActor.run {
+            let record = ImportRecord(
+                source: "微信读书导入",
+                totalCount: totalSelected,
+                successCount: imported,
+                skippedCount: skipped
+            )
+            modelContext.insert(record)
             try modelContext.save()
         }
+
+        // 后台下载封面（不阻塞导入结果返回）
+        let booksToFetchCovers = items.filter { $0.isSelected && $0.cover != nil }
+        let container = modelContext.container
+        Task {
+            for item in booksToFetchCovers {
+                guard let coverURL = item.cover else { continue }
+                let coverData = await downloadImage(from: coverURL)
+                if let coverData {
+                    await MainActor.run {
+                        let bgContext = ModelContext(container)
+                        let title = item.title
+                        let author = item.author
+                        var descriptor = FetchDescriptor<Book>(
+                            predicate: #Predicate { $0.title == title && $0.author == author }
+                        )
+                        descriptor.fetchLimit = 1
+                        if let book = try? bgContext.fetch(descriptor).first {
+                            book.coverImageData = coverData
+                            try? bgContext.save()
+                        }
+                    }
+                }
+            }
+        }
+
         return ImportSummary(imported: imported, skipped: skipped)
+    }
+
+    /// 查找或创建书架
+    nonisolated private func findOrCreateBookshelf(name: String, icon: String, modelContext: ModelContext) throws -> Bookshelf {
+        let shelfName = name
+        var descriptor = FetchDescriptor<Bookshelf>(
+            predicate: #Predicate { $0.name == shelfName }
+        )
+        descriptor.fetchLimit = 1
+
+        if let existing = try modelContext.fetch(descriptor).first {
+            return existing
+        }
+        let shelf = Bookshelf(name: name, icon: icon)
+        modelContext.insert(shelf)
+        return shelf
     }
 
     struct ImportSummary {

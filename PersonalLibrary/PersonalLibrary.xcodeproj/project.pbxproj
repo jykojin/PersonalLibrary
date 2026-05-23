@@ -20,6 +20,7 @@
 		61B7C1A11768DDDBAB3264E4 /* BookService.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD64B2DD2CB3C57DFE3DE2FB /* BookService.swift */; };
 		639BD6ABBB4EDDF3E70D5132 /* Tag.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0D15753503BAB153F60B9B6 /* Tag.swift */; };
 		686546E07C7991552DF4424B /* ProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9FC0BCC1F18C4E124299ADE /* ProfileView.swift */; };
+		6AD293434A6CFCA5CA49D39E /* ImportHistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A95E2C460974691EB8538BB5 /* ImportHistoryView.swift */; };
 		6C8AE9DF37C4A008A7ECCE67 /* PersonalLibraryUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A1027FC1EC39B3B063C02B6 /* PersonalLibraryUITests.swift */; };
 		702DA6722866A49A53DE202F /* ReadingProgressView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8D4589CBB7976795276F23D /* ReadingProgressView.swift */; };
 		765B208CE0801D80C7E654C9 /* WeReadImportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 843A18820B905386EE81983F /* WeReadImportView.swift */; };
@@ -30,6 +31,7 @@
 		A490080504DE0091F1993BE0 /* ExcelImportExportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D2E3C7560B14260793E3C54 /* ExcelImportExportService.swift */; };
 		A8381A1722F0F43B5228D813 /* Bookshelf.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC5361797A17134EBBC3B518 /* Bookshelf.swift */; };
 		A931AF1221AB2786C34C6D85 /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 0A5F617F7BA886A2A83F6679 /* Preview Assets.xcassets */; };
+		B156F621F880FF7035F11EB6 /* ImportRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80C26F79C497CEB88D3F5327 /* ImportRecord.swift */; };
 		B46C376CEDC2632F7B5943EB /* AddReadingRecordView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C804FF15BDE4A5A85C367911 /* AddReadingRecordView.swift */; };
 		C2BF102B722D1457EC5F5DFF /* StorageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDB95BE34A79F5D4E93F7D3C /* StorageManager.swift */; };
 		C319B3005AAFE99A9C08B0A4 /* PersonalLibraryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6FC423F39CB343C0B12871C /* PersonalLibraryTests.swift */; };
@@ -77,6 +79,7 @@
 		705F4B59E1366B9C933D78BE /* WeReadSyncView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeReadSyncView.swift; sourceTree = "<group>"; };
 		7D3F152D29BC867FAF1D8381 /* KeychainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainService.swift; sourceTree = "<group>"; };
 		807723C2BC4CC83D642DB631 /* BookshelfListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookshelfListView.swift; sourceTree = "<group>"; };
+		80C26F79C497CEB88D3F5327 /* ImportRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportRecord.swift; sourceTree = "<group>"; };
 		843A18820B905386EE81983F /* WeReadImportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeReadImportView.swift; sourceTree = "<group>"; };
 		869DB44DE0B3D6513FD372D4 /* PersonalLibraryTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PersonalLibraryTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		88640782F12C94E8F4CD7B87 /* WeReadLoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeReadLoginView.swift; sourceTree = "<group>"; };
@@ -84,6 +87,7 @@
 		8BBD6F76EC899152EEF4314A /* PersonalLibrary.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PersonalLibrary.entitlements; sourceTree = "<group>"; };
 		9144AAAF1F9DE1D5893AF89A /* PersonalLibrary.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PersonalLibrary.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9B85318DE00198B35B0A6090 /* AddBookView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddBookView.swift; sourceTree = "<group>"; };
+		A95E2C460974691EB8538BB5 /* ImportHistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportHistoryView.swift; sourceTree = "<group>"; };
 		AD70F02DDA17AEF6E793FE28 /* AuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthService.swift; sourceTree = "<group>"; };
 		AE64F2E7B6950EAE60EA9D19 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		B0D15753503BAB153F60B9B6 /* Tag.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tag.swift; sourceTree = "<group>"; };
@@ -122,6 +126,7 @@
 			children = (
 				BEFD01915041338525804236 /* Book.swift */,
 				BC5361797A17134EBBC3B518 /* Bookshelf.swift */,
+				80C26F79C497CEB88D3F5327 /* ImportRecord.swift */,
 				5F1F4735287F12B60CE6CEE6 /* ReadingRecord.swift */,
 				B0D15753503BAB153F60B9B6 /* Tag.swift */,
 			);
@@ -270,6 +275,7 @@
 			isa = PBXGroup;
 			children = (
 				DB9498C95CCCDC9A51B5EECF /* ImportExportView.swift */,
+				A95E2C460974691EB8538BB5 /* ImportHistoryView.swift */,
 				F9FC0BCC1F18C4E124299ADE /* ProfileView.swift */,
 			);
 			path = Settings;
@@ -426,6 +432,8 @@
 				A490080504DE0091F1993BE0 /* ExcelImportExportService.swift in Sources */,
 				9C1DE30F494E63DEF129C8DF /* ISBNLookupService.swift in Sources */,
 				5EB2F9CB1E2335958CFDA6ED /* ImportExportView.swift in Sources */,
+				6AD293434A6CFCA5CA49D39E /* ImportHistoryView.swift in Sources */,
+				B156F621F880FF7035F11EB6 /* ImportRecord.swift in Sources */,
 				7E530469E88E657A6DF3E936 /* KeychainService.swift in Sources */,
 				5C9F6BE6FDA2C3F5F75966E3 /* PersonalLibraryApp.swift in Sources */,
 				686546E07C7991552DF4424B /* ProfileView.swift in Sources */,

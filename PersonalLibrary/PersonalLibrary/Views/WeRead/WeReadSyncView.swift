@@ -9,6 +9,7 @@ struct WeReadSyncView: View {
     @State private var isLoggedIn = false
     @State private var autoSyncEnabled = WeReadSyncService.autoSyncEnabled
     @State private var isSyncing = false
+    @State private var syncProgress: WeReadSyncService.SyncProgress?
     @State private var syncResult: WeReadSyncService.SyncResult?
     @State private var showingLogin = false
     @State private var showingLogoutAlert = false
@@ -64,12 +65,31 @@ struct WeReadSyncView: View {
                             Label("立即同步", systemImage: "arrow.clockwise")
                             Spacer()
                             if isSyncing {
+                                if let progress = syncProgress, progress.total > 0 {
+                                    Text("\(progress.current)/\(progress.total)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
                                 ProgressView()
                                     .controlSize(.small)
                             }
                         }
                     }
                     .disabled(isSyncing)
+
+                    // 同步进度详情
+                    if isSyncing, let progress = syncProgress {
+                        HStack {
+                            Text(progress.phase)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            if progress.total > 0 {
+                                Spacer()
+                                ProgressView(value: Double(progress.current), total: Double(progress.total))
+                                    .frame(width: 100)
+                            }
+                        }
+                    }
 
                     // 上次同步时间
                     if let lastSync = WeReadSyncService.lastSyncDate {
@@ -194,9 +214,17 @@ struct WeReadSyncView: View {
 
     private func performSync() async {
         isSyncing = true
-        defer { isSyncing = false }
+        syncProgress = nil
+        defer {
+            isSyncing = false
+            syncProgress = nil
+        }
 
-        let result = await syncService.sync(modelContext: modelContext)
+        let result = await syncService.sync(modelContext: modelContext) { progress in
+            Task { @MainActor in
+                syncProgress = progress
+            }
+        }
         syncResult = result
 
         if result.error?.contains("过期") == true || result.error?.contains("登录") == true {

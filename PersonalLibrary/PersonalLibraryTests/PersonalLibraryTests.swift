@@ -410,7 +410,7 @@ struct ExcelImportTests {
             return  // 测试文件不可用时跳过
         }
 
-        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self])
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [config])
         let context = ModelContext(container)
@@ -578,7 +578,7 @@ struct WeReadServiceImportTests {
 
     @Test("导入时跳过已存在的书籍（去重）")
     func deduplication() async throws {
-        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self])
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [config])
         let context = ModelContext(container)
@@ -608,7 +608,7 @@ struct WeReadServiceImportTests {
 
     @Test("只导入选中的书籍")
     func onlySelectedItems() async throws {
-        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self])
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [config])
         let context = ModelContext(container)
@@ -644,7 +644,7 @@ struct WeReadServiceImportTests {
 
     @Test("已读完的书状态为finished")
     func finishedBookStatus() async throws {
-        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self])
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [config])
         let context = ModelContext(container)
@@ -669,7 +669,7 @@ struct WeReadServiceImportTests {
 
     @Test("有进度的书状态为reading")
     func readingBookStatus() async throws {
-        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self])
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [config])
         let context = ModelContext(container)
@@ -691,9 +691,9 @@ struct WeReadServiceImportTests {
         #expect(books.first?.status == .reading)
     }
 
-    @Test("无进度的书状态为wishlist")
-    func wishlistBookStatus() async throws {
-        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self])
+    @Test("无进度的书状态为idle")
+    func idleBookStatus() async throws {
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [config])
         let context = ModelContext(container)
@@ -712,12 +712,12 @@ struct WeReadServiceImportTests {
         _ = try await service.importBooks(items, modelContext: context)
 
         let books = try context.fetch(FetchDescriptor<Book>())
-        #expect(books.first?.status == .wishlist)
+        #expect(books.first?.status == .idle)
     }
 
     @Test("导入时自动添加微信读书标签")
     func wereadTagAdded() async throws {
-        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self])
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [config])
         let context = ModelContext(container)
@@ -744,7 +744,7 @@ struct WeReadServiceImportTests {
 
     @Test("导入电子书类型正确")
     func ebookTypePreserved() async throws {
-        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self])
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [config])
         let context = ModelContext(container)
@@ -769,7 +769,7 @@ struct WeReadServiceImportTests {
 
     @Test("导入有声书类型正确")
     func audiobookTypePreserved() async throws {
-        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self])
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [config])
         let context = ModelContext(container)
@@ -880,7 +880,7 @@ struct WeReadSyncLogicTests {
 
     @Test("未登录时同步返回错误")
     func syncWithoutLogin() async throws {
-        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self])
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [config])
         let context = ModelContext(container)
@@ -909,7 +909,7 @@ struct WeReadSyncLogicTests {
 
     @Test("导入时设置 wereadBookId")
     func importSetsWereadId() async throws {
-        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self])
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [config])
         let context = ModelContext(container)

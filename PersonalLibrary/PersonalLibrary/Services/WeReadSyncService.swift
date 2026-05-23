@@ -57,11 +57,19 @@ actor WeReadSyncService {
 
     // MARK: - Core Sync
 
-    /// 执行增量同步
-    func sync(modelContext: ModelContext) async -> SyncResult {
+    /// 同步进度信息
+    struct SyncProgress: Sendable {
+        let current: Int
+        let total: Int
+        let phase: String  // "检查登录" / "拉取书架" / "处理书籍" / "保存数据"
+    }
+
+    /// 执行增量同步（带进度回调）
+    func sync(modelContext: ModelContext, onProgress: (@Sendable (SyncProgress) -> Void)? = nil) async -> SyncResult {
         var result = SyncResult()
 
         // 1. 检查登录状态
+        onProgress?(SyncProgress(current: 0, total: 0, phase: "检查登录"))
         guard await weReadService.isLoggedIn() else {
             result.error = "未登录微信读书"
             return result
@@ -75,6 +83,7 @@ actor WeReadSyncService {
         }
 
         // 3. 拉取微信读书书架
+        onProgress?(SyncProgress(current: 0, total: 0, phase: "拉取书架"))
         let remoteBooks: [WeReadImportItem]
         do {
             remoteBooks = try await weReadService.fetchAllBooks()
@@ -115,41 +124,64 @@ actor WeReadSyncService {
             }
         }
 
-        // 5. 获取或创建"微信读书"标签
+        // 5. 获取或创建"微信读书"标签和书架
         let wereadTag: Tag
+        let wereadShelf: Bookshelf
         do {
-            wereadTag = try await MainActor.run {
-                try findOrCreateTag(name: "微信读书", modelContext: modelContext)
+            (wereadTag, wereadShelf) = try await MainActor.run {
+                let tag = try findOrCreateTag(name: "微信读书", modelContext: modelContext)
+                let shelf = try findOrCreateBookshelf(name: "微信读书", icon: "iphone", modelContext: modelContext)
+                return (tag, shelf)
             }
         } catch {
-            result.error = "创建标签失败"
+            result.error = "创建标签/书架失败"
             return result
         }
 
         // 6. 逐本处理（每 20 本保存一次，避免内存压力和全量丢失）
+        let totalRemoteCount = remoteBooks.count
+        var processedCount = 0
         var processedSinceLastSave = 0
         for item in remoteBooks {
+            processedCount += 1
+            onProgress?(SyncProgress(current: processedCount, total: totalRemoteCount, phase: "处理书籍"))
             if let existingBook = localBookMap[item.id] {
-                // 已存在 → 更新进度和状态
+                // 已存在 → 补充书架/标签（修复早期导入缺失）+ 更新进度和状态
+                await MainActor.run {
+                    if existingBook.bookshelf == nil {
+                        existingBook.bookshelf = wereadShelf
+                    }
+                    if existingBook.tags?.contains(where: { $0.name == "微信读书" }) != true {
+                        var tags = existingBook.tags ?? []
+                        tags.append(wereadTag)
+                        existingBook.tags = tags
+                    }
+                }
                 let updated = await updateExistingBook(book: existingBook, item: item)
                 if updated.progressChanged { result.progressUpdated += 1 }
                 if updated.statusChanged { result.statusUpdated += 1 }
             } else {
-                // 不存在 → 通过书名+作者匹配（兼容首次导入时没有 wereadBookId 的老数据）
-                let matchedByTitle = await findBookByTitleAuthor(
-                    title: item.title,
-                    author: item.author,
-                    modelContext: modelContext
-                )
-                if let existingBook = matchedByTitle {
-                    // 补充 wereadBookId 并更新
-                    await MainActor.run { existingBook.wereadBookId = item.id }
+                // 不存在 → 通过 ISBN+bookType 或 书名+作者+bookType 匹配
+                let matched = await findExistingBook(item: item, modelContext: modelContext)
+                if let existingBook = matched {
+                    // 补充 wereadBookId、书架、标签
+                    await MainActor.run {
+                        existingBook.wereadBookId = item.id
+                        if existingBook.bookshelf == nil {
+                            existingBook.bookshelf = wereadShelf
+                        }
+                        if existingBook.tags?.contains(where: { $0.name == "微信读书" }) != true {
+                            var tags = existingBook.tags ?? []
+                            tags.append(wereadTag)
+                            existingBook.tags = tags
+                        }
+                    }
                     let updated = await updateExistingBook(book: existingBook, item: item)
                     if updated.progressChanged { result.progressUpdated += 1 }
                     if updated.statusChanged { result.statusUpdated += 1 }
                 } else {
                     // 全新书 → 导入
-                    await importNewBook(item: item, tag: wereadTag, modelContext: modelContext)
+                    await importNewBook(item: item, tag: wereadTag, shelf: wereadShelf, modelContext: modelContext)
                     result.newBooksImported += 1
                 }
             }
@@ -173,7 +205,113 @@ actor WeReadSyncService {
             result.error = "保存数据失败: \(error.localizedDescription)"
         }
 
-        // 8. 记录同步时间
+        // 8. 记录导入历史（仅当有新书导入时）
+        if result.newBooksImported > 0 {
+            await MainActor.run {
+                let record = ImportRecord(
+                    source: "微信读书导入",
+                    totalCount: result.newBooksImported,
+                    successCount: result.newBooksImported,
+                    note: "自动同步"
+                )
+                modelContext.insert(record)
+                try? modelContext.save()
+            }
+        }
+
+        // 9. 后台串行执行：封面下载 → 详情补全 → 划线拉取
+        // 避免并发请求过多导致手机卡顿
+        do {
+            let container = modelContext.container
+            let hasNewBooks = result.newBooksImported > 0
+            Task.detached(priority: .utility) {
+                let bgContext = await MainActor.run { ModelContext(container) }
+
+                // 9a. 封面下载（限制每次最多 20 本，每 3 本暂停 1 秒）
+                if hasNewBooks {
+                    var coverDescriptor = FetchDescriptor<Book>(
+                        predicate: #Predicate { $0.coverImageData == nil && $0.coverImageURL != nil }
+                    )
+                    coverDescriptor.fetchLimit = 20
+                    let booksNeedCover = (try? await MainActor.run { try bgContext.fetch(coverDescriptor) }) ?? []
+                    for (index, book) in booksNeedCover.enumerated() {
+                        guard let urlStr = book.coverImageURL, !urlStr.isEmpty else { continue }
+                        if index > 0 && index % 3 == 0 {
+                            try? await Task.sleep(for: .seconds(1))
+                        }
+                        if let data = await self.downloadImage(from: urlStr) {
+                            await MainActor.run { book.coverImageData = data }
+                        }
+                    }
+                    await MainActor.run { try? bgContext.save() }
+                }
+
+                // 9b. 详情补全（每次最多 15 本，每 3 个请求暂停 1 秒）
+                var infoDescriptor = FetchDescriptor<Book>(
+                    predicate: #Predicate { $0.wereadBookId != nil && $0.publisher == nil }
+                )
+                infoDescriptor.fetchLimit = 15
+                let booksNeedInfo = (try? await MainActor.run { try bgContext.fetch(infoDescriptor) }) ?? []
+                for (index, book) in booksNeedInfo.enumerated() {
+                    guard let bookId = book.wereadBookId else { continue }
+                    if index > 0 && index % 3 == 0 {
+                        try? await Task.sleep(for: .seconds(1))
+                    }
+                    do {
+                        let info = try await self.weReadService.fetchBookInfo(bookId: bookId)
+                        await MainActor.run {
+                            if let publisher = info.publisher, !publisher.isEmpty {
+                                book.publisher = publisher
+                            }
+                            if let isbn = info.isbn, !isbn.isEmpty {
+                                book.isbn = isbn
+                            }
+                            if let intro = info.intro, !intro.isEmpty, book.bookDescription == nil {
+                                book.bookDescription = intro
+                            }
+                            if let price = info.price, price > 0 {
+                                book.price = "¥\(String(format: "%.2f", price))"
+                            }
+                            if let publishTime = info.publishTime, !publishTime.isEmpty {
+                                book.publishDate = self.parsePublishDate(publishTime)
+                            }
+                            // 修正书籍类型：type==2 或 type==3 为有声书
+                            if let type = info.type, (type == 2 || type == 3), book.bookType != .audiobook {
+                                book.bookType = .audiobook
+                            }
+                        }
+                    } catch {
+                        print("[WeReadSync] 拉取书籍详情失败 (\(book.title)): \(error)")
+                    }
+                }
+                await MainActor.run { try? bgContext.save() }
+
+                // 9c. 划线拉取（每次最多 10 本，每 3 个请求暂停 1 秒）
+                var bookmarkDescriptor = FetchDescriptor<Book>(
+                    predicate: #Predicate { $0.wereadBookId != nil && $0.notes == nil }
+                )
+                bookmarkDescriptor.fetchLimit = 10
+                let booksNeedBookmarks = (try? await MainActor.run { try bgContext.fetch(bookmarkDescriptor) }) ?? []
+                for (index, book) in booksNeedBookmarks.enumerated() {
+                    guard let bookId = book.wereadBookId else { continue }
+                    if index > 0 && index % 3 == 0 {
+                        try? await Task.sleep(for: .seconds(1))
+                    }
+                    do {
+                        let bookmarks = try await self.weReadService.fetchBookmarks(bookId: bookId)
+                        if !bookmarks.isEmpty {
+                            let notesText = self.formatBookmarks(bookmarks)
+                            await MainActor.run { book.notes = notesText }
+                        }
+                    } catch {
+                        print("[WeReadSync] 拉取划线失败 (\(book.title)): \(error)")
+                    }
+                }
+                await MainActor.run { try? bgContext.save() }
+            }
+        }
+
+        // 12. 记录同步时间
         Self.lastSyncDate = Date()
 
         return result
@@ -196,6 +334,11 @@ actor WeReadSyncService {
                 result.progressChanged = true
             }
 
+            // 补充加入时间（如果本地是默认的当前时间、远端有真实时间）
+            if let addedTime = item.addedTime, book.addedDate > addedTime {
+                book.addedDate = addedTime
+            }
+
             // 状态更新逻辑：
             // - 微信读书标记"已读完" → 本地也标记已读（除非用户已手动设为弃读）
             // - 微信读书有进度但本地还是"闲置/想读" → 更新为"正在读"
@@ -203,7 +346,7 @@ actor WeReadSyncService {
                 book.status = .finished
                 book.statusChangedDate = Date()
                 if book.finishedDate == nil {
-                    book.finishedDate = Date()
+                    book.finishedDate = item.finishedTime ?? Date()
                 }
                 result.statusChanged = true
             } else if !item.isFinished && item.progress > 0 &&
@@ -222,14 +365,10 @@ actor WeReadSyncService {
     private func importNewBook(
         item: WeReadImportItem,
         tag: Tag,
+        shelf: Bookshelf,
         modelContext: ModelContext
     ) async {
-        // 下载封面
-        var coverData: Data?
-        if let coverURL = item.cover {
-            coverData = await downloadImage(from: coverURL)
-        }
-
+        // 不下载封面，先插入数据（封面在 sync 完成后统一后台下载）
         await MainActor.run {
             let book = Book(
                 title: item.title,
@@ -244,19 +383,26 @@ actor WeReadSyncService {
 
             book.wereadBookId = item.id
             book.wereadProgress = item.progress
-            book.coverImageData = coverData
-            book.addSource = .imported
+            book.addSource = .wereadImported
+
+            // 加入时间：优先微信读书的加入书架时间
+            if let addedTime = item.addedTime {
+                book.addedDate = addedTime
+            }
 
             // 阅读状态
             if item.isFinished {
                 book.status = .finished
-                book.finishedDate = Date()
+                book.finishedDate = item.finishedTime ?? Date()
             } else if item.progress > 0 || item.readingTime > 0 || item.ttsTime > 0 {
                 book.status = .reading
             } else {
-                book.status = .wishlist
+                book.status = .idle
             }
             book.statusChangedDate = Date()
+
+            // 书架
+            book.bookshelf = shelf
 
             // 标签
             var bookTags: [Tag] = [tag]
@@ -273,18 +419,91 @@ actor WeReadSyncService {
 
     // MARK: - Helpers
 
-    private func findBookByTitleAuthor(
-        title: String,
-        author: String,
+    /// 查找已有书籍（防止电子书和纸质书混淆）
+    /// 优先 ISBN+bookType（电子书/有声书），其次 书名+作者+bookType（只匹配电子书/有声书）
+    /// 使用内存过滤避免 SwiftData #Predicate 对 enum 比较的已知问题
+    private func findExistingBook(
+        item: WeReadImportItem,
         modelContext: ModelContext
     ) async -> Book? {
         return try? await MainActor.run {
-            var descriptor = FetchDescriptor<Book>(
+            // 1. 优先 ISBN + bookType（电子书/有声书）匹配
+            if let isbn = item.isbn, !isbn.isEmpty {
+                let isbnStr = isbn
+                var isbnDescriptor = FetchDescriptor<Book>(
+                    predicate: #Predicate { $0.isbn == isbnStr }
+                )
+                let isbnMatches = try modelContext.fetch(isbnDescriptor)
+                if let match = isbnMatches.first(where: {
+                    $0.bookType == .ebook || $0.bookType == .audiobook
+                }) {
+                    return match
+                }
+            }
+
+            // 2. 书名 + 作者 + bookType（只匹配电子书/有声书，不匹配纸质书）
+            let title = item.title
+            let author = item.author
+            var titleDescriptor = FetchDescriptor<Book>(
                 predicate: #Predicate { $0.title == title && $0.author == author }
             )
-            descriptor.fetchLimit = 1
-            return try modelContext.fetch(descriptor).first
+            let titleMatches = try modelContext.fetch(titleDescriptor)
+            return titleMatches.first(where: {
+                $0.bookType == .ebook || $0.bookType == .audiobook
+            })
         }
+    }
+
+    /// 解析出版日期字符串（微信读书格式如 "2020-01" 或 "2020-01-15" 或 "2020"）
+    nonisolated private func parsePublishDate(_ dateString: String) -> Date? {
+        let formatters: [String] = ["yyyy-MM-dd", "yyyy-MM", "yyyy"]
+        for format in formatters {
+            let formatter = DateFormatter()
+            formatter.dateFormat = format
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            if let date = formatter.date(from: dateString) {
+                return date
+            }
+        }
+        return nil
+    }
+
+    /// 将划线列表格式化为可读文本
+    nonisolated private func formatBookmarks(_ bookmarks: [WeReadBookmark]) -> String {
+        var sections: [String: [String]] = [:]  // chapterName → [markText]
+        var noChapter: [String] = []
+
+        for bm in bookmarks {
+            guard let text = bm.markText, !text.isEmpty else { continue }
+            if let chapter = bm.chapterName, !chapter.isEmpty {
+                sections[chapter, default: []].append(text)
+            } else {
+                noChapter.append(text)
+            }
+        }
+
+        var lines: [String] = []
+        lines.append("【微信读书划线】")
+        lines.append("")
+
+        // 按章节分组输出
+        for (chapter, texts) in sections.sorted(by: { $0.key < $1.key }) {
+            lines.append("## \(chapter)")
+            for text in texts {
+                lines.append("· \(text)")
+            }
+            lines.append("")
+        }
+
+        // 无章节的划线
+        if !noChapter.isEmpty {
+            for text in noChapter {
+                lines.append("· \(text)")
+            }
+            lines.append("")
+        }
+
+        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func downloadImage(from urlString: String) async -> Data? {
@@ -315,5 +534,21 @@ actor WeReadSyncService {
         let tag = Tag(name: name)
         modelContext.insert(tag)
         return tag
+    }
+
+    /// 查找或创建书架
+    nonisolated private func findOrCreateBookshelf(name: String, icon: String, modelContext: ModelContext) throws -> Bookshelf {
+        let shelfName = name
+        var descriptor = FetchDescriptor<Bookshelf>(
+            predicate: #Predicate { $0.name == shelfName }
+        )
+        descriptor.fetchLimit = 1
+
+        if let existing = try modelContext.fetch(descriptor).first {
+            return existing
+        }
+        let shelf = Bookshelf(name: name, icon: icon)
+        modelContext.insert(shelf)
+        return shelf
     }
 }

@@ -9,6 +9,8 @@ struct StatisticsView: View {
 
     @State private var cachedStats: CachedStatistics?
     @State private var selectedTab: StatsTab = .overview
+    @State private var trendFilter: BookType? = nil  // nil = 全部
+    @State private var selectedYear: Int = Calendar.current.component(.year, from: Date())
 
     enum StatsTab: String, CaseIterable {
         case overview = "概览"
@@ -63,6 +65,19 @@ struct StatisticsView: View {
         let manualCount: Int
         let scannedCount: Int
         let importedCount: Int
+        let wereadImportedCount: Int
+
+        // 藏书分析
+        let topAuthors: [(name: String, count: Int)]
+        let topPublishers: [(name: String, count: Int)]
+        let topCategories: [(name: String, count: Int)]
+
+        // 趋势（按类型细分）
+        let allYears: [Int]  // 有数据的年份列表
+        // 全量月度数据：[year-month: (total, paper, ebook, audiobook)]
+        let monthlyAddedByType: [String: (total: Int, paper: Int, ebook: Int, audiobook: Int)]
+        let monthlyFinishedByType: [String: (total: Int, paper: Int, ebook: Int, audiobook: Int)]
+        let yearlyAddedByType: [(year: Int, total: Int, paper: Int, ebook: Int, audiobook: Int)]
     }
 
     private var stats: CachedStatistics {
@@ -106,7 +121,7 @@ struct StatisticsView: View {
             }
             .background(Color(.systemGroupedBackground))
             .navigationTitle("阅读统计")
-            .onAppear { cachedStats = computeStats() }
+            .task { cachedStats = computeStats() }
             .onChange(of: books.count) { _, _ in cachedStats = computeStats() }
         }
     }
@@ -117,9 +132,9 @@ struct StatisticsView: View {
         HStack(spacing: 0) {
             heroItem(value: "\(totalBooks)", label: "总藏书", color: .blue)
             heroDivider
-            heroItem(value: "\(booksRead)", label: "已读完", color: .green)
+            heroItem(value: "\(paperCount)", label: "纸质书", color: .brown)
             heroDivider
-            heroItem(value: "\(booksReading)", label: "在读中", color: .orange)
+            heroItem(value: "\(ebookCount)", label: "电子书", color: .teal)
         }
         .padding(.vertical, 20)
         .background(
@@ -198,29 +213,56 @@ struct StatisticsView: View {
 
     private var trendsTab: some View {
         VStack(spacing: 20) {
-            if monthlyFinished.contains(where: { $0.count > 0 }) {
-                chartCard(title: "月度完读", icon: "checkmark.circle") {
+            // 类型筛选器
+            trendFilterPicker
+
+            // 年度入库
+            if !stats.yearlyAddedByType.isEmpty {
+                chartCard(title: "年度入库", icon: "calendar") {
                     Chart {
-                        ForEach(Array(monthlyFinished.enumerated()), id: \.offset) { _, item in
+                        ForEach(stats.yearlyAddedByType, id: \.year) { item in
                             BarMark(
-                                x: .value("月份", item.month),
-                                y: .value("数量", item.count)
+                                x: .value("年份", "\(item.year)"),
+                                y: .value("数量", filteredYearlyCount(item))
                             )
-                            .foregroundStyle(.green.gradient)
+                            .foregroundStyle(.purple.gradient)
                             .cornerRadius(4)
                         }
                     }
-                    .frame(height: 220)
+                    .frame(height: 180)
                 }
             }
 
-            if stats.monthlyAdded.contains(where: { $0.count > 0 }) {
-                chartCard(title: "月度入库", icon: "arrow.down.to.line") {
+            // 月度入库（可选年份）
+            chartCard(title: "月度入库", icon: "arrow.down.to.line") {
+                VStack(spacing: 12) {
+                    // 年份选择器
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(stats.allYears, id: \.self) { year in
+                                Button {
+                                    selectedYear = year
+                                } label: {
+                                    Text("\(String(year))")
+                                        .font(.caption)
+                                        .fontWeight(selectedYear == year ? .bold : .regular)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 6)
+                                        .background(selectedYear == year ? Color.blue : Color(.systemGray5))
+                                        .foregroundStyle(selectedYear == year ? .white : .primary)
+                                        .clipShape(Capsule())
+                                }
+                            }
+                        }
+                    }
+
                     Chart {
-                        ForEach(Array(stats.monthlyAdded.enumerated()), id: \.offset) { _, item in
+                        ForEach(1...12, id: \.self) { month in
+                            let key = "\(selectedYear)-\(month)"
+                            let count = filteredMonthlyAdded(key: key)
                             BarMark(
-                                x: .value("月份", item.month),
-                                y: .value("数量", item.count)
+                                x: .value("月份", "\(month)月"),
+                                y: .value("数量", count)
                             )
                             .foregroundStyle(.blue.gradient)
                             .cornerRadius(4)
@@ -230,21 +272,78 @@ struct StatisticsView: View {
                 }
             }
 
-            if yearlyAdded.count > 1 {
-                chartCard(title: "年度入库", icon: "calendar") {
-                    Chart {
-                        ForEach(Array(yearlyAdded.enumerated()), id: \.offset) { _, item in
-                            BarMark(
-                                x: .value("年份", item.year),
-                                y: .value("数量", item.count)
-                            )
-                            .foregroundStyle(.purple.gradient)
-                            .cornerRadius(4)
-                        }
+            // 月度完读（选中年份）
+            chartCard(title: "月度完读", icon: "checkmark.circle") {
+                Chart {
+                    ForEach(1...12, id: \.self) { month in
+                        let key = "\(selectedYear)-\(month)"
+                        let count = filteredMonthlyFinished(key: key)
+                        BarMark(
+                            x: .value("月份", "\(month)月"),
+                            y: .value("数量", count)
+                        )
+                        .foregroundStyle(.green.gradient)
+                        .cornerRadius(4)
                     }
-                    .frame(height: 180)
                 }
+                .frame(height: 220)
             }
+        }
+    }
+
+    // MARK: - 趋势筛选器
+
+    private var trendFilterPicker: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                filterChip(label: "全部", isActive: trendFilter == nil) { trendFilter = nil }
+                filterChip(label: "纸质书", isActive: trendFilter == .paper) { trendFilter = .paper }
+                filterChip(label: "电子书", isActive: trendFilter == .ebook) { trendFilter = .ebook }
+                filterChip(label: "有声书", isActive: trendFilter == .audiobook) { trendFilter = .audiobook }
+            }
+            .padding(.horizontal)
+        }
+    }
+
+    private func filterChip(label: String, isActive: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.caption)
+                .fontWeight(isActive ? .semibold : .regular)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .background(isActive ? Color.accentColor : Color(.systemGray5))
+                .foregroundStyle(isActive ? .white : .primary)
+                .clipShape(Capsule())
+        }
+    }
+
+    private func filteredYearlyCount(_ item: (year: Int, total: Int, paper: Int, ebook: Int, audiobook: Int)) -> Int {
+        switch trendFilter {
+        case nil: return item.total
+        case .paper: return item.paper
+        case .ebook: return item.ebook
+        case .audiobook: return item.audiobook
+        }
+    }
+
+    private func filteredMonthlyAdded(key: String) -> Int {
+        guard let entry = stats.monthlyAddedByType[key] else { return 0 }
+        switch trendFilter {
+        case nil: return entry.total
+        case .paper: return entry.paper
+        case .ebook: return entry.ebook
+        case .audiobook: return entry.audiobook
+        }
+    }
+
+    private func filteredMonthlyFinished(key: String) -> Int {
+        guard let entry = stats.monthlyFinishedByType[key] else { return 0 }
+        switch trendFilter {
+        case nil: return entry.total
+        case .paper: return entry.paper
+        case .ebook: return entry.ebook
+        case .audiobook: return entry.audiobook
         }
     }
 
@@ -252,6 +351,7 @@ struct StatisticsView: View {
 
     private var distributionTab: some View {
         VStack(spacing: 20) {
+            collectionAnalysisSection
             if ratedBooksTotal > 0 {
                 ratingSection
             }
@@ -262,6 +362,64 @@ struct StatisticsView: View {
                 bookshelfSection
             }
             typeDetailSection
+        }
+    }
+
+    // MARK: - 藏书分析
+
+    private var collectionAnalysisSection: some View {
+        cardContainer {
+            VStack(alignment: .leading, spacing: 16) {
+                cardHeader(title: "藏书分析", icon: "chart.bar.doc.horizontal")
+
+                if !stats.topAuthors.isEmpty {
+                    rankingBlock(title: "最爱作者", icon: "person.fill", items: stats.topAuthors, color: .orange)
+                }
+
+                if !stats.topPublishers.isEmpty {
+                    rankingBlock(title: "最爱出版社", icon: "building.2.fill", items: stats.topPublishers, color: .blue)
+                }
+
+                if !stats.topCategories.isEmpty {
+                    rankingBlock(title: "最爱题材", icon: "text.book.closed.fill", items: stats.topCategories, color: .purple)
+                }
+            }
+        }
+    }
+
+    private func rankingBlock(title: String, icon: String, items: [(name: String, count: Int)], color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: icon)
+                .font(.caption)
+                .fontWeight(.medium)
+                .foregroundStyle(.secondary)
+
+            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                HStack(spacing: 8) {
+                    Text("\(index + 1)")
+                        .font(.caption2)
+                        .fontWeight(.bold)
+                        .foregroundStyle(index == 0 ? color : .secondary)
+                        .frame(width: 16)
+
+                    Text(item.name)
+                        .font(.subheadline)
+                        .lineLimit(1)
+
+                    Spacer()
+
+                    Text("\(item.count) 本")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    GeometryReader { geo in
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(color.opacity(0.3))
+                            .frame(width: geo.size.width * CGFloat(item.count) / CGFloat(max(items.first?.count ?? 1, 1)))
+                    }
+                    .frame(width: 50, height: 8)
+                }
+            }
         }
     }
 
@@ -365,14 +523,18 @@ struct StatisticsView: View {
                     if stats.importedCount > 0 {
                         TypeBar(color: .blue, ratio: CGFloat(stats.importedCount) / CGFloat(max(totalBooks, 1)))
                     }
+                    if stats.wereadImportedCount > 0 {
+                        TypeBar(color: .teal, ratio: CGFloat(stats.wereadImportedCount) / CGFloat(max(totalBooks, 1)))
+                    }
                 }
                 .frame(height: 12)
                 .clipShape(Capsule())
 
-                HStack(spacing: 16) {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                     TypePill(label: "手动", count: stats.manualCount, color: .green)
                     TypePill(label: "扫码", count: stats.scannedCount, color: .orange)
-                    TypePill(label: "导入", count: stats.importedCount, color: .blue)
+                    TypePill(label: "文件导入", count: stats.importedCount, color: .blue)
+                    TypePill(label: "微信读书", count: stats.wereadImportedCount, color: .teal)
                 }
             }
         }
@@ -647,11 +809,13 @@ struct StatisticsView: View {
 
         var booksRead = 0, booksReading = 0, booksWishlist = 0, booksDropped = 0, booksIdle = 0
         var paperCount = 0, ebookCount = 0, audiobookCount = 0
-        var manualCount = 0, scannedCount = 0, importedCount = 0
+        var manualCount = 0, scannedCount = 0, importedCount = 0, wereadImportedCount = 0
         var ratingCounts = [1: 0, 2: 0, 3: 0, 4: 0, 5: 0]
         var ratingSum = 0, ratingTotal = 0
-        var yearCounts: [Int: Int] = [:]
         var tagCounts: [String: Int] = [:]
+        var authorCounts: [String: Int] = [:]
+        var publisherCounts: [String: Int] = [:]
+        var categoryCounts: [String: Int] = [:]
 
         var paperReading = 0, paperFinished = 0, paperWishlist = 0, paperDropped = 0, paperIdle = 0
         var ebookReading = 0, ebookFinished = 0, ebookWishlist = 0, ebookDropped = 0, ebookIdle = 0
@@ -659,6 +823,14 @@ struct StatisticsView: View {
 
         var shelfMap: [String: (total: Int, finished: Int, reading: Int, paper: Int, ebook: Int, audio: Int)] = [:]
 
+        // 月度数据：key = "year-month", value = (total, paper, ebook, audiobook)
+        var monthlyAddedByType: [String: (total: Int, paper: Int, ebook: Int, audiobook: Int)] = [:]
+        var monthlyFinishedByType: [String: (total: Int, paper: Int, ebook: Int, audiobook: Int)] = [:]
+        // 年度数据：key = year
+        var yearlyAddedByType: [Int: (total: Int, paper: Int, ebook: Int, audiobook: Int)] = [:]
+        var allYearsSet: Set<Int> = []
+
+        // 兼容旧的12月视图
         var monthlyMap: [String: Int] = [:]
         var monthlyAddedMap: [String: Int] = [:]
         for i in (0..<12).reversed() {
@@ -731,28 +903,81 @@ struct StatisticsView: View {
             case .manual: manualCount += 1
             case .scanned: scannedCount += 1
             case .imported: importedCount += 1
+            case .wereadImported: wereadImportedCount += 1
             }
 
-            let year = calendar.component(.year, from: book.addedDate)
-            yearCounts[year, default: 0] += 1
+            // 作者统计
+            let author = book.author.trimmingCharacters(in: .whitespaces)
+            if !author.isEmpty && author != "未知作者" {
+                authorCounts[author, default: 0] += 1
+            }
 
-            let addedKey = "\(calendar.component(.year, from: book.addedDate))-\(calendar.component(.month, from: book.addedDate))"
+            // 出版社统计
+            if let publisher = book.publisher, !publisher.isEmpty {
+                publisherCounts[publisher, default: 0] += 1
+            }
+
+            // 年月入库统计（带类型）
+            let addedYear = calendar.component(.year, from: book.addedDate)
+            let addedMonth = calendar.component(.month, from: book.addedDate)
+            let addedKey = "\(addedYear)-\(addedMonth)"
+            allYearsSet.insert(addedYear)
+
+            var monthEntry = monthlyAddedByType[addedKey] ?? (0, 0, 0, 0)
+            monthEntry.total += 1
+            switch book.bookType {
+            case .paper: monthEntry.paper += 1
+            case .ebook: monthEntry.ebook += 1
+            case .audiobook: monthEntry.audiobook += 1
+            }
+            monthlyAddedByType[addedKey] = monthEntry
+
+            var yearEntry = yearlyAddedByType[addedYear] ?? (0, 0, 0, 0)
+            yearEntry.total += 1
+            switch book.bookType {
+            case .paper: yearEntry.paper += 1
+            case .ebook: yearEntry.ebook += 1
+            case .audiobook: yearEntry.audiobook += 1
+            }
+            yearlyAddedByType[addedYear] = yearEntry
+
             if monthlyAddedMap[addedKey] != nil {
                 monthlyAddedMap[addedKey]! += 1
             }
 
+            // 标签统计（含题材分类）
             for tag in book.tags ?? [] {
                 tagCounts[tag.name, default: 0] += 1
+                // 排除"微信读书"标签作为题材
+                if tag.name != "微信读书" {
+                    categoryCounts[tag.name, default: 0] += 1
+                }
             }
 
+            // 月度完读统计（带类型）
             if book.status == .finished, let finished = book.finishedDate {
-                let key = "\(calendar.component(.year, from: finished))-\(calendar.component(.month, from: finished))"
+                let fYear = calendar.component(.year, from: finished)
+                let fMonth = calendar.component(.month, from: finished)
+                let fKey = "\(fYear)-\(fMonth)"
+                allYearsSet.insert(fYear)
+
+                var fEntry = monthlyFinishedByType[fKey] ?? (0, 0, 0, 0)
+                fEntry.total += 1
+                switch book.bookType {
+                case .paper: fEntry.paper += 1
+                case .ebook: fEntry.ebook += 1
+                case .audiobook: fEntry.audiobook += 1
+                }
+                monthlyFinishedByType[fKey] = fEntry
+
+                let key = "\(fYear)-\(fMonth)"
                 if monthlyMap[key] != nil {
                     monthlyMap[key]! += 1
                 }
             }
         }
 
+        // 兼容旧的12月视图数据
         var monthlyFinished: [(String, Int)] = []
         for i in (0..<12).reversed() {
             if let date = calendar.date(byAdding: .month, value: -i, to: now) {
@@ -771,12 +996,24 @@ struct StatisticsView: View {
             }
         }
 
-        let yearly = yearCounts.sorted { $0.key < $1.key }
-            .suffix(5)
-            .map { ("\($0.key)", $0.value) }
+        let yearly = yearlyAddedByType.sorted { $0.key < $1.key }
+            .suffix(10)
+            .map { ("\($0.key)", $0.value.total) }
 
         let topTagsList = tagCounts.sorted { $0.value > $1.value }
             .prefix(10)
+            .map { ($0.key, $0.value) }
+
+        let topAuthorsList = authorCounts.sorted { $0.value > $1.value }
+            .prefix(5)
+            .map { ($0.key, $0.value) }
+
+        let topPublishersList = publisherCounts.sorted { $0.value > $1.value }
+            .prefix(5)
+            .map { ($0.key, $0.value) }
+
+        let topCategoriesList = categoryCounts.sorted { $0.value > $1.value }
+            .prefix(5)
             .map { ($0.key, $0.value) }
 
         let ratedList = (1...5).map { (rating: $0, count: ratingCounts[$0] ?? 0) }
@@ -789,6 +1026,9 @@ struct StatisticsView: View {
                 total: $0.value.total, finished: $0.value.finished, reading: $0.value.reading,
                 paperCount: $0.value.paper, ebookCount: $0.value.ebook, audiobookCount: $0.value.audio
             ) }
+
+        let yearlyAddedByTypeArr = yearlyAddedByType.sorted { $0.key < $1.key }
+            .map { (year: $0.key, total: $0.value.total, paper: $0.value.paper, ebook: $0.value.ebook, audiobook: $0.value.audiobook) }
 
         return CachedStatistics(
             bookCount: books.count,
@@ -813,7 +1053,15 @@ struct StatisticsView: View {
             bookshelfStats: bookshelfStatsList,
             manualCount: manualCount,
             scannedCount: scannedCount,
-            importedCount: importedCount
+            importedCount: importedCount,
+            wereadImportedCount: wereadImportedCount,
+            topAuthors: topAuthorsList,
+            topPublishers: topPublishersList,
+            topCategories: topCategoriesList,
+            allYears: allYearsSet.sorted(),
+            monthlyAddedByType: monthlyAddedByType,
+            monthlyFinishedByType: monthlyFinishedByType,
+            yearlyAddedByType: yearlyAddedByTypeArr
         )
     }
 }

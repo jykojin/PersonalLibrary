@@ -12,7 +12,18 @@ enum BookType: String, Codable, CaseIterable {
 enum AddSource: String, Codable, CaseIterable {
     case manual = "手动添加"
     case scanned = "扫码添加"
-    case imported = "导入"
+    case imported = "文件导入"
+    case wereadImported = "微信读书导入"
+
+    /// 兼容旧数据：rawValue "导入" → .imported
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+        switch rawValue {
+        case "导入": self = .imported
+        default: self = AddSource(rawValue: rawValue) ?? .manual
+        }
+    }
 }
 
 /// 书籍的阅读状态

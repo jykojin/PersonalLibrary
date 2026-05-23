@@ -47,6 +47,9 @@ struct BookListView: View {
     @State private var showStatusSheet = false
     @State private var showAdvancedSearch = false
 
+    // 纸质书筛选（默认开启，持久化）
+    @AppStorage("bookList_paperOnly") private var paperOnly = true
+
     // 快速标签（滑动操作）
     @State private var bookForQuickTag: Book?
     // 标记已读后评分
@@ -86,6 +89,11 @@ struct BookListView: View {
             }
         } else {
             result = books.filter { !$0.isArchived && $0.bookshelf?.name == selectedShelf }
+        }
+
+        // 纸质书筛选（仅对"我的藏书"生效）
+        if paperOnly && selectedShelf == "我的藏书" {
+            result = result.filter { $0.bookType == .paper }
         }
 
         if !searchText.isEmpty {
@@ -305,12 +313,25 @@ struct BookListView: View {
     private func shelfTab(name: String) -> some View {
         let isSelected = selectedShelf == name
         return VStack(spacing: 4) {
-            Text(name)
-                .font(.subheadline)
-                .fontWeight(isSelected ? .semibold : .regular)
-                .foregroundStyle(isSelected ? .primary : .secondary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 4)
+            HStack(spacing: 4) {
+                Text(name)
+                    .font(.subheadline)
+                    .fontWeight(isSelected ? .semibold : .regular)
+                    .foregroundStyle(isSelected ? .primary : .secondary)
+
+                // 纸质书筛选按钮（紧跟"我的藏书"文字后面）
+                if name == "我的藏书" {
+                    Button {
+                        paperOnly.toggle()
+                    } label: {
+                        Image(systemName: paperOnly ? "book.fill" : "book")
+                            .font(.caption)
+                            .foregroundStyle(paperOnly ? .orange : .secondary)
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
 
             RoundedRectangle(cornerRadius: 1.5)
                 .fill(isSelected ? Color.orange : Color.clear)
@@ -361,6 +382,7 @@ struct BookListView: View {
             }
         }
         .listStyle(.plain)
+        .scrollDismissesKeyboard(.immediately)
     }
 
 

@@ -276,7 +276,16 @@ struct AddBookView: View {
         book.rating = rating
         book.bookshelf = selectedBookshelf
         book.tags = Array(selectedTags)
-        book.addSource = scannedISBN != nil ? .scanned : .manual
+        let source: AddSource = scannedISBN != nil ? .scanned : .manual
+        book.addSource = source
+
+        // 记录添加历史
+        let record = ImportRecord(
+            source: source.rawValue,
+            totalCount: 1,
+            successCount: 1
+        )
+        modelContext.insert(record)
 
         modelContext.insert(book)
         dismiss()

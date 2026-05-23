@@ -10,11 +10,9 @@ struct BookshelfListView: View {
     @State private var shelfToDelete: Bookshelf?
     @State private var showDeleteAlert = false
 
-    /// 微信读书虚拟书架的书籍
+    /// 微信读书虚拟书架的书籍（按 wereadBookId 判断，最可靠）
     private var weReadBooks: [Book] {
-        allBooks.filter { book in
-            book.tags?.contains(where: { $0.name == "微信读书" }) == true
-        }
+        allBooks.filter { $0.wereadBookId != nil }
     }
 
     /// 是否有微信读书书籍
@@ -22,9 +20,9 @@ struct BookshelfListView: View {
         !weReadBooks.isEmpty
     }
 
-    /// 未分类书籍
+    /// 未分类书籍（无书架、未归档、且非微信读书导入的书）
     private var uncategorizedBooks: [Book] {
-        allBooks.filter { $0.bookshelf == nil && !weReadBooks.contains($0) }
+        allBooks.filter { $0.bookshelf == nil && !$0.isArchived && $0.wereadBookId == nil }
     }
 
     var body: some View {
@@ -153,13 +151,14 @@ struct BookshelfListView: View {
                 .padding(.horizontal)
 
             VStack(spacing: 10) {
-                ForEach(bookshelves) { shelf in
+                ForEach(bookshelves.filter { $0.name != "微信读书" }) { shelf in
+                    let shelfBooks = allBooks.filter { $0.bookshelf?.persistentModelID == shelf.persistentModelID }
                     NavigationLink(destination: BookshelfDetailView(shelf: shelf)) {
                         ShelfCard(
                             name: shelf.name,
                             icon: shelf.icon,
-                            bookCount: shelf.books?.count ?? 0,
-                            finishedCount: shelf.books?.filter { $0.status == .finished }.count ?? 0
+                            bookCount: shelfBooks.count,
+                            finishedCount: shelfBooks.filter { $0.status == .finished }.count
                         )
                     }
                     .buttonStyle(.plain)
@@ -653,10 +652,8 @@ struct UncategorizedBooksView: View {
     @State private var showStatusSheet = false
 
     private var uncategorizedBooks: [Book] {
-        allBooks.filter { book in
-            book.bookshelf == nil &&
-            !(book.tags?.contains(where: { $0.name == "微信读书" }) == true)
-        }.sorted { $0.addedDate > $1.addedDate }
+        allBooks.filter { $0.bookshelf == nil && !$0.isArchived && $0.wereadBookId == nil }
+            .sorted { $0.addedDate > $1.addedDate }
     }
 
     private var selectedBookObjects: [Book] {
