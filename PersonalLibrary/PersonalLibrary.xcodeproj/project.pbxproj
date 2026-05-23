@@ -26,6 +26,7 @@
 		702DA6722866A49A53DE202F /* ReadingProgressView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8D4589CBB7976795276F23D /* ReadingProgressView.swift */; };
 		765B208CE0801D80C7E654C9 /* WeReadImportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 843A18820B905386EE81983F /* WeReadImportView.swift */; };
 		7E530469E88E657A6DF3E936 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D3F152D29BC867FAF1D8381 /* KeychainService.swift */; };
+		8009E568951057DFB76F26E4 /* AuthorPublisherMaintenanceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D53D9AD5D55B69FFEE275CA /* AuthorPublisherMaintenanceView.swift */; };
 		8DBF25BCFE9473223BA371E0 /* FilteredBooksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDEC24B8D2A8205B1888FC19 /* FilteredBooksView.swift */; };
 		9C1171958691DE41B44C355A /* AdvancedSearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13D0C01BAB671BED7B139079 /* AdvancedSearchView.swift */; };
 		9C1DE30F494E63DEF129C8DF /* ISBNLookupService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C274353DDACF027AB1E5A87 /* ISBNLookupService.swift */; };
@@ -73,6 +74,7 @@
 		0C43F52DBD969223FECACE25 /* StatisticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatisticsView.swift; sourceTree = "<group>"; };
 		13D0C01BAB671BED7B139079 /* AdvancedSearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdvancedSearchView.swift; sourceTree = "<group>"; };
 		1C274353DDACF027AB1E5A87 /* ISBNLookupService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ISBNLookupService.swift; sourceTree = "<group>"; };
+		1D53D9AD5D55B69FFEE275CA /* AuthorPublisherMaintenanceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthorPublisherMaintenanceView.swift; sourceTree = "<group>"; };
 		29B551E5CF1C3716F351163F /* BarcodeScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BarcodeScannerView.swift; sourceTree = "<group>"; };
 		2A2CA6A7F15841781FBFBD85 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		4D2E3C7560B14260793E3C54 /* ExcelImportExportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExcelImportExportService.swift; sourceTree = "<group>"; };
@@ -280,6 +282,7 @@
 		C4868663A81332753010F2FC /* Settings */ = {
 			isa = PBXGroup;
 			children = (
+				1D53D9AD5D55B69FFEE275CA /* AuthorPublisherMaintenanceView.swift */,
 				DB9498C95CCCDC9A51B5EECF /* ImportExportView.swift */,
 				A95E2C460974691EB8538BB5 /* ImportHistoryView.swift */,
 				F9FC0BCC1F18C4E124299ADE /* ProfileView.swift */,
@@ -425,6 +428,7 @@
 				B46C376CEDC2632F7B5943EB /* AddReadingRecordView.swift in Sources */,
 				9C1171958691DE41B44C355A /* AdvancedSearchView.swift in Sources */,
 				E6E6169E7D9AD9BD37E5B956 /* AuthService.swift in Sources */,
+				8009E568951057DFB76F26E4 /* AuthorPublisherMaintenanceView.swift in Sources */,
 				38ADE73E0227DB03E950A0E6 /* BackupService.swift in Sources */,
 				2386F85B97813D45A1DDD932 /* BarcodeScannerView.swift in Sources */,
 				CB816F264CEE6FC093F34C85 /* Book.swift in Sources */,

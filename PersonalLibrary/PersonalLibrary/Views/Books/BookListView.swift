@@ -513,6 +513,17 @@ struct BookRowView: View {
         .padding(.vertical, 10)
         .onAppear { loadCoverOnAppear() }
         .onDisappear { cancelFetch() }
+        .onChange(of: book.coverImageData) { _, newData in
+            // 封面被编辑后，清除缓存并刷新
+            let cacheKey = "\(book.title)|\(book.author)"
+            if let data = newData, let img = UIImage(data: data) {
+                CoverImageCache.shared.set(img, for: cacheKey)
+                coverImage = img
+            } else {
+                CoverImageCache.shared.remove(for: cacheKey)
+                coverImage = nil
+            }
+        }
     }
 
     // MARK: - 状态/类型/标签行

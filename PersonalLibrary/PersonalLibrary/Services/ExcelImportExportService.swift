@@ -231,8 +231,10 @@ actor ExcelImportExportService {
         let authorRaw = columnMap["作者"].flatMap { getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) } ?? "未知作者"
         // 作者字段用分号分隔多个作者，保存时用逗号连接（不用顿号）
         let author = splitMultiValue(authorRaw).joined(separator: ", ")
-        let translator = columnMap["译者"].flatMap { getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }
-        let publisher = columnMap["出版社"].flatMap { getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }
+        let translatorRaw = columnMap["译者"].flatMap { getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }
+        let translator = translatorRaw.map { splitMultiValue($0).joined(separator: ", ") }
+        let publisherRaw = columnMap["出版社"].flatMap { getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }
+        let publisher = publisherRaw.map { splitMultiValue($0).joined(separator: ", ") }
         let isbn = columnMap["ISBN"].flatMap { getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }
         let priceStr = columnMap["定价"].flatMap { getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }
         let pagesStr = columnMap["总页数"].flatMap { getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }
@@ -426,8 +428,8 @@ actor ExcelImportExportService {
 
     /// 分割多值字段（支持 ；; / 作为分隔符）
     private func splitMultiValue(_ str: String) -> [String] {
-        // 支持中文分号、英文分号、斜杠作为分隔符
-        let separators = CharacterSet(charactersIn: "；;/")
+        // 支持中文分号、英文分号、斜杠、中文逗号、英文逗号作为分隔符
+        let separators = CharacterSet(charactersIn: "；;/，,")
         return str.components(separatedBy: separators)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }

@@ -35,6 +35,11 @@ struct ImportExportView: View {
     @State private var restoreFileURL: URL?
     @State private var showingRestoreSuccess = false
 
+    // 数据清理
+    @State private var isCleaning = false
+    @State private var showingCleanResult = false
+    @State private var cleanResultMessage = ""
+
     private let importExportService = ExcelImportExportService()
 
     private static let syncDateFormatter: DateFormatter = {
@@ -183,6 +188,45 @@ struct ImportExportView: View {
                 }
             }
 
+            // MARK: - 数据清理
+            Section {
+                NavigationLink(destination: AuthorPublisherMaintenanceView()) {
+                    Label("作者与出版社维护", systemImage: "person.text.rectangle")
+                }
+
+                Button {
+                    Task { await cleanAuthorNames() }
+                } label: {
+                    HStack {
+                        Label("作者名繁转简", systemImage: "character.textbox")
+                        Spacer()
+                        if isCleaning {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                    }
+                }
+                .disabled(isCleaning)
+
+                Button {
+                    Task { await normalizeMultiValues() }
+                } label: {
+                    HStack {
+                        Label("规范多作者/译者/出版社", systemImage: "person.2")
+                        Spacer()
+                        if isCleaning {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                    }
+                }
+                .disabled(isCleaning)
+            } header: {
+                Text("数据清理")
+            } footer: {
+                Text("繁转简：「張愛玲」→「张爱玲」\n规范多值：统一用英文逗号+空格分隔多个作者/译者/出版社")
+            }
+
             // MARK: - 数据统计
             Section("数据概览") {
                 LabeledContent("总藏书", value: "\(activeBooks.count) 本")
@@ -235,6 +279,11 @@ struct ImportExportView: View {
         } message: {
             Text("将数据存储位置切换为「\(storageLocation.description)」？\n\n切换后需要重启 App 才能生效。已有数据不会自动迁移到新位置。")
         }
+        .alert("清理完成", isPresented: $showingCleanResult) {
+            Button("好的") {}
+        } message: {
+            Text(cleanResultMessage)
+        }
         .alert("确认恢复", isPresented: $showingRestoreConfirm) {
             Button("恢复", role: .destructive) {
                 if let url = restoreFileURL {
@@ -271,6 +320,116 @@ struct ImportExportView: View {
                 showingError = true
             }
         }
+    }
+
+    // MARK: - Data Cleanup
+
+    private func cleanAuthorNames() async {
+        isCleaning = true
+        defer { isCleaning = false }
+
+        var updatedCount = 0
+        for book in allBooks {
+            let original = book.author
+            let mutable = NSMutableString(string: original)
+            CFStringTransform(mutable, nil, "Traditional-Simplified" as CFString, false)
+            let simplified = mutable as String
+            if simplified != original {
+                book.author = simplified
+                updatedCount += 1
+            }
+        }
+
+        if updatedCount > 0 {
+            try? modelContext.save()
+        }
+
+        cleanResultMessage = updatedCount > 0
+            ? "已将 \(updatedCount) 本书的作者名转为简体"
+            : "所有作者名已是简体，无需修改"
+        showingCleanResult = true
+    }
+
+    private func normalizeMultiValues() async {
+        isCleaning = true
+        defer { isCleaning = false }
+
+        let separators = CharacterSet(charactersIn: "；;/，")
+        var authorFixes: [(String, String)] = []  // (原值, 新值)
+        var translatorFixes: [(String, String)] = []
+        var publisherFixes: [(String, String)] = []
+
+        for book in allBooks {
+            // 作者
+            let authorNorm = normalizeField(book.author, separators: separators)
+            if authorNorm != book.author {
+                authorFixes.append((book.author, authorNorm))
+                book.author = authorNorm
+            }
+
+            // 译者
+            if let t = book.translator, !t.isEmpty {
+                let tNorm = normalizeField(t, separators: separators)
+                if tNorm != t {
+                    translatorFixes.append((t, tNorm))
+                    book.translator = tNorm
+                }
+            }
+
+            // 出版社
+            if let p = book.publisher, !p.isEmpty {
+                let pNorm = normalizeField(p, separators: separators)
+                if pNorm != p {
+                    publisherFixes.append((p, pNorm))
+                    book.publisher = pNorm
+                }
+            }
+        }
+
+        let totalFixes = authorFixes.count + translatorFixes.count + publisherFixes.count
+        if totalFixes > 0 {
+            try? modelContext.save()
+        }
+
+        // 生成报告
+        var report = ""
+        if authorFixes.isEmpty && translatorFixes.isEmpty && publisherFixes.isEmpty {
+            report = "所有数据格式已正确，无需修复"
+        } else {
+            if !authorFixes.isEmpty {
+                report += "作者修复 \(authorFixes.count) 条：\n"
+                for (old, new) in authorFixes.prefix(5) {
+                    report += "  「\(old)」→「\(new)」\n"
+                }
+                if authorFixes.count > 5 { report += "  ...等\n" }
+            }
+            if !translatorFixes.isEmpty {
+                report += "译者修复 \(translatorFixes.count) 条：\n"
+                for (old, new) in translatorFixes.prefix(3) {
+                    report += "  「\(old)」→「\(new)」\n"
+                }
+                if translatorFixes.count > 3 { report += "  ...等\n" }
+            }
+            if !publisherFixes.isEmpty {
+                report += "出版社修复 \(publisherFixes.count) 条：\n"
+                for (old, new) in publisherFixes.prefix(3) {
+                    report += "  「\(old)」→「\(new)」\n"
+                }
+                if publisherFixes.count > 3 { report += "  ...等\n" }
+            }
+        }
+
+        cleanResultMessage = report
+        showingCleanResult = true
+    }
+
+    /// 将字段中的各种分隔符统一为 ", "
+    private func normalizeField(_ value: String, separators: CharacterSet) -> String {
+        let parts = value.components(separatedBy: separators)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        if parts.count <= 1 { return value.trimmingCharacters(in: .whitespaces) }
+        return parts.joined(separator: ", ")
     }
 
     // MARK: - Backup & Restore

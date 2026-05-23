@@ -55,6 +55,10 @@ final class CoverImageCache: @unchecked Sendable {
     func set(_ image: UIImage, for key: String) {
         cache.setObject(image, forKey: key as NSString)
     }
+
+    func remove(for key: String) {
+        cache.removeObject(forKey: key as NSString)
+    }
 }
 
 // MARK: - 封面获取服务
