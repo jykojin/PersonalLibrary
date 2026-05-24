@@ -326,6 +326,8 @@ struct BookDetailView: View {
 
         guard let data, let img = UIImage(data: data) else { return }
         coverImage = img
+        // 写入内存缓存，供编辑页读取（避免 externalStorage 延迟问题）
+        CoverImageCache.shared.set(img, for: cacheKey)
         // 持久化
         if book.coverImageData == nil {
             book.coverImageData = data
