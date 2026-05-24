@@ -223,10 +223,8 @@ struct BookListView: View {
     private func recomputeShelfNames() {
         var names: [String] = ["我的藏书"]
 
-        let sortedShelves = bookshelves
-            .filter { $0.name != "微信读书" }
-            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        for shelf in sortedShelves {
+        // 直接使用 @Query(sort: \Bookshelf.name) 的顺序，与书架 tab 保持一致
+        for shelf in bookshelves where shelf.name != "微信读书" {
             if !names.contains(shelf.name) {
                 names.append(shelf.name)
             }
@@ -640,8 +638,12 @@ struct BookRowView: View {
 
             CoverImageCache.shared.set(img, for: cacheKey)
             coverImage = img
-            // 不写入 book.coverImageData — 网络图片只做内存缓存展示
-            // 避免覆盖用户在编辑页面手动设置的封面
+
+            // 持久化到 book.coverImageData（仅当当前为 nil 时）
+            // 这样详情页和编辑页也能直接显示，无需重复网络请求
+            if book.coverImageData == nil {
+                book.coverImageData = data
+            }
         }
     }
 

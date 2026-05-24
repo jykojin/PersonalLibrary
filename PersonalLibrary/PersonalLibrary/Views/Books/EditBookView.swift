@@ -367,10 +367,19 @@ struct EditBookView: View {
         selectedTags = Set((book.tags ?? []).map(\.name))
         coverData = book.coverImageData
 
-        // 如果没有本地封面数据但有远程 URL，异步下载
-        if coverData == nil, let urlString = book.coverImageURL, !urlString.isEmpty {
+        // 如果没有本地封面数据，使用完整 pipeline 获取（URL → 豆瓣搜索 → OL）
+        if coverData == nil {
             Task {
-                coverData = await BookService.downloadImage(from: urlString)
+                let data = await CoverFetchService.shared.fetchCoverThrottled(
+                    coverImageURL: book.coverImageURL,
+                    isbn: book.isbn,
+                    doubanURL: book.doubanURL,
+                    title: book.title,
+                    author: book.author
+                )
+                if let data {
+                    coverData = data
+                }
             }
         }
     }

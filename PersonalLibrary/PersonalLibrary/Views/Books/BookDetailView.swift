@@ -121,6 +121,7 @@ struct BookDetailView: View {
         }
         .task {
             await fetchWeReadInfoIfNeeded()
+            await fetchCoverIfNeeded()
         }
     }
 
@@ -300,6 +301,25 @@ struct BookDetailView: View {
                 }
             }
         }
+    }
+
+    // MARK: - 封面按需获取
+
+    private func fetchCoverIfNeeded() async {
+        // 已有本地封面数据，不需要获取
+        guard book.coverImageData == nil else { return }
+
+        let data = await CoverFetchService.shared.fetchCoverThrottled(
+            coverImageURL: book.coverImageURL,
+            isbn: book.isbn,
+            doubanURL: book.doubanURL,
+            title: book.title,
+            author: book.author
+        )
+
+        guard let data else { return }
+        book.coverImageData = data
+        try? modelContext.save()
     }
 
     // MARK: - WeRead 详情按需补全
