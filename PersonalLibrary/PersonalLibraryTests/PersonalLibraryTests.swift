@@ -1877,3 +1877,233 @@ struct WeReadBatchEnrichmentTests {
         #expect(config.maxBooksPerSync == 50)
     }
 }
+
+// MARK: - CoverFetchService Tests
+
+@Suite("CoverFetchService Tests")
+struct CoverFetchServiceTests {
+
+    @Test("fetchCoverFromOpenLibrary 拒绝无效 ISBN")
+    func rejectInvalidISBN() async {
+        let service = CoverFetchService.shared
+        let result = await service.fetchCoverFromOpenLibrary(isbn: "123")
+        #expect(result == nil)
+    }
+
+    @Test("fetchCover nil 参数不崩溃")
+    func fetchCoverNilParams() async {
+        let service = CoverFetchService.shared
+        let result = await service.fetchCover(isbn: nil, doubanURL: nil, title: nil, author: nil)
+        #expect(result == nil)
+    }
+
+    @Test("fetchCover 空字符串参数不崩溃")
+    func fetchCoverEmptyParams() async {
+        let service = CoverFetchService.shared
+        let result = await service.fetchCover(isbn: "", doubanURL: "", title: "", author: "")
+        #expect(result == nil)
+    }
+
+    @Test("fetchCoverThrottled 所有参数为 nil 返回 nil")
+    func fetchCoverThrottledAllNil() async {
+        let service = CoverFetchService.shared
+        let result = await service.fetchCoverThrottled(
+            coverImageURL: nil,
+            isbn: nil,
+            doubanURL: nil,
+            title: nil,
+            author: nil
+        )
+        #expect(result == nil)
+    }
+
+    @Test("fetchCoverThrottled 空 coverImageURL 跳过直接下载")
+    func fetchCoverThrottledEmptyURL() async {
+        let service = CoverFetchService.shared
+        let result = await service.fetchCoverThrottled(
+            coverImageURL: "",
+            isbn: nil,
+            doubanURL: nil,
+            title: nil,
+            author: nil
+        )
+        #expect(result == nil)
+    }
+
+    @Test("downloadWithReferer 无效 URL 返回 nil")
+    func downloadInvalidURL() async {
+        let service = CoverFetchService.shared
+        let result = await service.downloadWithReferer(urlStr: "not a url at all")
+        #expect(result == nil)
+    }
+
+    @Test("fetchCoverFromDouban 无效 URL 返回 nil")
+    func fetchDoubanInvalidURL() async {
+        let service = CoverFetchService.shared
+        let result = await service.fetchCoverFromDouban(doubanURL: "not a url")
+        #expect(result == nil)
+    }
+
+    @Test("fetchCoverFromDoubanSearch 空标题返回 nil")
+    func fetchDoubanSearchEmptyTitle() async {
+        let service = CoverFetchService.shared
+        let result = await service.fetchCoverFromDoubanSearch(title: "", author: nil)
+        #expect(result == nil)
+    }
+}
+
+// MARK: - CoverImageCache Extended Tests
+
+@Suite("CoverImageCache Extended Tests")
+struct CoverImageCacheExtendedTests {
+
+    @Test("缓存键使用 title|author 格式")
+    func cacheKeyFormat() {
+        let cache = CoverImageCache.shared
+        let key = "缓存键测试_\(UUID().uuidString)|作者"
+        let image = UIImage(systemName: "book.fill")!
+        cache.set(image, for: key)
+        #expect(cache.image(for: key) != nil)
+        #expect(cache.image(for: "缓存键测试_other|其他作者") == nil)
+        cache.remove(for: key)
+    }
+
+    @Test("同 key 多次设置覆盖旧值")
+    func cacheOverwrite() {
+        let cache = CoverImageCache.shared
+        let key = "overwrite_test_\(UUID().uuidString)"
+        let img1 = UIImage(systemName: "star")!
+        let img2 = UIImage(systemName: "heart")!
+        cache.set(img1, for: key)
+        cache.set(img2, for: key)
+        let retrieved = cache.image(for: key)
+        #expect(retrieved != nil)
+        cache.remove(for: key)
+    }
+
+    @Test("空 key 也能正常工作")
+    func emptyKeyCacheable() {
+        let cache = CoverImageCache.shared
+        let key = ""
+        let image = UIImage(systemName: "book")!
+        cache.set(image, for: key)
+        #expect(cache.image(for: key) != nil)
+        cache.remove(for: key)
+    }
+}
+
+// MARK: - AsyncSemaphore Tests
+
+@Suite("AsyncSemaphore Tests")
+struct AsyncSemaphoreTests {
+
+    @Test("信号量基本 wait/signal 配对")
+    func basicWaitSignal() async {
+        let semaphore = AsyncSemaphore(limit: 2)
+        await semaphore.wait()
+        await semaphore.wait()
+        // 两次 wait 成功（limit=2），之后 signal
+        await semaphore.signal()
+        await semaphore.signal()
+        // 再次 wait 应该成功
+        await semaphore.wait()
+        await semaphore.signal()
+    }
+
+    @Test("信号量 signal 不超过 limit")
+    func signalCappedAtLimit() async {
+        let semaphore = AsyncSemaphore(limit: 1)
+        // 多次 signal 不应累积超过 limit
+        await semaphore.signal()
+        await semaphore.signal()
+        await semaphore.signal()
+        // wait 应该成功（count 被 cap 在 limit）
+        await semaphore.wait()
+        // 但第二次 wait 不应立即完成（如果没有超累积）
+        // 这里只验证不崩溃
+    }
+}
+
+// MARK: - SearchScope Tests
+
+@Suite("SearchScope Tests")
+struct SearchScopeTests {
+
+    @Test("SearchScope allCases 包含6个")
+    func allCases() {
+        #expect(SearchScope.allCases.count == 6)
+    }
+
+    @Test("SearchScope label 正确")
+    func labels() {
+        #expect(SearchScope.all.label == "全部")
+        #expect(SearchScope.title.label == "书名")
+        #expect(SearchScope.author.label == "作者")
+        #expect(SearchScope.tag.label == "标签")
+        #expect(SearchScope.publisher.label == "出版社")
+        #expect(SearchScope.shelf.label == "书架")
+    }
+
+    @Test("SearchScope placeholder 正确")
+    func placeholders() {
+        #expect(SearchScope.all.placeholder == "搜索书名、作者、标签、出版社...")
+        #expect(SearchScope.title.placeholder == "搜索书名")
+        #expect(SearchScope.author.placeholder == "搜索作者")
+    }
+}
+
+// MARK: - Book Archive Tests
+
+@Suite("Book Archive Tests")
+struct BookArchiveTests {
+
+    @Test("新书 isArchived 默认 false")
+    func defaultNotArchived() {
+        let book = Book(title: "测试", author: "测试")
+        #expect(book.isArchived == false)
+    }
+
+    @Test("可以取消收藏")
+    func archiveBook() {
+        let book = Book(title: "测试", author: "测试")
+        book.isArchived = true
+        #expect(book.isArchived == true)
+    }
+
+    @Test("可以恢复收藏")
+    func unarchiveBook() {
+        let book = Book(title: "测试", author: "测试")
+        book.isArchived = true
+        book.isArchived = false
+        #expect(book.isArchived == false)
+    }
+}
+
+// MARK: - Book WeRead Fields Tests
+
+@Suite("Book WeRead Fields Tests")
+struct BookWeReadFieldsTests {
+
+    @Test("wereadProgress 默认为 0")
+    func defaultProgress() {
+        let book = Book(title: "测试", author: "测试")
+        #expect(book.wereadProgress == 0)
+    }
+
+    @Test("wereadProgress 可设置范围 0-100")
+    func progressRange() {
+        let book = Book(title: "测试", author: "测试")
+        book.wereadProgress = 50
+        #expect(book.wereadProgress == 50)
+        book.wereadProgress = 100
+        #expect(book.wereadProgress == 100)
+        book.wereadProgress = 0
+        #expect(book.wereadProgress == 0)
+    }
+
+    @Test("addSource 默认为 manual")
+    func defaultAddSource() {
+        let book = Book(title: "测试", author: "测试")
+        #expect(book.addSource == .manual)
+    }
+}

@@ -42,6 +42,7 @@ final class CoverImageCache: @unchecked Sendable {
     static let shared = CoverImageCache()
 
     private let cache = NSCache<NSString, UIImage>()
+    private let lock = NSLock()
 
     init() {
         cache.countLimit = 200  // 最多缓存 200 张
@@ -49,14 +50,20 @@ final class CoverImageCache: @unchecked Sendable {
     }
 
     func image(for key: String) -> UIImage? {
-        cache.object(forKey: key as NSString)
+        lock.lock()
+        defer { lock.unlock() }
+        return cache.object(forKey: key as NSString)
     }
 
     func set(_ image: UIImage, for key: String) {
+        lock.lock()
+        defer { lock.unlock() }
         cache.setObject(image, forKey: key as NSString)
     }
 
     func remove(for key: String) {
+        lock.lock()
+        defer { lock.unlock() }
         cache.removeObject(forKey: key as NSString)
     }
 }
@@ -85,8 +92,8 @@ actor CoverFetchService {
         await semaphore.wait()
         defer { Task { await semaphore.signal() } }
 
-        // 优先 coverImageURL 直接下载
-        if let urlStr = coverImageURL, !urlStr.isEmpty {
+        // 优先 coverImageURL 直接下载（需通过域名白名单校验）
+        if let urlStr = coverImageURL, !urlStr.isEmpty, isAllowedDomain(urlStr) {
             let data = await downloadWithReferer(urlStr: urlStr)
             if let data, data.count > 100 {
                 return data
@@ -264,12 +271,33 @@ actor CoverFetchService {
         }
     }
 
+    /// 允许下载封面的域名白名单
+    private static let allowedImageDomains = [
+        "doubanio.com",
+        "douban.com",
+        "openlibrary.org",
+        "googleapis.com",
+        "books.google.com",
+        "covers.openlibrary.org"
+    ]
+
+    /// 验证 URL 是否在允许的域名白名单内
+    private func isAllowedDomain(_ urlStr: String) -> Bool {
+        guard let url = URL(string: urlStr),
+              let host = url.host?.lowercased(),
+              url.scheme == "https" || url.scheme == "http" else {
+            return false
+        }
+        return Self.allowedImageDomains.contains { host.hasSuffix($0) }
+    }
+
     /// 下载豆瓣封面图片
     /// 将 lpic URL 转换为可用的 view/subject URL，并带 Referer 下载
     func downloadWithReferer(urlStr: String) async -> Data? {
         // 转换 URL: /lpic/sXXX.jpg → /view/subject/l/public/sXXX.jpg
         let convertedURL = convertDoubanCoverURL(urlStr)
-        guard let url = URL(string: convertedURL) else { return nil }
+        guard let url = URL(string: convertedURL),
+              isAllowedDomain(convertedURL) else { return nil }
 
         do {
             var request = URLRequest(url: url)
@@ -334,6 +362,9 @@ actor CoverFetchService {
         return nil
     }
 
+    /// 封面图片最大允许 5MB
+    private static let maxImageSize = 5 * 1024 * 1024
+
     private func downloadImage(from urlStr: String) async -> Data? {
         guard let url = URL(string: urlStr) else { return nil }
         do {
@@ -346,6 +377,11 @@ actor CoverFetchService {
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else {
                 print("[CoverFetch] Image download HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+                return nil
+            }
+            // 防止超大响应导致内存耗尽
+            guard data.count <= Self.maxImageSize else {
+                print("[CoverFetch] Image too large: \(data.count) bytes, skipping")
                 return nil
             }
             return data

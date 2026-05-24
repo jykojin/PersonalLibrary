@@ -115,9 +115,11 @@ actor WeReadService {
     // MARK: - Cookie 管理（使用 Keychain 安全存储）
 
     /// 设置登录后的 Cookie（保存到 Keychain）
+    /// 过滤 CRLF 等控制字符防止 HTTP header 注入
     func setCookies(_ cookieString: String) {
-        self.cookies = cookieString
-        KeychainService.save(key: KeychainService.wereadCookieKey, string: cookieString)
+        let sanitized = cookieString.filter { !$0.isNewline && $0 != "\r" && $0 != "\0" }
+        self.cookies = sanitized
+        KeychainService.save(key: KeychainService.wereadCookieKey, string: sanitized)
     }
 
     /// 获取当前 Cookie（优先内存，fallback Keychain）
