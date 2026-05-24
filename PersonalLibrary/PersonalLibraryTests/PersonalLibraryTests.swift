@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import SwiftData
+import UIKit
 @testable import PersonalLibrary
 
 // MARK: - Book Model Tests
@@ -113,6 +114,65 @@ struct BookModelTests {
         #expect(book.rating == 5)
         book.rating = 1
         #expect(book.rating == 1)
+    }
+
+    @Test("statusChangedDate初始为nil")
+    func statusChangedDateInitiallyNil() {
+        let book = Book(title: "测试", author: "测试")
+        #expect(book.statusChangedDate == nil)
+    }
+
+    @Test("coverImageData初始为nil")
+    func coverImageDataInitiallyNil() {
+        let book = Book(title: "测试", author: "测试")
+        #expect(book.coverImageData == nil)
+    }
+
+    @Test("coverImageData可以被赋值和读取")
+    func coverImageDataAssignment() {
+        let book = Book(title: "测试", author: "测试")
+        let testData = Data([0xFF, 0xD8, 0xFF, 0xE0])
+        book.coverImageData = testData
+        #expect(book.coverImageData == testData)
+    }
+
+    @Test("coverImageData赋nil可清除")
+    func coverImageDataClear() {
+        let book = Book(title: "测试", author: "测试")
+        book.coverImageData = Data([0x01, 0x02])
+        book.coverImageData = nil
+        #expect(book.coverImageData == nil)
+    }
+}
+
+// MARK: - CoverImageCache Tests
+
+@Suite("CoverImageCache Tests")
+struct CoverImageCacheTests {
+
+    @Test("缓存写入和读取")
+    func cacheSetAndGet() {
+        let cache = CoverImageCache.shared
+        let key = "test_cover_\(UUID().uuidString)"
+        let image = UIImage(systemName: "book")!
+        cache.set(image, for: key)
+        #expect(cache.image(for: key) != nil)
+    }
+
+    @Test("缓存移除")
+    func cacheRemove() {
+        let cache = CoverImageCache.shared
+        let key = "test_remove_\(UUID().uuidString)"
+        let image = UIImage(systemName: "star")!
+        cache.set(image, for: key)
+        cache.remove(for: key)
+        #expect(cache.image(for: key) == nil)
+    }
+
+    @Test("缓存未命中返回nil")
+    func cacheMiss() {
+        let cache = CoverImageCache.shared
+        #expect(cache.image(for: "nonexistent_\(UUID().uuidString)") == nil)
     }
 }
 
@@ -1434,6 +1494,123 @@ struct SecurityTests {
     }
 
     // MARK: - WeChatAuthManager 安全
+
+    // MARK: - SmartFill 数据结构测试
+
+    @Test("LookupSourceStatus displayText 正确")
+    func lookupSourceStatusDisplay() {
+        #expect(LookupSourceStatus.notAttempted.displayText == "未尝试")
+        #expect(LookupSourceStatus.found.displayText == "已找到")
+        #expect(LookupSourceStatus.notFound.displayText == "未找到")
+        #expect(LookupSourceStatus.error("超时").displayText == "出错: 超时")
+    }
+
+    @Test("LookupSourceStatus Equatable 正确")
+    func lookupSourceStatusEquatable() {
+        #expect(LookupSourceStatus.found == LookupSourceStatus.found)
+        #expect(LookupSourceStatus.notFound != LookupSourceStatus.found)
+        #expect(LookupSourceStatus.error("a") == LookupSourceStatus.error("a"))
+        #expect(LookupSourceStatus.error("a") != LookupSourceStatus.error("b"))
+    }
+
+    @Test("SmartFillResult hasAnyFill 无数据时为 false")
+    func smartFillResultEmpty() {
+        let result = SmartFillResult(sourceStatuses: [])
+        #expect(result.hasAnyFill == false)
+    }
+
+    @Test("SmartFillResult hasAnyFill 有出版社时为 true")
+    func smartFillResultWithPublisher() {
+        var result = SmartFillResult(sourceStatuses: [])
+        result.publisher = "人民出版社"
+        #expect(result.hasAnyFill == true)
+    }
+
+    @Test("SmartFillResult hasAnyFill 有页数时为 true")
+    func smartFillResultWithPages() {
+        var result = SmartFillResult(sourceStatuses: [])
+        result.totalPages = 300
+        #expect(result.hasAnyFill == true)
+    }
+
+    @Test("SmartFillResult hasAnyFill 有作者时为 true")
+    func smartFillResultWithAuthor() {
+        var result = SmartFillResult(sourceStatuses: [])
+        result.author = "鲁迅"
+        #expect(result.hasAnyFill == true)
+    }
+
+    @Test("SmartFillResult hasAnyFill 有图书简介时为 true")
+    func smartFillResultWithBookDesc() {
+        var result = SmartFillResult(sourceStatuses: [])
+        result.bookDescription = "这是一本好书"
+        #expect(result.hasAnyFill == true)
+    }
+
+    @Test("SmartFillResult hasAnyFill 有作者简介时为 true")
+    func smartFillResultWithAuthorDesc() {
+        var result = SmartFillResult(sourceStatuses: [])
+        result.authorDescription = "著名作家"
+        #expect(result.hasAnyFill == true)
+    }
+
+    @Test("smartFill 无ISBN无书名返回全部notAttempted")
+    func smartFillNoISBNNoTitle() async {
+        let service = ISBNLookupService()
+        let result = await service.smartFill(
+            isbn: "",
+            title: "",
+            author: "",
+            needsPublisher: true,
+            needsPages: true,
+            needsAuthor: true,
+            needsBookDesc: true,
+            needsAuthorDesc: true
+        )
+        // 无有效ISBN → 4个源都是 notAttempted，无书名 → 无书名搜索
+        for (_, status) in result.sourceStatuses {
+            #expect(status == .notAttempted)
+        }
+        #expect(result.hasAnyFill == false)
+    }
+
+    @Test("smartFill 无效ISBN格式返回notAttempted")
+    func smartFillInvalidISBN() async {
+        let service = ISBNLookupService()
+        let result = await service.smartFill(
+            isbn: "123",  // 太短，无效
+            title: "",
+            author: "",
+            needsPublisher: true,
+            needsPages: true,
+            needsAuthor: true,
+            needsBookDesc: true,
+            needsAuthorDesc: true
+        )
+        for (_, status) in result.sourceStatuses {
+            #expect(status == .notAttempted)
+        }
+    }
+
+    @Test("smartFill 不需要任何字段时返回notAttempted")
+    func smartFillNothingNeeded() async {
+        let service = ISBNLookupService()
+        let result = await service.smartFill(
+            isbn: "9787020002207",
+            title: "红楼梦",
+            author: "曹雪芹",
+            needsPublisher: false,
+            needsPages: false,
+            needsAuthor: false,
+            needsBookDesc: false,
+            needsAuthorDesc: false
+        )
+        // 什么都不需要，所以所有源都 notAttempted
+        for (_, status) in result.sourceStatuses {
+            #expect(status == .notAttempted)
+        }
+        #expect(result.hasAnyFill == false)
+    }
 
     @Test("WeChatAuthManager 不含 AppSecret 属性")
     func noAppSecretInCode() throws {

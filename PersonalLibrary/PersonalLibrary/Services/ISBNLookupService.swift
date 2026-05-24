@@ -1,5 +1,43 @@
 import Foundation
 
+// MARK: - 智能补全数据源状态
+
+/// 单个数据源的查询状态
+enum LookupSourceStatus: Equatable {
+    case notAttempted       // 未尝试（如没有ISBN则跳过ISBN类查询）
+    case found             // 找到数据
+    case notFound          // 查询成功但没有数据
+    case error(String)     // 查询出错
+
+    var displayText: String {
+        switch self {
+        case .notAttempted: return "未尝试"
+        case .found: return "已找到"
+        case .notFound: return "未找到"
+        case .error(let msg): return "出错: \(msg)"
+        }
+    }
+}
+
+/// 智能补全结果 — 包含每个数据源的状态和最终填充的字段
+struct SmartFillResult {
+    /// 每个源的查询状态
+    var sourceStatuses: [(name: String, status: LookupSourceStatus)]
+
+    /// 补全到的字段值（nil 表示未能补全该字段）
+    var publisher: String?
+    var totalPages: Int?
+    var author: String?
+    var bookDescription: String?
+    var authorDescription: String?
+
+    /// 是否有任何字段被成功补全
+    var hasAnyFill: Bool {
+        publisher != nil || totalPages != nil || author != nil
+            || bookDescription != nil || authorDescription != nil
+    }
+}
+
 /// ISBN 查询结果 — 从 API 返回的书籍信息
 struct ISBNLookupResult {
     var title: String
@@ -479,6 +517,132 @@ actor ISBNLookupService {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
             .joined(separator: "\n")
+    }
+
+    // MARK: - 智能补全（手动触发）
+
+    /// 智能补全缺失字段 — 逐源查询，记录每个源的状态
+    /// 只补全：出版社、页数、作者、图书简介、作者简介
+    /// - Parameters:
+    ///   - isbn: ISBN（可为空）
+    ///   - title: 书名
+    ///   - author: 当前作者值（为空则需补全）
+    ///   - needsPublisher: 是否需要出版社
+    ///   - needsPages: 是否需要页数
+    ///   - needsAuthor: 是否需要作者
+    ///   - needsBookDesc: 是否需要图书简介
+    ///   - needsAuthorDesc: 是否需要作者简介
+    func smartFill(
+        isbn: String,
+        title: String,
+        author: String,
+        needsPublisher: Bool,
+        needsPages: Bool,
+        needsAuthor: Bool,
+        needsBookDesc: Bool,
+        needsAuthorDesc: Bool
+    ) async -> SmartFillResult {
+        var result = SmartFillResult(sourceStatuses: [])
+
+        let hasISBN = !isbn.isEmpty
+        let cleanISBN = isbn
+            .replacingOccurrences(of: "[^0-9Xx]", with: "", options: .regularExpression)
+            .uppercased()
+        let validISBN = hasISBN && (cleanISBN.count == 10 || cleanISBN.count == 13)
+
+        // 定义要查询的源
+        let sources: [(name: String, lookup: () async -> ISBNLookupResult?)] = [
+            ("豆瓣", { [self] in validISBN ? (try? await self.lookupFromDouban(isbn: cleanISBN)) : nil }),
+            ("Open Library", { [self] in validISBN ? (try? await self.lookupFromOpenLibrary(isbn: cleanISBN)) : nil }),
+            ("Google Books", { [self] in validISBN ? (try? await self.lookupFromGoogleBooks(isbn: cleanISBN)) : nil }),
+            ("Goodreads", { [self] in validISBN ? (try? await self.lookupFromGoodreads(isbn: cleanISBN)) : nil })
+        ]
+
+        for source in sources {
+            if !validISBN {
+                result.sourceStatuses.append((name: source.name, status: .notAttempted))
+                continue
+            }
+
+            // 检查是否还有未填充的字段
+            let stillNeeds = (needsPublisher && result.publisher == nil)
+                || (needsPages && result.totalPages == nil)
+                || (needsAuthor && result.author == nil)
+                || (needsBookDesc && result.bookDescription == nil)
+                || (needsAuthorDesc && result.authorDescription == nil)
+
+            guard stillNeeds else {
+                result.sourceStatuses.append((name: source.name, status: .notAttempted))
+                continue
+            }
+
+            let lookupResult = await source.lookup()
+
+            if let lr = lookupResult {
+                var foundSomething = false
+
+                if needsPublisher && result.publisher == nil,
+                   let p = lr.publisher, !p.isEmpty {
+                    result.publisher = p
+                    foundSomething = true
+                }
+                if needsPages && result.totalPages == nil,
+                   let p = lr.totalPages, p > 0 {
+                    result.totalPages = p
+                    foundSomething = true
+                }
+                if needsAuthor && result.author == nil,
+                   !lr.author.isEmpty, lr.author != "未知作者" {
+                    result.author = lr.author
+                    foundSomething = true
+                }
+                if needsBookDesc && result.bookDescription == nil,
+                   let d = lr.bookDescription, !d.isEmpty {
+                    result.bookDescription = d
+                    foundSomething = true
+                }
+                if needsAuthorDesc && result.authorDescription == nil,
+                   let d = lr.authorDescription, !d.isEmpty {
+                    result.authorDescription = d
+                    foundSomething = true
+                }
+
+                result.sourceStatuses.append((
+                    name: source.name,
+                    status: foundSomething ? .found : .notFound
+                ))
+            } else {
+                result.sourceStatuses.append((name: source.name, status: .notFound))
+            }
+        }
+
+        // 如果 ISBN 无效但有书名，尝试用豆瓣书名搜索
+        if !validISBN && !title.isEmpty {
+            let fetcher = DoubanDescriptionFetcher()
+            var foundSomething = false
+
+            if needsBookDesc && result.bookDescription == nil {
+                let desc = await fetcher.fetchBookDescriptionByTitle(title: title, author: author)
+                if let desc, !desc.isEmpty {
+                    result.bookDescription = desc
+                    foundSomething = true
+                }
+            }
+            if needsAuthorDesc && result.authorDescription == nil {
+                let desc = await fetcher.fetchAuthorDescriptionByTitle(title: title, author: author)
+                if let desc, !desc.isEmpty {
+                    result.authorDescription = desc
+                    foundSomething = true
+                }
+            }
+
+            result.sourceStatuses.append((
+                name: "豆瓣(书名搜索)",
+                status: foundSomething ? .found : .notFound
+            ))
+        }
+
+        return result
     }
 
     // MARK: - 封面图片下载

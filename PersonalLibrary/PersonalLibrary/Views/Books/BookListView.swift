@@ -640,7 +640,8 @@ struct BookRowView: View {
 
             CoverImageCache.shared.set(img, for: cacheKey)
             coverImage = img
-            book.coverImageData = data
+            // 不写入 book.coverImageData — 网络图片只做内存缓存展示
+            // 避免覆盖用户在编辑页面手动设置的封面
         }
     }
 

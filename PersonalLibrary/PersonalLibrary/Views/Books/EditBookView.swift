@@ -43,23 +43,16 @@ struct EditBookView: View {
     @State private var showWebSearch = false
     @State private var selectedPhotoItem: PhotosPickerItem?
 
-    // 自动补全
+    // 智能补全
     @State private var isAutoFilling = false
     @State private var autoFillMessage: String = ""
+    @State private var showFillResult = false
+    @State private var fillResult: SmartFillResult?
 
     var body: some View {
         NavigationStack {
             Form {
-                if isAutoFilling {
-                    Section {
-                        HStack(spacing: 8) {
-                            ProgressView().controlSize(.small)
-                            Text(autoFillMessage)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
+                smartFillSection
                 coverSection
                 basicInfoSection
                 typeAndStatusSection
@@ -79,7 +72,6 @@ struct EditBookView: View {
                 }
             }
             .onAppear { loadBookData() }
-            .task { await autoFillMissingFields() }
             .sheet(isPresented: $showWebSearch) {
                 CoverWebSearchView(bookTitle: title, bookAuthor: author) { imageData in
                     coverData = imageData
@@ -376,76 +368,126 @@ struct EditBookView: View {
         coverData = book.coverImageData
     }
 
-    // MARK: - 自动补全缺失字段
+    // MARK: - 智能补全
 
-    private func autoFillMissingFields() async {
-        // 判断是否有需要补全的字段
-        let missingPublisher = publisher.isEmpty
-        let missingPages = totalPages.isEmpty
-        let missingPrice = price.isEmpty
-        let missingDescription = bookDescription.isEmpty
-        let missingAuthorDesc = authorDescription.isEmpty
-        let missingCover = coverData == nil
-        let missingDoubanURL = doubanURL.isEmpty
+    private var smartFillSection: some View {
+        Section {
+            if isAutoFilling {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(autoFillMessage)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            } else if let result = fillResult {
+                // 显示补全结果
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Image(systemName: result.hasAnyFill ? "checkmark.circle.fill" : "info.circle.fill")
+                            .foregroundStyle(result.hasAnyFill ? .green : .orange)
+                        Text(result.hasAnyFill ? "已补全部分信息" : "未找到可补全的信息")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                    }
 
-        let hasMissing = missingPublisher || missingPages || missingPrice
-            || missingDescription || missingAuthorDesc || missingCover || missingDoubanURL
+                    // 各源状态
+                    ForEach(Array(result.sourceStatuses.enumerated()), id: \.offset) { _, source in
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(statusColor(source.status))
+                                .frame(width: 6, height: 6)
+                            Text(source.name)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(source.status.displayText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            } else {
+                // 初始状态 — 显示按钮
+                Button {
+                    Task { await performSmartFill() }
+                } label: {
+                    HStack {
+                        Image(systemName: "wand.and.stars")
+                        Text("智能补全缺失信息")
+                    }
+                }
+                .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty && isbn.isEmpty)
+            }
+        } header: {
+            Text("数据补全")
+        } footer: {
+            if fillResult == nil && !isAutoFilling {
+                Text("从豆瓣、Open Library、Google Books、Goodreads 查找：出版社、页数、作者、图书简介、作者简介")
+                    .font(.caption2)
+            }
+        }
+    }
 
-        guard hasMissing else { return }
+    private func statusColor(_ status: LookupSourceStatus) -> Color {
+        switch status {
+        case .found: return .green
+        case .notFound: return .red
+        case .notAttempted: return .gray
+        case .error: return .orange
+        }
+    }
 
+    private func performSmartFill() async {
         isAutoFilling = true
-        autoFillMessage = "正在自动补全信息..."
+        autoFillMessage = "正在查询数据源..."
         defer { isAutoFilling = false }
 
-        let lookupService = ISBNLookupService()
-        var result: ISBNLookupResult?
+        var needsAuthorDesc = authorDescription.isEmpty
 
-        // 1. 有 ISBN → 用 ISBNLookupService（豆瓣 → Open Library → Google Books）
-        if !isbn.isEmpty {
-            result = try? await lookupService.lookup(isbn: isbn)
-        }
-
-        // 2. 没有 ISBN 或 ISBN 查不到 → 用书名去豆瓣搜索
-        if result == nil && !title.isEmpty {
-            autoFillMessage = "正在用书名搜索豆瓣..."
-            let fetcher = DoubanDescriptionFetcher()
-            if missingDescription {
-                let desc = await fetcher.fetchBookDescriptionByTitle(title: title, author: author)
-                if let desc, !desc.isEmpty { bookDescription = desc }
-            }
-            if missingAuthorDesc {
-                let desc = await fetcher.fetchAuthorDescriptionByTitle(title: title, author: author)
-                if let desc, !desc.isEmpty { authorDescription = desc }
+        // 优先从本地数据库查找同名作者的简介
+        if needsAuthorDesc && !author.isEmpty && author != "未知作者" {
+            autoFillMessage = "正在从本地书库查找作者简介..."
+            if let localDesc = findLocalAuthorDescription(for: author) {
+                authorDescription = localDesc
+                needsAuthorDesc = false
             }
         }
 
-        // 3. 用 ISBN 查询结果填充空字段
-        if let result {
-            if missingPublisher, let p = result.publisher, !p.isEmpty {
-                publisher = p
-            }
-            if missingPages, let p = result.totalPages, p > 0 {
-                totalPages = String(p)
-            }
-            if missingPrice, let p = result.price, !p.isEmpty {
-                price = p
-            }
-            if missingDescription, let d = result.bookDescription, !d.isEmpty, bookDescription.isEmpty {
-                bookDescription = d
-            }
-            if missingAuthorDesc, let d = result.authorDescription, !d.isEmpty, authorDescription.isEmpty {
-                authorDescription = d
-            }
-            if missingDoubanURL, let u = result.doubanURL, !u.isEmpty {
-                doubanURL = u
-            }
-            if missingCover, let coverURL = result.coverImageURL, !coverURL.isEmpty {
-                autoFillMessage = "正在下载封面..."
-                if let data = await lookupService.downloadCoverImage(from: coverURL), data.count > 1000 {
-                    coverData = data
-                }
-            }
-        }
+        let service = ISBNLookupService()
+        let result = await service.smartFill(
+            isbn: isbn,
+            title: title,
+            author: author,
+            needsPublisher: publisher.isEmpty,
+            needsPages: totalPages.isEmpty,
+            needsAuthor: author.isEmpty || author == "未知作者",
+            needsBookDesc: bookDescription.isEmpty,
+            needsAuthorDesc: needsAuthorDesc
+        )
+
+        // 填充到表单
+        if let p = result.publisher { publisher = p }
+        if let p = result.totalPages { totalPages = String(p) }
+        if let a = result.author { author = a }
+        if let d = result.bookDescription { bookDescription = d }
+        if let d = result.authorDescription { authorDescription = d }
+
+        fillResult = result
+    }
+
+    /// 从本地数据库查找同名作者的最详细简介
+    private func findLocalAuthorDescription(for authorName: String) -> String? {
+        let descriptor = FetchDescriptor<Book>()
+        guard let allBooks = try? modelContext.fetch(descriptor) else { return nil }
+
+        let bestDesc = allBooks
+            .filter { $0.author == authorName && $0.persistentModelID != book.persistentModelID }
+            .compactMap { $0.authorDescription }
+            .filter { !$0.isEmpty }
+            .max(by: { $0.count < $1.count })
+
+        return bestDesc
     }
 
     private func saveChanges() {
@@ -459,14 +501,19 @@ struct EditBookView: View {
         book.publishDate = publishDate
         book.doubanURL = doubanURL.isEmpty ? nil : doubanURL
         book.bookType = bookType
-        book.status = status
-        book.statusChangedDate = Date()
+        if book.status != status {
+            book.status = status
+            book.statusChangedDate = Date()
+        }
         book.rating = rating > 0 ? rating : nil
         book.bookDescription = bookDescription.isEmpty ? nil : bookDescription
         book.authorDescription = authorDescription.isEmpty ? nil : authorDescription
         book.notes = notes.isEmpty ? nil : notes
         book.bookshelf = selectedShelf
-        book.coverImageData = coverData
+        // 只在封面数据真正变化时写入，避免不必要的大 blob I/O
+        if book.coverImageData != coverData {
+            book.coverImageData = coverData
+        }
 
         if status == .finished && book.finishedDate == nil {
             book.finishedDate = Date()
