@@ -367,9 +367,18 @@ struct EditBookView: View {
         selectedTags = Set((book.tags ?? []).map(\.name))
         coverData = book.coverImageData
 
-        // 如果没有本地封面数据，使用完整 pipeline 获取（URL → 豆瓣搜索 → OL）
+        // 如果没有本地封面数据，先查内存缓存（列表可能已下载），再走网络
         if coverData == nil {
             Task {
+                // 1. 内存缓存（列表已下载过的封面在这里）
+                let cacheKey = "\(book.title)|\(book.author)"
+                if let cached = CoverImageCache.shared.image(for: cacheKey),
+                   let data = cached.jpegData(compressionQuality: 0.85) {
+                    coverData = data
+                    return
+                }
+
+                // 2. 完整网络 pipeline
                 let data = await CoverFetchService.shared.fetchCoverThrottled(
                     coverImageURL: book.coverImageURL,
                     isbn: book.isbn,

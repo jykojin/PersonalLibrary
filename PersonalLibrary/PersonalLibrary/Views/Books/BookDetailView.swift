@@ -309,6 +309,16 @@ struct BookDetailView: View {
         // 已有本地封面数据，不需要获取
         guard book.coverImageData == nil else { return }
 
+        // 1. 先检查内存缓存（列表可能已经下载过，无需再走网络）
+        let cacheKey = "\(book.title)|\(book.author)"
+        if let cached = CoverImageCache.shared.image(for: cacheKey),
+           let data = cached.jpegData(compressionQuality: 0.85) {
+            book.coverImageData = data
+            try? modelContext.save()
+            return
+        }
+
+        // 2. 内存没有，走完整网络 pipeline
         let data = await CoverFetchService.shared.fetchCoverThrottled(
             coverImageURL: book.coverImageURL,
             isbn: book.isbn,
