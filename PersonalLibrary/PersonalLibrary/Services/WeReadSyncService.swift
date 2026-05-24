@@ -371,9 +371,6 @@ actor WeReadSyncService {
                     }
                 }
                 await MainActor.run { try? bgContext.save() }
-
-                // 9d. 外部源批量补全（缺出版社/页数/简介/作者简介的书，从豆瓣/OL/Google补）
-                await self.batchEnrichBooks(context: bgContext)
             }
         }
 

@@ -150,7 +150,7 @@ struct PersonalLibraryApp: App {
 
         // 筛选没有封面但有 URL 或有 ISBN/豆瓣链接的书
         let booksNeedingCover = allBooks.filter { book in
-            book.coverImageData == nil && !book.isArchived &&
+            !book.hasCoverData && !book.isArchived &&
             (book.coverImageURL != nil || book.isbn != nil || book.doubanURL != nil)
         }
 

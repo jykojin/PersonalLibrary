@@ -124,6 +124,12 @@ final class Book {
         self.addedDate = Date()
     }
 
+    /// 是否有有效封面数据（externalStorage 可能返回空 Data 而非 nil）
+    var hasCoverData: Bool {
+        guard let data = coverImageData else { return false }
+        return !data.isEmpty
+    }
+
     /// 阅读进度百分比 (0.0 ~ 1.0)
     var progress: Double {
         guard totalPages > 0 else { return 0 }

@@ -1,5 +1,8 @@
 import SwiftUI
 import SwiftData
+import os.log
+
+private let batchLog = Logger(subsystem: "com.example.PersonalLibrary", category: "BatchEnrich")
 
 /// 数据维护视图
 /// 四个 Tab：作者、出版社、标签、批量工具
@@ -33,6 +36,10 @@ struct DataMaintenanceView: View {
     @State private var batchCurrent: Int = 0
     @State private var batchStatusText: String = ""
     @State private var isBatchRunning = false
+    @State private var batchTask: Task<Void, Never>?
+    @State private var activeBatchType: BatchType = .paper
+    @State private var batchCancelled = false  // 手动取消标志（跨 Task.detached）
+    private enum BatchType { case paper, weread }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -112,21 +119,58 @@ struct DataMaintenanceView: View {
 
             Section {
                 Button {
-                    Task { await batchEnrichPaperBooks() }
+                    if isBatchRunning && activeBatchType == .paper {
+                        batchCancelled = true
+                        batchTask?.cancel()
+                    } else {
+                        activeBatchType = .paper
+                        batchCancelled = false
+                        batchTask = Task { await batchEnrichPaperBooks() }
+                    }
                 } label: {
                     HStack {
-                        Label("批量补全纸质书信息", systemImage: "book.closed")
+                        let isActive = isBatchRunning && activeBatchType == .paper
+                        Label(
+                            isActive ? "停止补全" : "批量补全纸质书信息",
+                            systemImage: isActive ? "stop.circle" : "book.closed"
+                        )
+                        .foregroundStyle(isActive ? .red : .accentColor)
                         Spacer()
-                        if isBatchRunning {
+                        if isActive {
                             ProgressView().controlSize(.small)
                         }
                     }
                 }
-                .disabled(isCleaning || isBatchRunning)
+                .disabled(isCleaning || (isBatchRunning && activeBatchType != .paper))
+
+                Button {
+                    if isBatchRunning && activeBatchType == .weread {
+                        batchCancelled = true
+                        batchTask?.cancel()
+                    } else {
+                        activeBatchType = .weread
+                        batchCancelled = false
+                        batchTask = Task { await batchEnrichWeReadBooks() }
+                    }
+                } label: {
+                    HStack {
+                        let isActive = isBatchRunning && activeBatchType == .weread
+                        Label(
+                            isActive ? "停止补全" : "批量补全微信读书图书信息",
+                            systemImage: isActive ? "stop.circle" : "headphones"
+                        )
+                        .foregroundStyle(isActive ? .red : .accentColor)
+                        Spacer()
+                        if isActive {
+                            ProgressView().controlSize(.small)
+                        }
+                    }
+                }
+                .disabled(isCleaning || (isBatchRunning && activeBatchType != .weread))
             } header: {
                 Text("信息补全")
             } footer: {
-                Text("补全纸质书缺失的出版社、定价、页数、出版日期、作者、作者简介、图书简介。\n查询顺序：豆瓣 → Open Library → Google Books → Goodreads")
+                Text("补全纸质书/微信读书图书缺失的出版社、定价、页数、出版日期、作者、作者简介、图书简介。\n查询顺序：豆瓣 → Open Library → Google Books → Goodreads")
             }
 
             // 进度区域
@@ -404,21 +448,27 @@ struct DataMaintenanceView: View {
         isCleaning = true
         defer { isCleaning = false }
 
-        var updatedCount = 0
-        for book in allBooks {
-            let original = book.author
-            let mutable = NSMutableString(string: original)
-            CFStringTransform(mutable, nil, "Traditional-Simplified" as CFString, false)
-            let simplified = mutable as String
-            if simplified != original {
-                book.author = simplified
-                updatedCount += 1
-            }
-        }
+        let container = modelContext.container
+        let bookIDs = allBooks.map(\.persistentModelID)
 
-        if updatedCount > 0 {
-            try? modelContext.save()
-        }
+        let updatedCount = await Task.detached(priority: .utility) {
+            let bgContext = ModelContext(container)
+            bgContext.autosaveEnabled = false
+            var count = 0
+            for id in bookIDs {
+                guard let book = bgContext.model(for: id) as? Book else { continue }
+                let original = book.author
+                let mutable = NSMutableString(string: original)
+                CFStringTransform(mutable, nil, "Traditional-Simplified" as CFString, false)
+                let simplified = mutable as String
+                if simplified != original {
+                    book.author = simplified
+                    count += 1
+                }
+            }
+            if count > 0 { try? bgContext.save() }
+            return count
+        }.value
 
         cleanResultMessage = updatedCount > 0
             ? "已将 \(updatedCount) 本书的作者名转为简体"
@@ -430,34 +480,41 @@ struct DataMaintenanceView: View {
         isCleaning = true
         defer { isCleaning = false }
 
-        let separators = CharacterSet(charactersIn: "；;/，")
-        var totalFixes = 0
+        let container = modelContext.container
+        let bookIDs = allBooks.map(\.persistentModelID)
 
-        for book in allBooks {
-            let authorNorm = normalizeField(book.author, separators: separators)
-            if authorNorm != book.author {
-                book.author = authorNorm
-                totalFixes += 1
-            }
-            if let t = book.translator, !t.isEmpty {
-                let tNorm = normalizeField(t, separators: separators)
-                if tNorm != t {
-                    book.translator = tNorm
-                    totalFixes += 1
+        let totalFixes = await Task.detached(priority: .utility) {
+            let bgContext = ModelContext(container)
+            bgContext.autosaveEnabled = false
+            let separators = CharacterSet(charactersIn: "；;/，")
+            var fixes = 0
+
+            for id in bookIDs {
+                guard let book = bgContext.model(for: id) as? Book else { continue }
+                let authorNorm = self.normalizeField(book.author, separators: separators)
+                if authorNorm != book.author {
+                    book.author = authorNorm
+                    fixes += 1
+                }
+                if let t = book.translator, !t.isEmpty {
+                    let tNorm = self.normalizeField(t, separators: separators)
+                    if tNorm != t {
+                        book.translator = tNorm
+                        fixes += 1
+                    }
+                }
+                if let p = book.publisher, !p.isEmpty {
+                    let pNorm = self.normalizeField(p, separators: separators)
+                    if pNorm != p {
+                        book.publisher = pNorm
+                        fixes += 1
+                    }
                 }
             }
-            if let p = book.publisher, !p.isEmpty {
-                let pNorm = normalizeField(p, separators: separators)
-                if pNorm != p {
-                    book.publisher = pNorm
-                    totalFixes += 1
-                }
-            }
-        }
 
-        if totalFixes > 0 {
-            try? modelContext.save()
-        }
+            if fixes > 0 { try? bgContext.save() }
+            return fixes
+        }.value
 
         cleanResultMessage = totalFixes > 0
             ? "已修复 \(totalFixes) 条记录的分隔符格式"
@@ -473,36 +530,22 @@ struct DataMaintenanceView: View {
         return parts.joined(separator: ", ")
     }
 
-    // MARK: - 批量增补图书简介
-
-    @MainActor
     // MARK: - 批量补全纸质书信息
 
     private func batchEnrichPaperBooks() async {
         // 筛选：纸质书 + 需要补全 + 从未处理过
-        let booksToEnrich = allBooks.filter {
+        let bookIDs = allBooks.filter {
             !$0.isArchived && $0.bookType == .paper
             && $0.needsEnrichment && $0.lastEnrichmentDate == nil
-        }
+        }.map(\.persistentModelID)
 
-        guard !booksToEnrich.isEmpty else {
+        guard !bookIDs.isEmpty else {
             cleanResultMessage = "所有纸质书信息已完整，无需补全"
             showingCleanResult = true
             return
         }
 
-        isBatchRunning = true
-        batchTotal = booksToEnrich.count
-        batchCurrent = 0
-        batchProgress = 0
-        batchStatusText = "正在批量补全纸质书信息..."
-        defer { isBatchRunning = false }
-
-        let lookupService = ISBNLookupService()
-        var successCount = 0
-        let batchSize = 5
-
-        // 建立本地作者简介缓存
+        // 建立本地作者简介缓存（主线程读一次）
         var localAuthorCache: [String: String] = [:]
         for book in allBooks where !book.isArchived {
             if let desc = book.authorDescription, !desc.isEmpty {
@@ -513,71 +556,243 @@ struct DataMaintenanceView: View {
             }
         }
 
-        for (index, book) in booksToEnrich.enumerated() {
-            batchCurrent = index + 1
-            batchProgress = Double(batchCurrent) / Double(batchTotal)
-            batchStatusText = "正在补全（\(book.title)）\(batchCurrent)/\(batchTotal)"
+        isBatchRunning = true
+        batchTotal = bookIDs.count
+        batchCurrent = 0
+        batchProgress = 0
+        batchStatusText = "正在批量补全纸质书信息..."
 
-            // 先检查本地作者简介缓存
-            let needsAuthorDesc = (book.authorDescription ?? "").isEmpty
-            if needsAuthorDesc {
-                let primaryAuthor = book.author.trimmingCharacters(in: .whitespaces)
-                if let localDesc = localAuthorCache[primaryAuthor] {
-                    book.authorDescription = localDesc
+        let container = modelContext.container
+        let totalCount = bookIDs.count
+        let batchSaveInterval = 50  // 减少 save 频率：50 本一存，降低 @Query 刷新次数
+
+        // 所有 ModelContext 操作移至后台线程
+        let (successCount, processedCount, wasCancelled) = await Task.detached(priority: .utility) {
+            let bgContext = ModelContext(container)
+            bgContext.autosaveEnabled = false
+            let lookupService = ISBNLookupService()
+            var success = 0
+            var processed = 0
+
+            for (index, bookID) in bookIDs.enumerated() {
+                // 检查手动取消标志
+                if await MainActor.run(body: { self.batchCancelled }) { break }
+
+                guard let book = bgContext.model(for: bookID) as? Book else { continue }
+                let title = book.title
+
+                // UI 进度更新（唯一需要主线程的部分）
+                await MainActor.run {
+                    self.batchCurrent = index + 1
+                    self.batchProgress = Double(index + 1) / Double(totalCount)
+                    self.batchStatusText = "正在补全（\(title)）\(index + 1)/\(totalCount)"
                 }
+
+                // 先检查本地作者简介缓存
+                if (book.authorDescription ?? "").isEmpty {
+                    let primaryAuthor = book.author.trimmingCharacters(in: .whitespaces)
+                    if let localDesc = localAuthorCache[primaryAuthor] {
+                        book.authorDescription = localDesc
+                    }
+                }
+
+                // smartFill — 网络 I/O（后台线程等待，不阻塞主线程）
+                let tFill0 = CFAbsoluteTimeGetCurrent()
+                let result = await lookupService.smartFill(
+                    isbn: book.isbn ?? "",
+                    title: book.title,
+                    author: book.author,
+                    needsTitle: false,
+                    needsPublisher: (book.publisher ?? "").isEmpty,
+                    needsPages: book.totalPages == 0,
+                    needsPrice: (book.price ?? "").isEmpty,
+                    needsPublishDate: book.publishDate == nil,
+                    needsTranslator: (book.translator ?? "").isEmpty,
+                    needsAuthor: book.author.isEmpty || book.author == "未知作者",
+                    needsBookDesc: (book.bookDescription ?? "").isEmpty,
+                    needsAuthorDesc: (book.authorDescription ?? "").isEmpty
+                )
+                let tFill1 = CFAbsoluteTimeGetCurrent()
+                FileLogger.shared.log("paper[\(index+1)/\(totalCount)] \(book.title) | smartFill:\(Int((tFill1-tFill0)*1000))ms filled:\(result.hasAnyFill)")
+
+                if await MainActor.run(body: { self.batchCancelled }) { break }
+
+                // 应用结果（全部在后台线程）
+                if let p = result.publisher { book.publisher = p }
+                if let p = result.totalPages { book.totalPages = p }
+                if let p = result.price { book.price = p }
+                if let d = result.publishDate { book.publishDate = self.parsePublishDate(d) }
+                if let t = result.translator { book.translator = t }
+                if let a = result.author { book.author = a }
+                if let d = result.bookDescription { book.bookDescription = d }
+                if let d = result.authorDescription {
+                    book.authorDescription = d
+                    let primaryAuthor = book.author.trimmingCharacters(in: .whitespaces)
+                    if !primaryAuthor.isEmpty { localAuthorCache[primaryAuthor] = d }
+                }
+                book.lastEnrichmentDate = Date()
+                if result.hasAnyFill { success += 1 }
+                processed = index + 1
+
+                // 低频 save — 减少 SQLite 写锁 + @Query 刷新
+                if (index + 1) % batchSaveInterval == 0 {
+                    let tSave0 = CFAbsoluteTimeGetCurrent()
+                    try? bgContext.save()
+                    let tSave1 = CFAbsoluteTimeGetCurrent()
+                    FileLogger.shared.log("paper SAVE batch \(index+1) | \(Int((tSave1-tSave0)*1000))ms")
+                }
+
+                // 限速：5 秒间隔，降低 CPU/网络负载
+                try? await Task.sleep(for: .seconds(5))
             }
 
-            // 调用统一 smartFill
-            let result = await lookupService.smartFill(
-                isbn: book.isbn ?? "",
-                title: book.title,
-                author: book.author,
-                needsTitle: false,  // 纸质书通常已有书名
-                needsPublisher: (book.publisher ?? "").isEmpty,
-                needsPages: book.totalPages == 0,
-                needsPrice: (book.price ?? "").isEmpty,
-                needsPublishDate: book.publishDate == nil,
-                needsTranslator: (book.translator ?? "").isEmpty,
-                needsAuthor: book.author.isEmpty || book.author == "未知作者",
-                needsBookDesc: (book.bookDescription ?? "").isEmpty,
-                needsAuthorDesc: (book.authorDescription ?? "").isEmpty
-            )
+            // 最终保存
+            try? bgContext.save()
 
-            // 应用结果
-            if let p = result.publisher { book.publisher = p }
-            if let p = result.totalPages { book.totalPages = p }
-            if let p = result.price { book.price = p }
-            if let d = result.publishDate { book.publishDate = parsePublishDate(d) }
-            if let t = result.translator { book.translator = t }
-            if let a = result.author { book.author = a }
-            if let d = result.bookDescription { book.bookDescription = d }
-            if let d = result.authorDescription {
-                book.authorDescription = d
-                // 更新本地缓存
-                let primaryAuthor = book.author.trimmingCharacters(in: .whitespaces)
-                if !primaryAuthor.isEmpty { localAuthorCache[primaryAuthor] = d }
-            }
+            let cancelled = await MainActor.run(body: { self.batchCancelled })
+            return (success, processed, cancelled)
+        }.value
 
-            // 打标记
-            book.lastEnrichmentDate = Date()
+        // 回到主线程更新 UI 状态
+        isBatchRunning = false
+        batchTask = nil
 
-            if result.hasAnyFill { successCount += 1 }
+        if wasCancelled {
+            cleanResultMessage = "已停止。已补全 \(successCount)/\(processedCount) 本（共 \(totalCount) 本待处理）"
+        } else {
+            cleanResultMessage = "完成！\(successCount)/\(totalCount) 本书成功补全信息"
+        }
+        showingCleanResult = true
+    }
 
-            // 每批写入一次（减少 IO）
-            if batchCurrent % batchSize == 0 {
-                try? modelContext.save()
-            }
+    // MARK: - 批量补全微信读书图书信息
 
-            // 限速：每 3 本暂停 2 秒
-            if batchCurrent % 3 == 0 {
-                try? await Task.sleep(for: .seconds(2))
+    private func batchEnrichWeReadBooks() async {
+        // 筛选：微信读书导入 + 需要补全
+        let bookIDs = allBooks.filter {
+            !$0.isArchived && $0.wereadBookId != nil && $0.needsEnrichment
+        }.map(\.persistentModelID)
+
+        guard !bookIDs.isEmpty else {
+            cleanResultMessage = "所有微信读书图书信息已完整，无需补全"
+            showingCleanResult = true
+            return
+        }
+
+        // 建立本地作者简介缓存（主线程读一次）
+        var localAuthorCache: [String: String] = [:]
+        for book in allBooks where !book.isArchived {
+            if let desc = book.authorDescription, !desc.isEmpty {
+                let trimmed = book.author.trimmingCharacters(in: .whitespaces)
+                if !trimmed.isEmpty && localAuthorCache[trimmed] == nil {
+                    localAuthorCache[trimmed] = desc
+                }
             }
         }
 
-        // 最终保存
-        try? modelContext.save()
+        isBatchRunning = true
+        batchTotal = bookIDs.count
+        batchCurrent = 0
+        batchProgress = 0
+        batchStatusText = "正在批量补全微信读书图书信息..."
 
-        cleanResultMessage = "完成！\(successCount)/\(batchTotal) 本书成功补全信息"
+        let container = modelContext.container
+        let totalCount = bookIDs.count
+        let batchSaveInterval = 50  // 减少 save 频率：50 本一存
+
+        // 所有 ModelContext 操作移至后台线程
+        let (successCount, processedCount, wasCancelled) = await Task.detached(priority: .utility) {
+            let bgContext = ModelContext(container)
+            bgContext.autosaveEnabled = false
+            let lookupService = ISBNLookupService()
+            var success = 0
+            var processed = 0
+
+            for (index, bookID) in bookIDs.enumerated() {
+                if await MainActor.run(body: { self.batchCancelled }) { break }
+
+                guard let book = bgContext.model(for: bookID) as? Book else { continue }
+                let title = book.title
+
+                await MainActor.run {
+                    self.batchCurrent = index + 1
+                    self.batchProgress = Double(index + 1) / Double(totalCount)
+                    self.batchStatusText = "正在补全（\(title)）\(index + 1)/\(totalCount)"
+                }
+
+                // 先检查本地作者简介缓存
+                if (book.authorDescription ?? "").isEmpty {
+                    let primaryAuthor = book.author.trimmingCharacters(in: .whitespaces)
+                    if let localDesc = localAuthorCache[primaryAuthor] {
+                        book.authorDescription = localDesc
+                    }
+                }
+
+                // smartFill — 网络 I/O（后台线程等待）
+                let tFill0 = CFAbsoluteTimeGetCurrent()
+                let result = await lookupService.smartFill(
+                    isbn: book.isbn ?? "",
+                    title: book.title,
+                    author: book.author,
+                    needsTitle: false,
+                    needsPublisher: (book.publisher ?? "").isEmpty,
+                    needsPages: book.totalPages == 0,
+                    needsPrice: (book.price ?? "").isEmpty,
+                    needsPublishDate: book.publishDate == nil,
+                    needsTranslator: (book.translator ?? "").isEmpty,
+                    needsAuthor: book.author.isEmpty || book.author == "未知作者",
+                    needsBookDesc: (book.bookDescription ?? "").isEmpty,
+                    needsAuthorDesc: (book.authorDescription ?? "").isEmpty
+                )
+                let tFill1 = CFAbsoluteTimeGetCurrent()
+                FileLogger.shared.log("weread[\(index+1)/\(totalCount)] \(book.title) | smartFill:\(Int((tFill1-tFill0)*1000))ms filled:\(result.hasAnyFill)")
+
+                if await MainActor.run(body: { self.batchCancelled }) { break }
+
+                // 应用结果（全部在后台线程）
+                if let p = result.publisher { book.publisher = p }
+                if let p = result.totalPages { book.totalPages = p }
+                if let p = result.price { book.price = p }
+                if let d = result.publishDate { book.publishDate = self.parsePublishDate(d) }
+                if let t = result.translator { book.translator = t }
+                if let a = result.author { book.author = a }
+                if let d = result.bookDescription { book.bookDescription = d }
+                if let d = result.authorDescription {
+                    book.authorDescription = d
+                    let primaryAuthor = book.author.trimmingCharacters(in: .whitespaces)
+                    if !primaryAuthor.isEmpty { localAuthorCache[primaryAuthor] = d }
+                }
+                book.lastEnrichmentDate = Date()
+                if result.hasAnyFill { success += 1 }
+                processed = index + 1
+
+                // 低频 save
+                if (index + 1) % batchSaveInterval == 0 {
+                    let tSave0 = CFAbsoluteTimeGetCurrent()
+                    try? bgContext.save()
+                    let tSave1 = CFAbsoluteTimeGetCurrent()
+                    FileLogger.shared.log("weread SAVE batch \(index+1) | \(Int((tSave1-tSave0)*1000))ms")
+                }
+
+                // 限速：5 秒
+                try? await Task.sleep(for: .seconds(5))
+            }
+
+            // 最终保存
+            try? bgContext.save()
+
+            let cancelled = await MainActor.run(body: { self.batchCancelled })
+            return (success, processed, cancelled)
+        }.value
+
+        isBatchRunning = false
+        batchTask = nil
+
+        if wasCancelled {
+            cleanResultMessage = "已停止。已补全 \(successCount)/\(processedCount) 本（共 \(totalCount) 本待处理）"
+        } else {
+            cleanResultMessage = "完成！\(successCount)/\(totalCount) 本微信读书图书成功补全信息"
+        }
         showingCleanResult = true
     }
 

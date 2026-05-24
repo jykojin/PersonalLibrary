@@ -1,5 +1,8 @@
 import SwiftUI
 import SwiftData
+import os.log
+
+private let perfLog = Logger(subsystem: "com.example.PersonalLibrary", category: "ListPerf")
 
 // MARK: - 搜索范围
 
@@ -240,6 +243,12 @@ struct BookListView: View {
     }
 
     private func recomputeFilteredBooks() {
+        let t0 = CFAbsoluteTimeGetCurrent()
+        defer {
+            let ms = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            perfLog.info("recomputeFilteredBooks: \(ms)ms count:\(cachedFilteredBooks.count)")
+            FileLogger.shared.log("recompute: \(ms)ms count:\(cachedFilteredBooks.count) shelf:\(selectedShelf)")
+        }
         if let advResults = advancedSearchResults {
             cachedFilteredBooks = advResults
             return
@@ -251,10 +260,17 @@ struct BookListView: View {
             result = books.filter { !$0.isArchived }
         } else if selectedShelf == "微信读书" {
             result = books.filter { book in
-                !book.isArchived && book.tags?.contains(where: { $0.name == "微信读书" }) == true
+                !book.isArchived && book.wereadBookId != nil
             }
         } else {
-            result = books.filter { !$0.isArchived && $0.bookshelf?.name == selectedShelf }
+            // 用反向关系：从 Bookshelf.books 取，避免遍历全部 2311 本触发 relationship fault
+            if let shelf = bookshelves.first(where: { $0.name == selectedShelf }) {
+                result = (shelf.books ?? []).filter { !$0.isArchived }
+                // 保持与 @Query 一致的排序（addedDate 降序）
+                result.sort { $0.addedDate > $1.addedDate }
+            } else {
+                result = []
+            }
         }
 
         if paperOnly && selectedShelf == "我的藏书" {
@@ -523,7 +539,20 @@ struct BookRowView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .onAppear { loadCoverOnAppear() }
+        .onAppear {
+            let t0 = CFAbsoluteTimeGetCurrent()
+            let _ = book.bookshelf?.name
+            let t1 = CFAbsoluteTimeGetCurrent()
+            let _ = book.tags?.count
+            let t2 = CFAbsoluteTimeGetCurrent()
+            let shelfMs = Int((t1 - t0) * 1000)
+            let tagsMs = Int((t2 - t1) * 1000)
+            if shelfMs > 1 || tagsMs > 1 {
+                perfLog.warning("ROW FAULT \(book.title) | shelf:\(shelfMs)ms tags:\(tagsMs)ms")
+                FileLogger.shared.log("ROW FAULT \(book.title) | shelf:\(shelfMs)ms tags:\(tagsMs)ms")
+            }
+            loadCoverOnAppear()
+        }
         .onDisappear { cancelFetch() }
         .onChange(of: book.coverImageData) { _, newData in
             // 封面被编辑后，清除缓存并刷新
@@ -602,16 +631,32 @@ struct BookRowView: View {
             return
         }
 
-        // 2. debounce 150ms — 快速滑过会被 onDisappear cancel，不触发任何 I/O
+        // 2. debounce 150-300ms（随机抖动，避免一屏多本同时醒来触发批量 layout）
         fetchTask = Task {
-            try? await Task.sleep(for: .milliseconds(150))
+            let jitter = Int.random(in: 150...300)
+            try? await Task.sleep(for: .milliseconds(jitter))
             guard !Task.isCancelled else { return }
 
-            // 读取本地 blob（externalStorage fault 只在 debounce 后触发）
-            if let data = book.coverImageData, !data.isEmpty {
+            // Layer 3 修复：将 externalStorage 读取移到后台线程
+            // book.coverImageData 会触发 SQLite fault，不能在主线程做
+            let hasCover = book.hasCoverData
+            let bookTitle = book.title
+            let coverURL = book.coverImageURL
+            let isbn = book.isbn
+            let doubanURL = book.doubanURL
+            let author = book.author
+
+            if hasCover {
+                let t0 = CFAbsoluteTimeGetCurrent()
+                // externalStorage 读 + 解码全部在后台线程
                 let img = await Task.detached(priority: .utility) {
-                    UIImage(data: data)
+                    let data = book.coverImageData
+                    guard let data else { return nil as UIImage? }
+                    return UIImage(data: data)
                 }.value
+                let t1 = CFAbsoluteTimeGetCurrent()
+                perfLog.debug("cover DB \(bookTitle) | total:\(Int((t1-t0)*1000))ms")
+                FileLogger.shared.log("cover DB \(bookTitle) | total:\(Int((t1-t0)*1000))ms")
                 guard let img, !Task.isCancelled else { return }
                 CoverImageCache.shared.set(img, for: cacheKey)
                 coverImage = img
@@ -622,13 +667,17 @@ struct BookRowView: View {
             try? await Task.sleep(for: .milliseconds(350))
             guard !Task.isCancelled else { return }
 
+            let tNet0 = CFAbsoluteTimeGetCurrent()
             let data = await CoverFetchService.shared.fetchCoverThrottled(
-                coverImageURL: book.coverImageURL,
-                isbn: book.isbn,
-                doubanURL: book.doubanURL,
-                title: book.title,
-                author: book.author
+                coverImageURL: coverURL,
+                isbn: isbn,
+                doubanURL: doubanURL,
+                title: bookTitle,
+                author: author
             )
+            let tNet1 = CFAbsoluteTimeGetCurrent()
+            perfLog.debug("cover NET \(bookTitle) | time:\(Int((tNet1-tNet0)*1000))ms got:\(data?.count ?? 0)")
+            FileLogger.shared.log("cover NET \(bookTitle) | time:\(Int((tNet1-tNet0)*1000))ms got:\(data?.count ?? 0)")
 
             guard let data, !Task.isCancelled else { return }
             let img = await Task.detached(priority: .utility) {

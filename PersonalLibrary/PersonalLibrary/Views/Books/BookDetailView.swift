@@ -296,19 +296,20 @@ struct BookDetailView: View {
     // MARK: - 封面加载（@State 驱动，绕过 externalStorage 观察问题）
 
     private func loadCover() async {
+        let cacheKey = "\(book.title)|\(book.author)"
+
         // 1. 本地 DB 有数据 → 直接解码到 @State
-        if let data = book.coverImageData, !data.isEmpty,
+        if book.hasCoverData, let data = book.coverImageData,
            let img = UIImage(data: data) {
             coverImage = img
             return
         }
 
         // 2. 内存缓存（列表可能已经下载过）
-        let cacheKey = "\(book.title)|\(book.author)"
         if let cached = CoverImageCache.shared.image(for: cacheKey) {
             coverImage = cached
             // 顺便持久化到 DB，后续不再需要网络
-            if book.coverImageData == nil {
+            if !book.hasCoverData {
                 book.coverImageData = cached.jpegData(compressionQuality: 0.85)
                 try? modelContext.save()
             }
@@ -327,7 +328,7 @@ struct BookDetailView: View {
         guard let data, let img = UIImage(data: data) else { return }
         coverImage = img
         // 持久化
-        if book.coverImageData == nil {
+        if !book.hasCoverData {
             book.coverImageData = data
             try? modelContext.save()
         }

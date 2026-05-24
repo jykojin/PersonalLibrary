@@ -153,7 +153,7 @@ struct AdvancedSearchView: View {
 
             // 缺封面
             if missingCover {
-                if book.coverImageData != nil { return false }
+                if book.hasCoverData { return false }
             }
 
             // 缺内容简介

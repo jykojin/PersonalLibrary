@@ -367,8 +367,8 @@ struct EditBookView: View {
         selectedTags = Set((book.tags ?? []).map(\.name))
         coverData = book.coverImageData
 
-        // 如果没有本地封面数据，先查内存缓存（列表可能已下载），再走网络
-        if coverData == nil {
+        // 如果没有有效封面数据（nil 或空 Data），先查内存缓存，再走网络
+        if coverData == nil || coverData!.isEmpty {
             Task {
                 // 1. 内存缓存（列表已下载过的封面在这里）
                 let cacheKey = "\(book.title)|\(book.author)"

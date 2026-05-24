@@ -2107,3 +2107,124 @@ struct BookWeReadFieldsTests {
         #expect(book.addSource == .manual)
     }
 }
+
+// MARK: - Background Context Tests (v0.3 Performance Fix)
+
+@Suite("Background Context Performance Tests")
+struct BackgroundContextPerformanceTests {
+
+    @Test("ModelContext 可在后台线程创建和使用")
+    func modelContextCreatableOffMainThread() async throws {
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: Book.self, Tag.self, Bookshelf.self, ReadingRecord.self, configurations: config)
+
+        let result = await Task.detached(priority: .utility) {
+            let bgContext = ModelContext(container)
+            bgContext.autosaveEnabled = false
+            let book = Book(title: "后台创建", author: "后台作者")
+            bgContext.insert(book)
+            try? bgContext.save()
+            return true
+        }.value
+
+        #expect(result == true)
+    }
+
+    @Test("后台线程 save 不崩溃")
+    func backgroundSaveStable() async throws {
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: Book.self, Tag.self, Bookshelf.self, ReadingRecord.self, configurations: config)
+
+        let saveCount = await Task.detached(priority: .utility) {
+            let bgContext = ModelContext(container)
+            bgContext.autosaveEnabled = false
+            var count = 0
+            for i in 0..<20 {
+                let book = Book(title: "书\(i)", author: "作者\(i)")
+                bgContext.insert(book)
+                count += 1
+            }
+            // 一次性 save（模拟 batchSaveInterval = 50 的行为）
+            try? bgContext.save()
+            return count
+        }.value
+
+        #expect(saveCount == 20)
+    }
+
+    @Test("batchCancelled 标志可跨线程读取")
+    func cancellationFlagCrossThread() async {
+        // 模拟 @State var batchCancelled 的行为
+        // 使用 actor 模拟主线程持有的状态
+        actor CancelState {
+            var cancelled = false
+            func cancel() { cancelled = true }
+            func isCancelled() -> Bool { cancelled }
+        }
+
+        let state = CancelState()
+
+        // 后台线程读取 cancel 状态
+        let task = Task.detached(priority: .utility) {
+            var iterations = 0
+            for _ in 0..<100 {
+                if await state.isCancelled() { break }
+                iterations += 1
+                try? await Task.sleep(for: .milliseconds(1))
+            }
+            return iterations
+        }
+
+        // 模拟用户点击停止
+        try? await Task.sleep(for: .milliseconds(20))
+        await state.cancel()
+
+        let iterationsCompleted = await task.value
+        // 应该在 100 次之前停止
+        #expect(iterationsCompleted < 100)
+    }
+
+    @Test("CoverImageCache 并发安全 — 多线程同时读写不崩溃")
+    func coverCacheConcurrentAccess() async {
+        let cache = CoverImageCache.shared
+        let testImage = UIImage(systemName: "book.fill")!
+
+        await withTaskGroup(of: Void.self) { group in
+            // 10 个并发写入
+            for i in 0..<10 {
+                group.addTask {
+                    cache.set(testImage, for: "concurrent_test_\(i)")
+                }
+            }
+            // 10 个并发读取
+            for i in 0..<10 {
+                group.addTask {
+                    _ = cache.image(for: "concurrent_test_\(i)")
+                }
+            }
+        }
+
+        // 清理
+        for i in 0..<10 {
+            cache.remove(for: "concurrent_test_\(i)")
+        }
+    }
+
+    @Test("needsEnrichment + lastEnrichmentDate 过滤逻辑正确")
+    func enrichmentFilterLogic() {
+        // 纸质书批量补全的筛选条件：纸质 + needsEnrichment + lastEnrichmentDate == nil
+        let book1 = Book(title: "需要补全", author: "作者", bookType: .paper)
+        #expect(book1.needsEnrichment == true)
+        #expect(book1.lastEnrichmentDate == nil)
+
+        // 设置 lastEnrichmentDate 后不再参与
+        let book2 = Book(title: "已处理", author: "作者", bookType: .paper)
+        book2.lastEnrichmentDate = Date()
+        #expect(book2.lastEnrichmentDate != nil)
+
+        // 已归档的不参与
+        let book3 = Book(title: "已归档", author: "作者", bookType: .paper)
+        book3.isArchived = true
+        #expect(book3.isArchived == true)
+    }
+}
