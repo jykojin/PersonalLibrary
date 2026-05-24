@@ -1629,6 +1629,172 @@ struct SecurityTests {
     }
 }
 
+// MARK: - SmartFillResult Extended Fields Tests
+
+@Suite("SmartFillResult Extended Fields Tests")
+struct SmartFillResultExtendedTests {
+
+    @Test("SmartFillResult 包含扩展字段 — title/price/publishDate/translator")
+    func extendedFieldsExist() {
+        var result = SmartFillResult(sourceStatuses: [])
+        result.title = "书名"
+        result.price = "¥59.00"
+        result.publishDate = "2020-01"
+        result.translator = "译者"
+        #expect(result.title == "书名")
+        #expect(result.price == "¥59.00")
+        #expect(result.publishDate == "2020-01")
+        #expect(result.translator == "译者")
+    }
+
+    @Test("hasAnyFill 在新字段填充时返回 true")
+    func hasAnyFillWithExtendedFields() {
+        var result = SmartFillResult(sourceStatuses: [])
+        #expect(result.hasAnyFill == false)
+
+        result.price = "¥39.00"
+        #expect(result.hasAnyFill == true)
+    }
+
+    @Test("hasAnyFill 在 title 填充时返回 true")
+    func hasAnyFillWithTitle() {
+        var result = SmartFillResult(sourceStatuses: [])
+        result.title = "新书名"
+        #expect(result.hasAnyFill == true)
+    }
+
+    @Test("hasAnyFill 在 translator 填充时返回 true")
+    func hasAnyFillWithTranslator() {
+        var result = SmartFillResult(sourceStatuses: [])
+        result.translator = "王德威"
+        #expect(result.hasAnyFill == true)
+    }
+}
+
+// MARK: - Book needsEnrichment Extended Tests
+
+@Suite("Book needsEnrichment Extended Tests")
+struct BookNeedsEnrichmentExtendedTests {
+
+    @Test("纸质书缺定价需要补全")
+    func paperBookMissingPriceNeedsEnrichment() {
+        let book = Book(title: "书", author: "作者", publisher: "出版社",
+                        bookType: .paper, bookDescription: "简介")
+        book.totalPages = 200
+        book.authorDescription = "作者简介"
+        // price 为 nil
+        #expect(book.needsEnrichment)
+    }
+
+    @Test("纸质书缺出版日期需要补全")
+    func paperBookMissingPublishDateNeedsEnrichment() {
+        let book = Book(title: "书", author: "作者", publisher: "出版社",
+                        totalPages: 200, price: "¥59", bookType: .paper,
+                        bookDescription: "简介")
+        book.authorDescription = "作者简介"
+        // publishDate 为 nil
+        #expect(book.needsEnrichment)
+    }
+
+    @Test("纸质书全部字段完整不需要补全")
+    func paperBookFullDataNotNeedEnrichment() {
+        let book = Book(title: "书", author: "作者", publisher: "出版社",
+                        totalPages: 200, price: "¥59", bookType: .paper,
+                        bookDescription: "简介")
+        book.authorDescription = "作者简介"
+        book.publishDate = Date()
+        #expect(!book.needsEnrichment)
+    }
+
+    @Test("lastEnrichmentDate 默认为 nil")
+    func lastEnrichmentDateDefaultNil() {
+        let book = Book(title: "书", author: "作者")
+        #expect(book.lastEnrichmentDate == nil)
+    }
+
+    @Test("lastEnrichmentDate 可设置")
+    func lastEnrichmentDateSettable() {
+        let book = Book(title: "书", author: "作者")
+        let now = Date()
+        book.lastEnrichmentDate = now
+        #expect(book.lastEnrichmentDate == now)
+    }
+}
+
+// MARK: - ISBN Duplicate Check Tests
+
+@Suite("ISBN Duplicate Check Tests")
+struct ISBNDuplicateCheckTests {
+
+    @Test("检测到重复 ISBN 返回已有书籍")
+    @MainActor
+    func detectDuplicateISBN() throws {
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        // 先插入一本书
+        let existing = Book(title: "已有的书", author: "作者A", isbn: "9787544291163", bookType: .paper)
+        context.insert(existing)
+        try context.save()
+
+        // 查重
+        let duplicate = ISBNDuplicateChecker.findExisting(isbn: "9787544291163", in: context)
+        #expect(duplicate != nil)
+        #expect(duplicate?.title == "已有的书")
+    }
+
+    @Test("不同 ISBN 不会误判重复")
+    @MainActor
+    func noDuplicateForDifferentISBN() throws {
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        let existing = Book(title: "已有的书", author: "作者A", isbn: "9787544291163", bookType: .paper)
+        context.insert(existing)
+        try context.save()
+
+        let duplicate = ISBNDuplicateChecker.findExisting(isbn: "9787020002207", in: context)
+        #expect(duplicate == nil)
+    }
+
+    @Test("空 ISBN 不触发查重")
+    @MainActor
+    func emptyISBNNoDuplicateCheck() throws {
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        let existing = Book(title: "已有的书", author: "作者A", isbn: "9787544291163", bookType: .paper)
+        context.insert(existing)
+        try context.save()
+
+        let duplicate = ISBNDuplicateChecker.findExisting(isbn: "", in: context)
+        #expect(duplicate == nil)
+    }
+
+    @Test("ISBN 去除连字符后匹配")
+    @MainActor
+    func isbnMatchWithHyphens() throws {
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        let existing = Book(title: "已有的书", author: "作者A", isbn: "978-7-5442-9116-3", bookType: .paper)
+        context.insert(existing)
+        try context.save()
+
+        // 用纯数字查
+        let duplicate = ISBNDuplicateChecker.findExisting(isbn: "9787544291163", in: context)
+        #expect(duplicate != nil)
+    }
+}
+
 // MARK: - Batch Enrichment Tests
 
 @Suite("WeRead Batch Enrichment Tests")
@@ -1637,9 +1803,10 @@ struct WeReadBatchEnrichmentTests {
     @Test("筛选缺失数据的书 — 有完整数据的不需要补全")
     func bookWithCompleteDataNotNeedEnrichment() {
         let book = Book(title: "完整书", author: "作者", publisher: "出版社",
-                        bookType: .ebook, bookDescription: "简介")
-        book.totalPages = 300
+                        totalPages: 300, price: "¥59", bookType: .ebook,
+                        bookDescription: "简介")
         book.authorDescription = "作者简介"
+        book.publishDate = Date()
         book.wereadBookId = "wr123"
 
         #expect(!book.needsEnrichment)

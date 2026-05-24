@@ -25,15 +25,20 @@ struct SmartFillResult {
     var sourceStatuses: [(name: String, status: LookupSourceStatus)]
 
     /// 补全到的字段值（nil 表示未能补全该字段）
+    var title: String?
     var publisher: String?
     var totalPages: Int?
+    var price: String?
+    var publishDate: String?
+    var translator: String?
     var author: String?
     var bookDescription: String?
     var authorDescription: String?
 
     /// 是否有任何字段被成功补全
     var hasAnyFill: Bool {
-        publisher != nil || totalPages != nil || author != nil
+        title != nil || publisher != nil || totalPages != nil || price != nil
+            || publishDate != nil || translator != nil || author != nil
             || bookDescription != nil || authorDescription != nil
     }
 }
@@ -527,8 +532,12 @@ actor ISBNLookupService {
     ///   - isbn: ISBN（可为空）
     ///   - title: 书名
     ///   - author: 当前作者值（为空则需补全）
+    ///   - needsTitle: 是否需要书名
     ///   - needsPublisher: 是否需要出版社
     ///   - needsPages: 是否需要页数
+    ///   - needsPrice: 是否需要定价
+    ///   - needsPublishDate: 是否需要出版日期
+    ///   - needsTranslator: 是否需要译者
     ///   - needsAuthor: 是否需要作者
     ///   - needsBookDesc: 是否需要图书简介
     ///   - needsAuthorDesc: 是否需要作者简介
@@ -536,8 +545,12 @@ actor ISBNLookupService {
         isbn: String,
         title: String,
         author: String,
+        needsTitle: Bool = false,
         needsPublisher: Bool,
         needsPages: Bool,
+        needsPrice: Bool = false,
+        needsPublishDate: Bool = false,
+        needsTranslator: Bool = false,
         needsAuthor: Bool,
         needsBookDesc: Bool,
         needsAuthorDesc: Bool
@@ -565,8 +578,12 @@ actor ISBNLookupService {
             }
 
             // 检查是否还有未填充的字段
-            let stillNeeds = (needsPublisher && result.publisher == nil)
+            let stillNeeds = (needsTitle && result.title == nil)
+                || (needsPublisher && result.publisher == nil)
                 || (needsPages && result.totalPages == nil)
+                || (needsPrice && result.price == nil)
+                || (needsPublishDate && result.publishDate == nil)
+                || (needsTranslator && result.translator == nil)
                 || (needsAuthor && result.author == nil)
                 || (needsBookDesc && result.bookDescription == nil)
                 || (needsAuthorDesc && result.authorDescription == nil)
@@ -581,6 +598,11 @@ actor ISBNLookupService {
             if let lr = lookupResult {
                 var foundSomething = false
 
+                if needsTitle && result.title == nil,
+                   !lr.title.isEmpty {
+                    result.title = lr.title
+                    foundSomething = true
+                }
                 if needsPublisher && result.publisher == nil,
                    let p = lr.publisher, !p.isEmpty {
                     result.publisher = p
@@ -590,6 +612,20 @@ actor ISBNLookupService {
                    let p = lr.totalPages, p > 0 {
                     result.totalPages = p
                     foundSomething = true
+                }
+                if needsPrice && result.price == nil,
+                   let p = lr.price, !p.isEmpty {
+                    result.price = p
+                    foundSomething = true
+                }
+                if needsPublishDate && result.publishDate == nil,
+                   let d = lr.publishDate, !d.isEmpty {
+                    result.publishDate = d
+                    foundSomething = true
+                }
+                if needsTranslator && result.translator == nil {
+                    // ISBNLookupResult 目前不带 translator，豆瓣有但需要从 HTML 额外提取
+                    // 暂不填充 translator（留给未来扩展）
                 }
                 if needsAuthor && result.author == nil,
                    !lr.author.isEmpty, lr.author != "未知作者" {
@@ -649,14 +685,16 @@ actor ISBNLookupService {
 
     /// 通过书名搜索 Open Library
     func searchOpenLibraryByTitle(title: String, author: String?) async -> ISBNLookupResult? {
-        var query = "title=\(title)"
+        var components = URLComponents(string: "https://openlibrary.org/search.json")!
+        var queryItems = [
+            URLQueryItem(name: "title", value: title),
+            URLQueryItem(name: "limit", value: "3")
+        ]
         if let author, !author.isEmpty {
-            query += "&author=\(author)"
+            queryItems.append(URLQueryItem(name: "author", value: author))
         }
-        guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "https://openlibrary.org/search.json?\(encoded)&limit=3") else {
-            return nil
-        }
+        components.queryItems = queryItems
+        guard let url = components.url else { return nil }
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 10
@@ -709,10 +747,12 @@ actor ISBNLookupService {
         if let author, !author.isEmpty {
             query += "+inauthor:\(author)"
         }
-        guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "https://www.googleapis.com/books/v1/volumes?q=\(encoded)&maxResults=3") else {
-            return nil
-        }
+        var components = URLComponents(string: "https://www.googleapis.com/books/v1/volumes")!
+        components.queryItems = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "maxResults", value: "3")
+        ]
+        guard let url = components.url else { return nil }
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 10

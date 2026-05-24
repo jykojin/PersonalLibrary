@@ -461,6 +461,9 @@ struct EditBookView: View {
             author: author,
             needsPublisher: publisher.isEmpty,
             needsPages: totalPages.isEmpty,
+            needsPrice: price.isEmpty,
+            needsPublishDate: publishDate == nil,
+            needsTranslator: translator.isEmpty,
             needsAuthor: author.isEmpty || author == "未知作者",
             needsBookDesc: bookDescription.isEmpty,
             needsAuthorDesc: needsAuthorDesc
@@ -469,11 +472,25 @@ struct EditBookView: View {
         // 填充到表单
         if let p = result.publisher { publisher = p }
         if let p = result.totalPages { totalPages = String(p) }
+        if let p = result.price { price = p }
+        if let d = result.publishDate { publishDate = parsePublishDateString(d) }
+        if let t = result.translator { translator = t }
         if let a = result.author { author = a }
         if let d = result.bookDescription { bookDescription = d }
         if let d = result.authorDescription { authorDescription = d }
 
         fillResult = result
+    }
+
+    /// 解析出版日期字符串为 Date
+    private func parsePublishDateString(_ dateString: String) -> Date? {
+        for format in ["yyyy-MM-dd", "yyyy-MM", "yyyy"] {
+            let formatter = DateFormatter()
+            formatter.dateFormat = format
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            if let date = formatter.date(from: dateString) { return date }
+        }
+        return nil
     }
 
     /// 从本地数据库查找同名作者的最详细简介

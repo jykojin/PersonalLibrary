@@ -94,3 +94,44 @@ class BookService {
         }
     }
 }
+
+// MARK: - ISBN 去重检查
+
+/// ISBN 重复检查工具
+enum ISBNDuplicateChecker {
+
+    /// 清理 ISBN（去除连字符和空格，只保留数字和 X）
+    static func cleanISBN(_ isbn: String) -> String {
+        isbn.replacingOccurrences(of: "[^0-9Xx]", with: "", options: .regularExpression).uppercased()
+    }
+
+    /// 查找本地是否已有相同 ISBN 的书籍
+    /// - Returns: 已有的书籍，如果没找到返回 nil
+    @MainActor
+    static func findExisting(isbn: String, in context: ModelContext) -> Book? {
+        let cleaned = cleanISBN(isbn)
+        guard !cleaned.isEmpty else { return nil }
+
+        // 先用精确匹配快速查（大多数情况 ISBN 格式一致）
+        let isbnStr = isbn
+        var exactDescriptor = FetchDescriptor<Book>(
+            predicate: #Predicate { $0.isbn == isbnStr }
+        )
+        exactDescriptor.fetchLimit = 1
+        if let match = try? context.fetch(exactDescriptor).first {
+            return match
+        }
+
+        // 精确匹配失败，做清理后的模糊匹配（处理连字符等格式差异）
+        var descriptor = FetchDescriptor<Book>(
+            predicate: #Predicate { $0.isbn != nil }
+        )
+        descriptor.fetchLimit = 500  // 保护性上限
+        guard let books = try? context.fetch(descriptor) else { return nil }
+
+        return books.first { book in
+            guard let bookISBN = book.isbn else { return false }
+            return cleanISBN(bookISBN) == cleaned
+        }
+    }
+}

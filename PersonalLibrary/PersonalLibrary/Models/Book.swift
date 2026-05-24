@@ -78,6 +78,9 @@ final class Book {
     var wereadBookId: String?  // 微信读书 bookId，用于同步匹配
     var wereadProgress: Int = 0  // 微信读书阅读进度 (0-100)
 
+    // 批量补全标记
+    var lastEnrichmentDate: Date?  // 上次批量补全的时间，nil 表示从未处理
+
     // 逻辑删除（取消收藏）
     var isArchived: Bool = false
 
@@ -127,12 +130,15 @@ final class Book {
         return Double(currentPage) / Double(totalPages)
     }
 
-    /// 是否需要外部源数据补全（缺出版社/页数/简介/作者简介任一）
+    /// 是否需要外部源数据补全（缺出版社/页数/定价/出版日期/简介/作者简介任一）
     var needsEnrichment: Bool {
         let missingPublisher = publisher == nil || publisher?.isEmpty == true
         let missingPages = totalPages == 0
+        let missingPrice = price == nil || price?.isEmpty == true
+        let missingPublishDate = publishDate == nil
         let missingBookDesc = bookDescription == nil || bookDescription?.isEmpty == true
         let missingAuthorDesc = authorDescription == nil || authorDescription?.isEmpty == true
-        return missingPublisher || missingPages || missingBookDesc || missingAuthorDesc
+        return missingPublisher || missingPages || missingPrice || missingPublishDate
+            || missingBookDesc || missingAuthorDesc
     }
 }

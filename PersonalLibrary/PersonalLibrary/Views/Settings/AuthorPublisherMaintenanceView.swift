@@ -112,34 +112,21 @@ struct DataMaintenanceView: View {
 
             Section {
                 Button {
-                    Task { await batchFillBookDescriptions() }
+                    Task { await batchEnrichPaperBooks() }
                 } label: {
                     HStack {
-                        Label("批量增补图书简介", systemImage: "text.book.closed")
+                        Label("批量补全纸质书信息", systemImage: "book.closed")
                         Spacer()
-                        if isBatchRunning && batchStatusText.contains("图书简介") {
-                            ProgressView().controlSize(.small)
-                        }
-                    }
-                }
-                .disabled(isCleaning || isBatchRunning)
-
-                Button {
-                    Task { await batchFillAuthorDescriptions() }
-                } label: {
-                    HStack {
-                        Label("批量增补作者简介", systemImage: "person.text.rectangle")
-                        Spacer()
-                        if isBatchRunning && batchStatusText.contains("作者简介") {
+                        if isBatchRunning {
                             ProgressView().controlSize(.small)
                         }
                     }
                 }
                 .disabled(isCleaning || isBatchRunning)
             } header: {
-                Text("内容增补")
+                Text("信息补全")
             } footer: {
-                Text("从豆瓣获取缺失的图书简介和作者简介")
+                Text("补全纸质书缺失的出版社、定价、页数、出版日期、作者、作者简介、图书简介。\n查询顺序：豆瓣 → Open Library → Google Books → Goodreads")
             }
 
             // 进度区域
@@ -489,135 +476,123 @@ struct DataMaintenanceView: View {
     // MARK: - 批量增补图书简介
 
     @MainActor
-    private func batchFillBookDescriptions() async {
-        let booksNeedingDesc = allBooks.filter { !$0.isArchived && ($0.bookDescription ?? "").isEmpty }
-        guard !booksNeedingDesc.isEmpty else {
-            cleanResultMessage = "所有图书都已有简介，无需补充"
+    // MARK: - 批量补全纸质书信息
+
+    private func batchEnrichPaperBooks() async {
+        // 筛选：纸质书 + 需要补全 + 从未处理过
+        let booksToEnrich = allBooks.filter {
+            !$0.isArchived && $0.bookType == .paper
+            && $0.needsEnrichment && $0.lastEnrichmentDate == nil
+        }
+
+        guard !booksToEnrich.isEmpty else {
+            cleanResultMessage = "所有纸质书信息已完整，无需补全"
             showingCleanResult = true
             return
         }
 
         isBatchRunning = true
-        batchTotal = booksNeedingDesc.count
+        batchTotal = booksToEnrich.count
         batchCurrent = 0
         batchProgress = 0
-        batchStatusText = "正在增补图书简介..."
+        batchStatusText = "正在批量补全纸质书信息..."
         defer { isBatchRunning = false }
 
+        let lookupService = ISBNLookupService()
         var successCount = 0
-        let fetcher = DoubanDescriptionFetcher()
+        let batchSize = 5
 
-        for book in booksNeedingDesc {
-            batchCurrent += 1
-            batchProgress = Double(batchCurrent) / Double(batchTotal)
-            batchStatusText = "正在增补图书简介（\(book.title)）..."
-
-            // 优先用 ISBN 查询，其次用书名
-            let description: String?
-            if let isbn = book.isbn, !isbn.isEmpty {
-                description = await fetcher.fetchBookDescription(isbn: isbn, title: book.title)
-            } else {
-                description = await fetcher.fetchBookDescriptionByTitle(title: book.title, author: book.author)
-            }
-
-            if let desc = description, !desc.trimmingCharacters(in: .whitespaces).isEmpty {
-                book.bookDescription = desc
-                successCount += 1
-                // 每 5 次成功保存一次，避免丢失
-                if successCount % 5 == 0 {
-                    try? modelContext.save()
-                }
-            }
-
-            // 限速：避免请求过快被豆瓣封禁
-            try? await Task.sleep(for: .milliseconds(800))
-        }
-
-        if successCount > 0 {
-            try? modelContext.save()
-        }
-
-        cleanResultMessage = "完成！成功补充 \(successCount)/\(batchTotal) 本书的简介"
-        showingCleanResult = true
-    }
-
-    // MARK: - 批量增补作者简介
-
-    @MainActor
-    private func batchFillAuthorDescriptions() async {
-        let booksNeedingAuthorDesc = allBooks.filter { !$0.isArchived && ($0.authorDescription ?? "").isEmpty }
-        guard !booksNeedingAuthorDesc.isEmpty else {
-            cleanResultMessage = "所有图书都已有作者简介，无需补充"
-            showingCleanResult = true
-            return
-        }
-
-        isBatchRunning = true
-        batchTotal = booksNeedingAuthorDesc.count
-        batchCurrent = 0
-        batchProgress = 0
-        batchStatusText = "正在增补作者简介..."
-        defer { isBatchRunning = false }
-
-        var successCount = 0
-        let fetcher = DoubanDescriptionFetcher()
-
-        // 建立本地作者简介缓存：同一作者只需查一次
+        // 建立本地作者简介缓存
         var localAuthorCache: [String: String] = [:]
         for book in allBooks where !book.isArchived {
             if let desc = book.authorDescription, !desc.isEmpty {
-                let authors = book.author.components(separatedBy: ", ")
-                for author in authors {
-                    let trimmed = author.trimmingCharacters(in: .whitespaces)
-                    if !trimmed.isEmpty && localAuthorCache[trimmed] == nil {
-                        localAuthorCache[trimmed] = desc
-                    }
+                let trimmed = book.author.trimmingCharacters(in: .whitespaces)
+                if !trimmed.isEmpty && localAuthorCache[trimmed] == nil {
+                    localAuthorCache[trimmed] = desc
                 }
             }
         }
 
-        for book in booksNeedingAuthorDesc {
-            batchCurrent += 1
+        for (index, book) in booksToEnrich.enumerated() {
+            batchCurrent = index + 1
             batchProgress = Double(batchCurrent) / Double(batchTotal)
-            batchStatusText = "正在增补作者简介（\(book.author)）..."
+            batchStatusText = "正在补全（\(book.title)）\(batchCurrent)/\(batchTotal)"
 
-            // 先从本地已有数据中查找
-            let primaryAuthor = book.author.components(separatedBy: ", ").first?.trimmingCharacters(in: .whitespaces) ?? book.author
-            if let localDesc = localAuthorCache[primaryAuthor] {
-                book.authorDescription = localDesc
-                successCount += 1
-                continue
-            }
-
-            // 本地没有，去豆瓣查
-            let description: String?
-            if let isbn = book.isbn, !isbn.isEmpty {
-                description = await fetcher.fetchAuthorDescription(isbn: isbn, title: book.title)
-            } else {
-                description = await fetcher.fetchAuthorDescriptionByTitle(title: book.title, author: book.author)
-            }
-
-            if let desc = description, !desc.trimmingCharacters(in: .whitespaces).isEmpty {
-                book.authorDescription = desc
-                successCount += 1
-                // 缓存到本地，后续同作者的书可直接使用
-                localAuthorCache[primaryAuthor] = desc
-                // 每 5 次成功保存一次
-                if successCount % 5 == 0 {
-                    try? modelContext.save()
+            // 先检查本地作者简介缓存
+            let needsAuthorDesc = (book.authorDescription ?? "").isEmpty
+            if needsAuthorDesc {
+                let primaryAuthor = book.author.trimmingCharacters(in: .whitespaces)
+                if let localDesc = localAuthorCache[primaryAuthor] {
+                    book.authorDescription = localDesc
                 }
             }
 
-            // 限速
-            try? await Task.sleep(for: .milliseconds(800))
+            // 调用统一 smartFill
+            let result = await lookupService.smartFill(
+                isbn: book.isbn ?? "",
+                title: book.title,
+                author: book.author,
+                needsTitle: false,  // 纸质书通常已有书名
+                needsPublisher: (book.publisher ?? "").isEmpty,
+                needsPages: book.totalPages == 0,
+                needsPrice: (book.price ?? "").isEmpty,
+                needsPublishDate: book.publishDate == nil,
+                needsTranslator: (book.translator ?? "").isEmpty,
+                needsAuthor: book.author.isEmpty || book.author == "未知作者",
+                needsBookDesc: (book.bookDescription ?? "").isEmpty,
+                needsAuthorDesc: (book.authorDescription ?? "").isEmpty
+            )
+
+            // 应用结果
+            if let p = result.publisher { book.publisher = p }
+            if let p = result.totalPages { book.totalPages = p }
+            if let p = result.price { book.price = p }
+            if let d = result.publishDate { book.publishDate = parsePublishDate(d) }
+            if let t = result.translator { book.translator = t }
+            if let a = result.author { book.author = a }
+            if let d = result.bookDescription { book.bookDescription = d }
+            if let d = result.authorDescription {
+                book.authorDescription = d
+                // 更新本地缓存
+                let primaryAuthor = book.author.trimmingCharacters(in: .whitespaces)
+                if !primaryAuthor.isEmpty { localAuthorCache[primaryAuthor] = d }
+            }
+
+            // 打标记
+            book.lastEnrichmentDate = Date()
+
+            if result.hasAnyFill { successCount += 1 }
+
+            // 每批写入一次（减少 IO）
+            if batchCurrent % batchSize == 0 {
+                try? modelContext.save()
+            }
+
+            // 限速：每 3 本暂停 2 秒
+            if batchCurrent % 3 == 0 {
+                try? await Task.sleep(for: .seconds(2))
+            }
         }
 
-        if successCount > 0 {
-            try? modelContext.save()
-        }
+        // 最终保存
+        try? modelContext.save()
 
-        cleanResultMessage = "完成！成功补充 \(successCount)/\(batchTotal) 本书的作者简介"
+        cleanResultMessage = "完成！\(successCount)/\(batchTotal) 本书成功补全信息"
         showingCleanResult = true
+    }
+
+    /// 解析出版日期字符串
+    private func parsePublishDate(_ dateString: String) -> Date? {
+        let formatters: [String] = ["yyyy-MM-dd", "yyyy-MM", "yyyy"]
+        for format in formatters {
+            let formatter = DateFormatter()
+            formatter.dateFormat = format
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            if let date = formatter.date(from: dateString) {
+                return date
+            }
+        }
+        return nil
     }
 }
 

@@ -14,6 +14,12 @@ struct AddBookView: View {
     @State private var showingScanner = false
     @State private var isLookingUp = false
     @State private var lookupError: String?
+    @State private var duplicateBook: Book?
+    @State private var showDuplicateAlert = false
+
+    // 智能补全
+    @State private var isSmartFilling = false
+    @State private var smartFillMessage: String?
 
     // 书籍信息
     @State private var title = ""
@@ -107,6 +113,31 @@ struct AddBookView: View {
                     TextField("总页数", text: $totalPages)
                         .keyboardType(.numberPad)
                     TextField("价格（如 ¥59.00）", text: $price)
+                }
+
+                // MARK: - 智能补全
+                Section {
+                    Button {
+                        Task { await performSmartFill() }
+                    } label: {
+                        HStack {
+                            if isSmartFilling {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("补全中...")
+                            } else {
+                                Image(systemName: "wand.and.stars")
+                                Text("智能补全书籍信息")
+                            }
+                        }
+                    }
+                    .disabled(title.isEmpty || isSmartFilling)
+
+                    if let message = smartFillMessage {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 // MARK: - 类型 & 状态
@@ -213,6 +244,13 @@ struct AddBookView: View {
                     Task { await performLookup(isbn: newValue) }
                 }
             }
+            .alert("ISBN 重复", isPresented: $showDuplicateAlert) {
+                Button("知道了", role: .cancel) {}
+            } message: {
+                if let book = duplicateBook {
+                    Text("该 ISBN 对应的书籍「\(book.title)」已存在于您的藏书中。")
+                }
+            }
             .alert("新标签", isPresented: $showingNewTag) {
                 TextField("标签名称", text: $newTagName)
                 Button("取消", role: .cancel) { newTagName = "" }
@@ -225,6 +263,15 @@ struct AddBookView: View {
 
     private func performLookup(isbn: String) async {
         guard !isbn.isEmpty else { return }
+
+        // ISBN 去重检查
+        let existing = ISBNDuplicateChecker.findExisting(isbn: isbn, in: modelContext)
+        if let existing {
+            duplicateBook = existing
+            showDuplicateAlert = true
+            return
+        }
+
         isLookingUp = true
         lookupError = nil
 
@@ -244,6 +291,13 @@ struct AddBookView: View {
                 if let urlString = result.coverImageURL {
                     coverImageData = await CoverFetchService.shared.downloadWithReferer(urlStr: urlString)
                 }
+
+                // 作者简介如果网络没拿到，尝试本地 DB
+                if authorDescription.isEmpty {
+                    if let localDesc = findLocalAuthorDescription(for: result.author) {
+                        authorDescription = localDesc
+                    }
+                }
             } else {
                 lookupError = "未找到该 ISBN 对应的书籍信息"
             }
@@ -252,6 +306,78 @@ struct AddBookView: View {
         }
 
         isLookingUp = false
+    }
+
+    // MARK: - Smart Fill (手动触发，走书名搜索)
+
+    private func performSmartFill() async {
+        guard !title.isEmpty else { return }
+        isSmartFilling = true
+        smartFillMessage = nil
+
+        let needsAuthor = author.isEmpty
+        let needsPublisher = publisher.isEmpty
+        let needsPages = totalPages.isEmpty
+        let needsPrice = price.isEmpty
+        let needsBookDesc = bookDescription.isEmpty
+        let needsAuthorDesc = authorDescription.isEmpty
+
+        let result = await lookupService.smartFill(
+            isbn: isbn, title: title, author: author,
+            needsPublisher: needsPublisher, needsPages: needsPages,
+            needsPrice: needsPrice, needsPublishDate: false,
+            needsTranslator: false,
+            needsAuthor: needsAuthor, needsBookDesc: needsBookDesc,
+            needsAuthorDesc: needsAuthorDesc
+        )
+
+        // 填入结果
+        if needsAuthor, let a = result.author { author = a }
+        if needsPublisher, let p = result.publisher { publisher = p }
+        if needsPages, let p = result.totalPages { totalPages = String(p) }
+        if needsPrice, let p = result.price { price = p }
+        if needsBookDesc, let d = result.bookDescription { bookDescription = d }
+        if needsAuthorDesc, let d = result.authorDescription { authorDescription = d }
+
+        // 作者简介如果还是空，查本地 DB
+        if authorDescription.isEmpty && !author.isEmpty {
+            if let localDesc = findLocalAuthorDescription(for: author) {
+                authorDescription = localDesc
+            }
+        }
+
+        // 汇总消息
+        let filled = [
+            result.publisher != nil ? "出版社" : nil,
+            result.totalPages != nil ? "页数" : nil,
+            result.price != nil ? "定价" : nil,
+            result.author != nil ? "作者" : nil,
+            result.bookDescription != nil ? "图书简介" : nil,
+            result.authorDescription != nil || !authorDescription.isEmpty ? "作者简介" : nil
+        ].compactMap { $0 }
+
+        if filled.isEmpty {
+            smartFillMessage = "未找到可补全的信息"
+        } else {
+            smartFillMessage = "已补全：\(filled.joined(separator: "、"))"
+        }
+
+        isSmartFilling = false
+    }
+
+    // MARK: - Local Author Description
+
+    private func findLocalAuthorDescription(for authorName: String) -> String? {
+        guard !authorName.isEmpty else { return nil }
+        let name = authorName
+        var descriptor = FetchDescriptor<Book>(
+            predicate: #Predicate { $0.author == name && $0.authorDescription != nil }
+        )
+        guard let matches = try? modelContext.fetch(descriptor) else { return nil }
+        return matches
+            .compactMap { $0.authorDescription }
+            .filter { !$0.isEmpty }
+            .max(by: { $0.count < $1.count })
     }
 
     // MARK: - Save
