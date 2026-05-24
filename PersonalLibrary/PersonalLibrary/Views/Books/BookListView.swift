@@ -526,15 +526,16 @@ struct BookRowView: View {
         .onAppear { loadCoverOnAppear() }
         .onDisappear { cancelFetch() }
         .onChange(of: book.coverImageData) { _, newData in
-            // 封面被编辑后，清除缓存并刷新
+            // 封面数据变化时更新缓存和显示
+            // 注意：externalStorage 写入期间可能触发 nil 通知（延迟 flush），
+            // 此时不应清除内存缓存，否则会导致编辑页读不到封面。
             let cacheKey = "\(book.title)|\(book.author)"
             if let data = newData, let img = UIImage(data: data) {
                 CoverImageCache.shared.set(img, for: cacheKey)
                 coverImage = img
-            } else {
-                CoverImageCache.shared.remove(for: cacheKey)
-                coverImage = nil
             }
+            // 不在 newData == nil 时清除缓存 — externalStorage 的 nil 通知
+            // 是 SwiftData 内部行为，不代表用户意图清除封面。
         }
     }
 
