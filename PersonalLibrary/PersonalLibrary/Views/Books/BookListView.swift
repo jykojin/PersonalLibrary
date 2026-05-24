@@ -638,12 +638,8 @@ struct BookRowView: View {
 
             CoverImageCache.shared.set(img, for: cacheKey)
             coverImage = img
-
-            // 持久化到 book.coverImageData（仅当当前为 nil 时）
-            // 这样详情页和编辑页也能直接显示，无需重复网络请求
-            if book.coverImageData == nil {
-                book.coverImageData = data
-            }
+            // 不在列表写入 book.coverImageData — 避免滚动时多次 DB 写入触发
+            // @Query 级联刷新导致卡顿。持久化由详情页/编辑页按需完成。
         }
     }
 
