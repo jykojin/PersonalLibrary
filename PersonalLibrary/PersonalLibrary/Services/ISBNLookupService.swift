@@ -645,6 +645,121 @@ actor ISBNLookupService {
         return result
     }
 
+    // MARK: - 书名搜索（无 ISBN 时使用）
+
+    /// 通过书名搜索 Open Library
+    func searchOpenLibraryByTitle(title: String, author: String?) async -> ISBNLookupResult? {
+        var query = "title=\(title)"
+        if let author, !author.isEmpty {
+            query += "&author=\(author)"
+        }
+        guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "https://openlibrary.org/search.json?\(encoded)&limit=3") else {
+            return nil
+        }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            return nil
+        }
+
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let docs = json["docs"] as? [[String: Any]],
+              let firstDoc = docs.first else {
+            return nil
+        }
+
+        let resultTitle = firstDoc["title"] as? String ?? title
+        let authors = firstDoc["author_name"] as? [String] ?? []
+        let authorName = authors.first ?? "未知作者"
+        let publisher = (firstDoc["publisher"] as? [String])?.first
+        let pages = firstDoc["number_of_pages_median"] as? Int
+        let publishYear = (firstDoc["publish_year"] as? [Int])?.first.map { String($0) }
+
+        // 从 edition key 获取简介
+        var description: String?
+        if let editionKey = firstDoc["cover_edition_key"] as? String {
+            description = await fetchOpenLibraryDescription(bookKey: "/books/\(editionKey)")
+        } else if let workKey = firstDoc["key"] as? String {
+            // fallback: use works key directly
+            description = await fetchOpenLibraryDescription(bookKey: workKey)
+        }
+
+        return ISBNLookupResult(
+            title: resultTitle,
+            author: authorName,
+            publisher: publisher,
+            publishDate: publishYear,
+            totalPages: pages,
+            price: nil,
+            bookDescription: description,
+            authorDescription: nil,
+            coverImageURL: nil,
+            isbn: (firstDoc["isbn"] as? [String])?.first ?? ""
+        )
+    }
+
+    /// 通过书名搜索 Google Books
+    func searchGoogleBooksByTitle(title: String, author: String?) async -> ISBNLookupResult? {
+        var query = "intitle:\(title)"
+        if let author, !author.isEmpty {
+            query += "+inauthor:\(author)"
+        }
+        guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "https://www.googleapis.com/books/v1/volumes?q=\(encoded)&maxResults=3") else {
+            return nil
+        }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            return nil
+        }
+
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let items = json["items"] as? [[String: Any]],
+              let firstItem = items.first,
+              let volumeInfo = firstItem["volumeInfo"] as? [String: Any] else {
+            return nil
+        }
+
+        let resultTitle = volumeInfo["title"] as? String ?? title
+        let authors = volumeInfo["authors"] as? [String] ?? []
+        let authorName = authors.joined(separator: ", ")
+        let publisher = volumeInfo["publisher"] as? String
+        let publishDate = volumeInfo["publishedDate"] as? String
+        let pages = volumeInfo["pageCount"] as? Int
+        let description = volumeInfo["description"] as? String
+
+        // ISBN
+        var isbn = ""
+        if let identifiers = volumeInfo["industryIdentifiers"] as? [[String: Any]] {
+            isbn = identifiers.first(where: { $0["type"] as? String == "ISBN_13" })?["identifier"] as? String
+                ?? identifiers.first(where: { $0["type"] as? String == "ISBN_10" })?["identifier"] as? String
+                ?? ""
+        }
+
+        return ISBNLookupResult(
+            title: resultTitle,
+            author: authorName.isEmpty ? "未知作者" : authorName,
+            publisher: publisher,
+            publishDate: publishDate,
+            totalPages: pages,
+            price: nil,
+            bookDescription: description,
+            authorDescription: nil,
+            coverImageURL: nil,
+            isbn: isbn
+        )
+    }
+
     // MARK: - 封面图片下载
 
     /// 下载封面图片数据

@@ -126,4 +126,13 @@ final class Book {
         guard totalPages > 0 else { return 0 }
         return Double(currentPage) / Double(totalPages)
     }
+
+    /// 是否需要外部源数据补全（缺出版社/页数/简介/作者简介任一）
+    var needsEnrichment: Bool {
+        let missingPublisher = publisher == nil || publisher?.isEmpty == true
+        let missingPages = totalPages == 0
+        let missingBookDesc = bookDescription == nil || bookDescription?.isEmpty == true
+        let missingAuthorDesc = authorDescription == nil || authorDescription?.isEmpty == true
+        return missingPublisher || missingPages || missingBookDesc || missingAuthorDesc
+    }
 }

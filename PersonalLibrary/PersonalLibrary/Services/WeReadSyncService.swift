@@ -1,6 +1,16 @@
 import Foundation
 import SwiftData
 
+/// 批量补全配置
+struct BatchEnrichmentConfig {
+    /// 每批处理书籍数
+    var batchSize: Int = 5
+    /// 批间暂停（秒）
+    var batchDelaySeconds: Double = 2.0
+    /// 每次同步最多补全书籍数
+    var maxBooksPerSync: Int = 30
+}
+
 /// 微信读书同步服务
 /// 负责增量同步：新书导入 + 已有书进度更新
 actor WeReadSyncService {
@@ -361,6 +371,9 @@ actor WeReadSyncService {
                     }
                 }
                 await MainActor.run { try? bgContext.save() }
+
+                // 9d. 外部源批量补全（缺出版社/页数/简介/作者简介的书，从豆瓣/OL/Google补）
+                await self.batchEnrichBooks(context: bgContext)
             }
         }
 
@@ -368,6 +381,217 @@ actor WeReadSyncService {
         Self.lastSyncDate = Date()
 
         return result
+    }
+
+    // MARK: - Batch Enrichment (9d)
+
+    /// 批量从外部源补全缺失数据
+    /// 分批处理，每批 5 本，批间暂停 2 秒，每批结束统一保存
+    private func batchEnrichBooks(
+        context: ModelContext,
+        config: BatchEnrichmentConfig = BatchEnrichmentConfig()
+    ) async {
+        // 查找需要补全的微信读书书籍
+        let booksNeedEnrich: [Book] = await MainActor.run {
+            var descriptor = FetchDescriptor<Book>(
+                predicate: #Predicate<Book> { $0.wereadBookId != nil }
+            )
+            descriptor.fetchLimit = config.maxBooksPerSync
+            let allWereadBooks = (try? context.fetch(descriptor)) ?? []
+            return allWereadBooks.filter { $0.needsEnrichment }
+        }
+
+        guard !booksNeedEnrich.isEmpty else {
+            print("[WeReadSync] 无需补全的书籍")
+            return
+        }
+
+        print("[WeReadSync] 开始批量补全 \(booksNeedEnrich.count) 本书")
+
+        let lookupService = ISBNLookupService()
+        let doubanFetcher = DoubanDescriptionFetcher()
+
+        // 分批处理
+        for batchStart in stride(from: 0, to: booksNeedEnrich.count, by: config.batchSize) {
+            let batchEnd = min(batchStart + config.batchSize, booksNeedEnrich.count)
+            let batch = Array(booksNeedEnrich[batchStart..<batchEnd])
+
+            // 批间暂停（第一批不需要）
+            if batchStart > 0 {
+                try? await Task.sleep(for: .seconds(config.batchDelaySeconds))
+            }
+
+            for book in batch {
+                await enrichSingleBook(book, lookupService: lookupService, doubanFetcher: doubanFetcher, context: context)
+            }
+
+            // 每批结束统一保存
+            await MainActor.run { try? context.save() }
+            print("[WeReadSync] 补全进度: \(batchEnd)/\(booksNeedEnrich.count)")
+        }
+
+        print("[WeReadSync] 批量补全完成")
+    }
+
+    /// 补全单本书的缺失信息
+    private func enrichSingleBook(
+        _ book: Book,
+        lookupService: ISBNLookupService,
+        doubanFetcher: DoubanDescriptionFetcher,
+        context: ModelContext
+    ) async {
+        let needsPublisher = book.publisher == nil || book.publisher?.isEmpty == true
+        let needsPages = book.totalPages == 0
+        let needsBookDesc = book.bookDescription == nil || book.bookDescription?.isEmpty == true
+        let needsAuthorDesc = book.authorDescription == nil || book.authorDescription?.isEmpty == true
+
+        // 先查本地数据库是否有同作者的作者简介
+        if needsAuthorDesc {
+            let localAuthorDesc = await findLocalAuthorDescription(for: book.author, excludingBook: book, context: context)
+            if let localAuthorDesc {
+                await MainActor.run { book.authorDescription = localAuthorDesc }
+            }
+        }
+
+        // 重新检查是否还需要补全
+        let stillNeedsPublisher = needsPublisher
+        let stillNeedsPages = needsPages
+        let stillNeedsBookDesc = needsBookDesc
+        let stillNeedsAuthorDesc = (book.authorDescription == nil || book.authorDescription?.isEmpty == true)
+
+        guard stillNeedsPublisher || stillNeedsPages || stillNeedsBookDesc || stillNeedsAuthorDesc else {
+            return
+        }
+
+        // 判断走 ISBN 还是书名搜索
+        let isbn = book.isbn ?? ""
+        let cleanISBN = isbn.replacingOccurrences(of: "[^0-9Xx]", with: "", options: .regularExpression).uppercased()
+        let validISBN = !cleanISBN.isEmpty && (cleanISBN.count == 10 || cleanISBN.count == 13)
+
+        if validISBN {
+            // 有 ISBN：走 smartFill 逻辑（豆瓣ISBN → OL ISBN → Google ISBN → Goodreads）
+            let result = await lookupService.smartFill(
+                isbn: isbn, title: book.title, author: book.author,
+                needsPublisher: stillNeedsPublisher, needsPages: stillNeedsPages,
+                needsAuthor: false, needsBookDesc: stillNeedsBookDesc,
+                needsAuthorDesc: stillNeedsAuthorDesc
+            )
+            await applySmartFillResult(result, to: book)
+        } else {
+            // 无 ISBN：豆瓣书名搜索 → Open Library 书名搜索 → Google Books 书名搜索
+            await enrichByTitleSearch(
+                book: book,
+                lookupService: lookupService,
+                doubanFetcher: doubanFetcher,
+                needsPublisher: stillNeedsPublisher,
+                needsPages: stillNeedsPages,
+                needsBookDesc: stillNeedsBookDesc,
+                needsAuthorDesc: stillNeedsAuthorDesc
+            )
+        }
+    }
+
+    /// 通过书名搜索外部源补全
+    private func enrichByTitleSearch(
+        book: Book,
+        lookupService: ISBNLookupService,
+        doubanFetcher: DoubanDescriptionFetcher,
+        needsPublisher: Bool,
+        needsPages: Bool,
+        needsBookDesc: Bool,
+        needsAuthorDesc: Bool
+    ) async {
+        var filledPublisher: String?
+        var filledPages: Int?
+        var filledBookDesc: String?
+        var filledAuthorDesc: String?
+
+        // 1. 豆瓣书名搜索（简介 + 作者简介）
+        if needsBookDesc && filledBookDesc == nil {
+            let desc = await doubanFetcher.fetchBookDescriptionByTitle(title: book.title, author: book.author)
+            if let desc, !desc.isEmpty { filledBookDesc = desc }
+        }
+        if needsAuthorDesc && filledAuthorDesc == nil {
+            let desc = await doubanFetcher.fetchAuthorDescriptionByTitle(title: book.title, author: book.author)
+            if let desc, !desc.isEmpty { filledAuthorDesc = desc }
+        }
+
+        // 检查是否还需要继续
+        let stillNeeds = (needsPublisher && filledPublisher == nil)
+            || (needsPages && filledPages == nil)
+            || (needsBookDesc && filledBookDesc == nil)
+            || (needsAuthorDesc && filledAuthorDesc == nil)
+
+        // 2. Open Library 书名搜索
+        if stillNeeds {
+            if let olResult = await lookupService.searchOpenLibraryByTitle(title: book.title, author: book.author) {
+                if needsPublisher && filledPublisher == nil, let p = olResult.publisher, !p.isEmpty {
+                    filledPublisher = p
+                }
+                if needsPages && filledPages == nil, let p = olResult.totalPages, p > 0 {
+                    filledPages = p
+                }
+                if needsBookDesc && filledBookDesc == nil, let d = olResult.bookDescription, !d.isEmpty {
+                    filledBookDesc = d
+                }
+            }
+        }
+
+        // 再检查
+        let stillNeeds2 = (needsPublisher && filledPublisher == nil)
+            || (needsPages && filledPages == nil)
+            || (needsBookDesc && filledBookDesc == nil)
+            || (needsAuthorDesc && filledAuthorDesc == nil)
+
+        // 3. Google Books 书名搜索
+        if stillNeeds2 {
+            if let gbResult = await lookupService.searchGoogleBooksByTitle(title: book.title, author: book.author) {
+                if needsPublisher && filledPublisher == nil, let p = gbResult.publisher, !p.isEmpty {
+                    filledPublisher = p
+                }
+                if needsPages && filledPages == nil, let p = gbResult.totalPages, p > 0 {
+                    filledPages = p
+                }
+                if needsBookDesc && filledBookDesc == nil, let d = gbResult.bookDescription, !d.isEmpty {
+                    filledBookDesc = d
+                }
+            }
+        }
+
+        // 写入结果
+        await MainActor.run {
+            if let p = filledPublisher { book.publisher = p }
+            if let p = filledPages { book.totalPages = p }
+            if let d = filledBookDesc { book.bookDescription = d }
+            if let d = filledAuthorDesc { book.authorDescription = d }
+        }
+    }
+
+    /// 将 smartFill 结果写入 book
+    private func applySmartFillResult(_ result: SmartFillResult, to book: Book) async {
+        await MainActor.run {
+            if let p = result.publisher { book.publisher = p }
+            if let p = result.totalPages { book.totalPages = p }
+            if let d = result.bookDescription { book.bookDescription = d }
+            if let d = result.authorDescription { book.authorDescription = d }
+        }
+    }
+
+    /// 从本地数据库查找同作者的作者简介
+    private func findLocalAuthorDescription(for author: String, excludingBook: Book, context: ModelContext) async -> String? {
+        return await MainActor.run {
+            let authorName = author
+            var descriptor = FetchDescriptor<Book>(
+                predicate: #Predicate { $0.author == authorName && $0.authorDescription != nil }
+            )
+            let matches = (try? context.fetch(descriptor)) ?? []
+            // 排除当前书，取最详细的简介
+            return matches
+                .filter { $0.persistentModelID != excludingBook.persistentModelID }
+                .compactMap { $0.authorDescription }
+                .filter { !$0.isEmpty }
+                .max(by: { $0.count < $1.count })
+        }
     }
 
     // MARK: - Update Existing Book

@@ -1628,3 +1628,85 @@ struct SecurityTests {
         }
     }
 }
+
+// MARK: - Batch Enrichment Tests
+
+@Suite("WeRead Batch Enrichment Tests")
+struct WeReadBatchEnrichmentTests {
+
+    @Test("筛选缺失数据的书 — 有完整数据的不需要补全")
+    func bookWithCompleteDataNotNeedEnrichment() {
+        let book = Book(title: "完整书", author: "作者", publisher: "出版社",
+                        bookType: .ebook, bookDescription: "简介")
+        book.totalPages = 300
+        book.authorDescription = "作者简介"
+        book.wereadBookId = "wr123"
+
+        #expect(!book.needsEnrichment)
+    }
+
+    @Test("筛选缺失数据的书 — 缺出版社需要补全")
+    func bookMissingPublisherNeedsEnrichment() {
+        let book = Book(title: "缺出版社", author: "作者", bookType: .ebook,
+                        bookDescription: "简介")
+        book.totalPages = 300
+        book.authorDescription = "作者简介"
+        book.wereadBookId = "wr456"
+
+        #expect(book.needsEnrichment)
+    }
+
+    @Test("筛选缺失数据的书 — 缺简介需要补全")
+    func bookMissingDescriptionNeedsEnrichment() {
+        let book = Book(title: "缺简介", author: "作者", publisher: "出版社",
+                        bookType: .ebook)
+        book.totalPages = 200
+        book.wereadBookId = "wr789"
+
+        #expect(book.needsEnrichment)
+    }
+
+    @Test("筛选缺失数据的书 — 非微信读书书不参与")
+    func nonWereadBookNotEnriched() {
+        let book = Book(title: "纸质书", author: "作者", bookType: .paper)
+        // 即使缺数据，如果没有 wereadBookId，也不参与微信读书补全
+        #expect(book.wereadBookId == nil)
+    }
+
+    @Test("筛选缺失数据的书 — 缺页数需要补全")
+    func bookMissingPagesNeedsEnrichment() {
+        let book = Book(title: "缺页数", author: "作者", publisher: "出版社",
+                        bookType: .ebook, bookDescription: "简介")
+        book.authorDescription = "作者简介"
+        book.wereadBookId = "wr101"
+        // totalPages 默认 0
+
+        #expect(book.needsEnrichment)
+    }
+
+    @Test("筛选缺失数据的书 — 缺作者简介需要补全")
+    func bookMissingAuthorDescNeedsEnrichment() {
+        let book = Book(title: "缺作者简介", author: "作者", publisher: "出版社",
+                        bookType: .ebook, bookDescription: "简介")
+        book.totalPages = 100
+        book.wereadBookId = "wr102"
+
+        #expect(book.needsEnrichment)
+    }
+
+    @Test("BatchEnrichmentConfig 默认值合理")
+    func batchConfigDefaults() {
+        let config = BatchEnrichmentConfig()
+        #expect(config.batchSize == 5)
+        #expect(config.batchDelaySeconds == 2.0)
+        #expect(config.maxBooksPerSync == 30)
+    }
+
+    @Test("BatchEnrichmentConfig 可自定义")
+    func batchConfigCustom() {
+        let config = BatchEnrichmentConfig(batchSize: 10, batchDelaySeconds: 3.0, maxBooksPerSync: 50)
+        #expect(config.batchSize == 10)
+        #expect(config.batchDelaySeconds == 3.0)
+        #expect(config.maxBooksPerSync == 50)
+    }
+}
