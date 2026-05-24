@@ -1878,56 +1878,6 @@ struct WeReadBatchEnrichmentTests {
     }
 }
 
-// MARK: - Cover Cache Bridge Contract Tests
-
-@Suite("Cover Cache Bridge Tests")
-struct CoverCacheBridgeTests {
-
-    @Test("详情页网络加载封面后写入内存缓存，编辑页可读取")
-    func detailViewWritesCacheForEditView() {
-        // 模拟详情页从网络获取封面后的行为：
-        // loadCover() 成功后应调用 CoverImageCache.shared.set(img, for: key)
-        let cache = CoverImageCache.shared
-        let title = "蛙_bridge_test_\(UUID().uuidString)"
-        let author = "莫言"
-        let cacheKey = "\(title)|\(author)"
-
-        // 确认初始状态为空
-        #expect(cache.image(for: cacheKey) == nil)
-
-        // 模拟 DetailView loadCover 网络下载成功后写缓存
-        let testImage = UIImage(systemName: "book.fill")!
-        cache.set(testImage, for: cacheKey)
-
-        // 模拟 EditView loadBookData 从缓存读取
-        let retrieved = cache.image(for: cacheKey)
-        #expect(retrieved != nil, "编辑页应能从内存缓存获取详情页加载的封面")
-
-        // 清理
-        cache.remove(for: cacheKey)
-    }
-
-    @Test("详情页从内存缓存加载封面后缓存仍然存在")
-    func detailViewCacheHitPreservesCache() {
-        let cache = CoverImageCache.shared
-        let cacheKey = "缓存保留测试_\(UUID().uuidString)|作者"
-        let image = UIImage(systemName: "star.fill")!
-
-        // 列表页已缓存
-        cache.set(image, for: cacheKey)
-
-        // 详情页从缓存读取（模拟 loadCover 第 2 步）
-        let cached = cache.image(for: cacheKey)
-        #expect(cached != nil)
-
-        // 编辑页稍后也应能读取
-        let editRetrieved = cache.image(for: cacheKey)
-        #expect(editRetrieved != nil)
-
-        cache.remove(for: cacheKey)
-    }
-}
-
 // MARK: - CoverFetchService Tests
 
 @Suite("CoverFetchService Tests")

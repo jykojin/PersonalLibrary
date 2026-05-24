@@ -296,12 +296,10 @@ struct BookDetailView: View {
     // MARK: - 封面加载（@State 驱动，绕过 externalStorage 观察问题）
 
     private func loadCover() async {
-        // 1. 本地 DB 有数据 → 直接解码到 @State + 写入内存缓存
+        // 1. 本地 DB 有数据 → 直接解码到 @State
         if let data = book.coverImageData, !data.isEmpty,
            let img = UIImage(data: data) {
             coverImage = img
-            let cacheKey = "\(book.title)|\(book.author)"
-            CoverImageCache.shared.set(img, for: cacheKey)
             return
         }
 
@@ -328,8 +326,6 @@ struct BookDetailView: View {
 
         guard let data, let img = UIImage(data: data) else { return }
         coverImage = img
-        // 写入内存缓存，供编辑页读取（避免 externalStorage 延迟问题）
-        CoverImageCache.shared.set(img, for: cacheKey)
         // 持久化
         if book.coverImageData == nil {
             book.coverImageData = data
