@@ -366,6 +366,13 @@ struct EditBookView: View {
         selectedShelf = book.bookshelf
         selectedTags = Set((book.tags ?? []).map(\.name))
         coverData = book.coverImageData
+
+        // 如果没有本地封面数据但有远程 URL，异步下载
+        if coverData == nil, let urlString = book.coverImageURL, !urlString.isEmpty {
+            Task {
+                coverData = await BookService.downloadImage(from: urlString)
+            }
+        }
     }
 
     // MARK: - 智能补全
