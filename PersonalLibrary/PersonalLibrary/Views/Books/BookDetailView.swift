@@ -8,6 +8,7 @@ struct BookDetailView: View {
     @State private var showingAddRecord = false
     @State private var showingEditBook = false
     @State private var showArchiveAlert = false
+    @State private var coverImage: UIImage?
 
     private var bookTypeIcon: String {
         switch book.bookType {
@@ -106,6 +107,12 @@ struct BookDetailView: View {
         .sheet(isPresented: $showingEditBook) {
             EditBookView(book: book)
         }
+        .onChange(of: showingEditBook) { _, isShowing in
+            // 编辑页关闭后，封面可能被更新，刷新 @State
+            if !isShowing, let data = book.coverImageData, let img = UIImage(data: data) {
+                coverImage = img
+            }
+        }
         .sheet(isPresented: $showingAddRecord) {
             AddReadingRecordView(book: book)
         }
@@ -120,8 +127,8 @@ struct BookDetailView: View {
             Text("取消收藏后，此书将不再显示在藏书列表中。\n你可以通过高级搜索找回并恢复收藏。")
         }
         .task {
+            await loadCover()
             await fetchWeReadInfoIfNeeded()
-            await fetchCoverIfNeeded()
         }
     }
 
@@ -129,31 +136,14 @@ struct BookDetailView: View {
         VStack(alignment: .leading, spacing: 12) {
             // 封面 + 标题区
             HStack(alignment: .top, spacing: 16) {
-                // 封面：优先本地数据 → 远程 URL → 无封面
-                if let imageData = book.coverImageData,
-                   let uiImage = UIImage(data: imageData) {
-                    Image(uiImage: uiImage)
+                // 封面：由 @State coverImage 驱动，避免 externalStorage 观察问题
+                if let coverImage {
+                    Image(uiImage: coverImage)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
                         .frame(width: 100)
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                         .shadow(radius: 2)
-                } else if let urlString = book.coverImageURL,
-                          let url = URL(string: urlString) {
-                    AsyncImage(url: url) { image in
-                        image.resizable()
-                            .aspectRatio(contentMode: .fit)
-                    } placeholder: {
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(Color(.systemGray5))
-                            .overlay {
-                                ProgressView()
-                                    .controlSize(.small)
-                            }
-                    }
-                    .frame(width: 100)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .shadow(radius: 2)
                 }
 
                 VStack(alignment: .leading, spacing: 6) {
@@ -303,22 +293,29 @@ struct BookDetailView: View {
         }
     }
 
-    // MARK: - 封面按需获取
+    // MARK: - 封面加载（@State 驱动，绕过 externalStorage 观察问题）
 
-    private func fetchCoverIfNeeded() async {
-        // 已有本地封面数据，不需要获取
-        guard book.coverImageData == nil else { return }
-
-        // 1. 先检查内存缓存（列表可能已经下载过，无需再走网络）
-        let cacheKey = "\(book.title)|\(book.author)"
-        if let cached = CoverImageCache.shared.image(for: cacheKey),
-           let data = cached.jpegData(compressionQuality: 0.85) {
-            book.coverImageData = data
-            try? modelContext.save()
+    private func loadCover() async {
+        // 1. 本地 DB 有数据 → 直接解码到 @State
+        if let data = book.coverImageData, !data.isEmpty,
+           let img = UIImage(data: data) {
+            coverImage = img
             return
         }
 
-        // 2. 内存没有，走完整网络 pipeline
+        // 2. 内存缓存（列表可能已经下载过）
+        let cacheKey = "\(book.title)|\(book.author)"
+        if let cached = CoverImageCache.shared.image(for: cacheKey) {
+            coverImage = cached
+            // 顺便持久化到 DB，后续不再需要网络
+            if book.coverImageData == nil {
+                book.coverImageData = cached.jpegData(compressionQuality: 0.85)
+                try? modelContext.save()
+            }
+            return
+        }
+
+        // 3. 网络下载（完整 pipeline）
         let data = await CoverFetchService.shared.fetchCoverThrottled(
             coverImageURL: book.coverImageURL,
             isbn: book.isbn,
@@ -327,9 +324,13 @@ struct BookDetailView: View {
             author: book.author
         )
 
-        guard let data else { return }
-        book.coverImageData = data
-        try? modelContext.save()
+        guard let data, let img = UIImage(data: data) else { return }
+        coverImage = img
+        // 持久化
+        if book.coverImageData == nil {
+            book.coverImageData = data
+            try? modelContext.save()
+        }
     }
 
     // MARK: - WeRead 详情按需补全
