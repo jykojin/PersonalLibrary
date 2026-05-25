@@ -2227,4 +2227,153 @@ struct BackgroundContextPerformanceTests {
         book3.isArchived = true
         #expect(book3.isArchived == true)
     }
+
+    @Test("后台线程批量重命名作者 — 模拟 applyRename 模式")
+    func backgroundRenameAuthor() async throws {
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: Book.self, Tag.self, Bookshelf.self, ReadingRecord.self, configurations: config)
+
+        // 主线程插入测试数据
+        let mainContext = ModelContext(container)
+        let book1 = Book(title: "书1", author: "张立宪 主编")
+        let book2 = Book(title: "书2", author: "张立宪 主编, 李四")
+        let book3 = Book(title: "书3", author: "王五")
+        mainContext.insert(book1)
+        mainContext.insert(book2)
+        mainContext.insert(book3)
+        try mainContext.save()
+
+        let bookIDs = [book1, book2, book3].map(\.persistentModelID)
+        let oldName = "张立宪 主编"
+        let newName = "张立宪"
+
+        // 后台线程执行重命名
+        let count = await Task.detached(priority: .utility) {
+            let bgContext = ModelContext(container)
+            bgContext.autosaveEnabled = false
+            var updated = 0
+            for id in bookIDs {
+                guard let book = bgContext.model(for: id) as? Book else { continue }
+                if book.author == oldName {
+                    book.author = newName
+                    updated += 1
+                } else if book.author.contains(oldName) {
+                    let parts = book.author.components(separatedBy: ", ")
+                    let newParts = parts.map { $0 == oldName ? newName : $0 }
+                    book.author = newParts.joined(separator: ", ")
+                    updated += 1
+                }
+            }
+            if updated > 0 { try? bgContext.save() }
+            return updated
+        }.value
+
+        #expect(count == 2)
+
+        // 验证主线程能看到更新
+        let verifyContext = ModelContext(container)
+        let all = try verifyContext.fetch(FetchDescriptor<Book>())
+        let b1 = all.first(where: { $0.title == "书1" })
+        let b2 = all.first(where: { $0.title == "书2" })
+        let b3 = all.first(where: { $0.title == "书3" })
+        #expect(b1?.author == "张立宪")
+        #expect(b2?.author == "张立宪, 李四")
+        #expect(b3?.author == "王五")
+    }
+
+    @Test("后台线程删除书架 — 模拟 deleteShelf 模式")
+    func backgroundDeleteShelf() async throws {
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: Book.self, Tag.self, Bookshelf.self, ReadingRecord.self, configurations: config)
+
+        let mainContext = ModelContext(container)
+        let shelf = Bookshelf(name: "待删书架", icon: "books.vertical")
+        let book1 = Book(title: "书架内的书1", author: "作者")
+        let book2 = Book(title: "书架内的书2", author: "作者")
+        book1.bookshelf = shelf
+        book2.bookshelf = shelf
+        mainContext.insert(shelf)
+        mainContext.insert(book1)
+        mainContext.insert(book2)
+        try mainContext.save()
+
+        let shelfID = shelf.persistentModelID
+        let bookIDs = [book1, book2].map(\.persistentModelID)
+
+        // 后台删除书架但保留书
+        await Task.detached(priority: .utility) {
+            let bgContext = ModelContext(container)
+            bgContext.autosaveEnabled = false
+            for id in bookIDs {
+                if let book = bgContext.model(for: id) as? Book {
+                    book.bookshelf = nil
+                }
+            }
+            if let shelfObj = bgContext.model(for: shelfID) as? Bookshelf {
+                bgContext.delete(shelfObj)
+            }
+            try? bgContext.save()
+        }.value
+
+        // 验证：书架被删，书还在但 bookshelf 为 nil
+        let verifyContext = ModelContext(container)
+        let shelves = try verifyContext.fetch(FetchDescriptor<Bookshelf>())
+        #expect(shelves.isEmpty)
+        let books = try verifyContext.fetch(FetchDescriptor<Book>())
+        #expect(books.count == 2)
+        #expect(books.allSatisfy { $0.bookshelf == nil })
+    }
+
+    @Test("后台线程批量打标签 — 模拟 applyTags 模式")
+    func backgroundApplyTags() async throws {
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: Book.self, Tag.self, Bookshelf.self, ReadingRecord.self, configurations: config)
+
+        let mainContext = ModelContext(container)
+        let book1 = Book(title: "打标签1", author: "作者")
+        let book2 = Book(title: "打标签2", author: "作者")
+        mainContext.insert(book1)
+        mainContext.insert(book2)
+        try mainContext.save()
+
+        let bookIDs = [book1, book2].map(\.persistentModelID)
+        let tagNames = ["科幻", "推荐"]
+
+        await Task.detached(priority: .utility) {
+            let bgContext = ModelContext(container)
+            bgContext.autosaveEnabled = false
+
+            var tagMap: [String: PersonalLibrary.Tag] = [:]
+            let allTags = (try? bgContext.fetch(FetchDescriptor<PersonalLibrary.Tag>())) ?? []
+            for tag in allTags { tagMap[tag.name] = tag }
+            for name in tagNames where tagMap[name] == nil {
+                let newTag = PersonalLibrary.Tag(name: name)
+                bgContext.insert(newTag)
+                tagMap[name] = newTag
+            }
+
+            for id in bookIDs {
+                guard let book = bgContext.model(for: id) as? Book else { continue }
+                var bookTags = book.tags ?? []
+                for name in tagNames {
+                    if !bookTags.contains(where: { $0.name == name }),
+                       let tag = tagMap[name] {
+                        bookTags.append(tag)
+                    }
+                }
+                book.tags = bookTags
+            }
+            try? bgContext.save()
+        }.value
+
+        // 验证
+        let verifyContext = ModelContext(container)
+        let books = try verifyContext.fetch(FetchDescriptor<Book>())
+        for book in books {
+            let names = (book.tags ?? []).map(\.name).sorted()
+            #expect(names == ["推荐", "科幻"])
+        }
+        let tags = try verifyContext.fetch(FetchDescriptor<PersonalLibrary.Tag>())
+        #expect(tags.count == 2)
+    }
 }
