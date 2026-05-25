@@ -45,6 +45,7 @@ struct AddBookView: View {
     @State private var selectedTags: Set<Tag> = []
     @State private var showingNewTag = false
     @State private var newTagName = ""
+    @State private var tagSearchText = ""
 
     private let lookupService = ISBNLookupService()
 
@@ -199,22 +200,49 @@ struct AddBookView: View {
 
                 // MARK: - 标签
                 Section("标签") {
-                    if !allTags.isEmpty {
+                    // 已选标签
+                    if !selectedTags.isEmpty {
                         FlowLayout(spacing: 8) {
-                            ForEach(allTags) { tag in
-                                TagChip(
-                                    tag: tag,
-                                    isSelected: selectedTags.contains(tag)
-                                ) {
-                                    if selectedTags.contains(tag) {
-                                        selectedTags.remove(tag)
-                                    } else {
-                                        selectedTags.insert(tag)
-                                    }
+                            ForEach(Array(selectedTags)) { tag in
+                                TagChip(tag: tag, isSelected: true) {
+                                    selectedTags.remove(tag)
                                 }
                             }
                         }
                         .padding(.vertical, 4)
+                    }
+
+                    // 搜索现有标签
+                    HStack {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(.secondary)
+                        TextField("搜索标签", text: $tagSearchText)
+                    }
+
+                    // 搜索结果（仅输入时显示匹配项）
+                    if !tagSearchText.isEmpty {
+                        let matched = allTags.filter {
+                            $0.name.localizedCaseInsensitiveContains(tagSearchText)
+                            && !selectedTags.contains($0)
+                        }
+                        if matched.isEmpty {
+                            Button {
+                                newTagName = tagSearchText
+                                showingNewTag = true
+                            } label: {
+                                Label("创建「\(tagSearchText)」", systemImage: "plus.circle")
+                            }
+                        } else {
+                            FlowLayout(spacing: 8) {
+                                ForEach(matched) { tag in
+                                    TagChip(tag: tag, isSelected: false) {
+                                        selectedTags.insert(tag)
+                                        tagSearchText = ""
+                                    }
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
                     }
 
                     Button {

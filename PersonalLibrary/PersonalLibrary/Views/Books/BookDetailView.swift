@@ -170,6 +170,10 @@ struct BookDetailView: View {
                             Label(price, systemImage: "yensign.circle")
                                 .font(.caption)
                         }
+                        if let date = book.publishDate {
+                            Label(Self.publishDateFormatter.string(from: date), systemImage: "calendar")
+                                .font(.caption)
+                        }
                     }
                     .foregroundStyle(.secondary)
 
@@ -292,6 +296,14 @@ struct BookDetailView: View {
             }
         }
     }
+
+    // MARK: - Formatters
+
+    private static let publishDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM"
+        return f
+    }()
 
     // MARK: - 封面加载（@State 驱动，绕过 externalStorage 观察问题）
 
