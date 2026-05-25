@@ -9,9 +9,29 @@ struct LogViewerView: View {
     @State private var showingClearConfirm = false
     @State private var previewContent: String = ""
     @State private var showingPreview = false
+    @State private var logMode: AppLogger.Mode = AppLogger.currentMode
 
     var body: some View {
         List {
+            // MARK: - 日志级别
+            Section {
+                Picker("记录级别", selection: $logMode) {
+                    ForEach(AppLogger.Mode.allCases, id: \.self) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: logMode) { _, newValue in
+                    AppLogger.currentMode = newValue
+                }
+
+                Text(logMode.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("日志级别")
+            }
+
             // MARK: - 概览
             Section {
                 HStack {

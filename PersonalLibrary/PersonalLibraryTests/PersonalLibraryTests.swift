@@ -2380,7 +2380,7 @@ struct BackgroundContextPerformanceTests {
 
 // MARK: - AppLogger Tests
 
-@Suite("AppLogger Tests")
+@Suite("AppLogger Tests", .serialized)
 struct AppLoggerTests {
 
     @Test("AppLogger.Level 比较顺序正确")
@@ -2430,5 +2430,75 @@ struct AppLoggerTests {
     func fileLoggerTotalSize() {
         // 至少有 launch separator
         #expect(FileLogger.shared.totalSize > 0)
+    }
+
+    @Test("AppLogger.Mode 包含三档")
+    func modeAllCases() {
+        #expect(AppLogger.Mode.allCases.count == 3)
+        #expect(AppLogger.Mode.verbose.rawValue == 0)
+        #expect(AppLogger.Mode.normal.rawValue == 1)
+        #expect(AppLogger.Mode.off.rawValue == 2)
+    }
+
+    @Test("AppLogger.Mode displayName 正确")
+    func modeDisplayName() {
+        #expect(AppLogger.Mode.verbose.displayName == "详细")
+        #expect(AppLogger.Mode.normal.displayName == "正常")
+        #expect(AppLogger.Mode.off.displayName == "关闭")
+    }
+
+    @Test("AppLogger off 模式不写文件")
+    func offModeSkipsWrite() {
+        // 直接测试 log 方法的 guard 逻辑：off 时不调用 FileLogger
+        let saved = AppLogger.currentMode
+        defer { AppLogger.currentMode = saved }
+
+        AppLogger.currentMode = .off
+        let marker = "SHOULD_NOT_APPEAR_\(UUID().uuidString)"
+        // 用 FileLogger 直接写一个 before marker 确保时序正确
+        FileLogger.shared.log("BEFORE_\(marker)")
+        Thread.sleep(forTimeInterval: 0.05)
+
+        AppLogger.info(marker, category: "Test")
+        AppLogger.warning(marker, category: "Test")
+        AppLogger.error(marker, category: "Test")
+        Thread.sleep(forTimeInterval: 0.15)
+
+        let content = FileLogger.shared.mergedContent()
+        // before marker 应该在，但实际 marker 通过 AppLogger 的不应该在
+        #expect(content.contains("BEFORE_\(marker)"))
+        // off 模式：info/warning/error 都不该出现（通过 [INFO]/[WARN]/[ERROR] 前缀过滤）
+        #expect(!content.contains("[INFO] [Test] \(marker)"))
+        #expect(!content.contains("[WARN] [Test] \(marker)"))
+        #expect(!content.contains("[ERROR] [Test] \(marker)"))
+    }
+
+    @Test("AppLogger verbose 模式写 debug 级别")
+    func verboseModeWritesDebug() {
+        let saved = AppLogger.currentMode
+        defer { AppLogger.currentMode = saved }
+
+        AppLogger.currentMode = .verbose
+        let marker = "VERBOSE_DEBUG_\(UUID().uuidString)"
+        AppLogger.debug(marker, category: "Test")
+        Thread.sleep(forTimeInterval: 0.15)
+        let content = FileLogger.shared.mergedContent()
+        #expect(content.contains(marker))
+    }
+
+    @Test("AppLogger normal 模式跳过 info 但写 warning")
+    func normalModeFilters() {
+        let saved = AppLogger.currentMode
+        defer { AppLogger.currentMode = saved }
+
+        AppLogger.currentMode = .normal
+        let infoMarker = "NORMAL_INFO_\(UUID().uuidString)"
+        let warnMarker = "NORMAL_WARN_\(UUID().uuidString)"
+        AppLogger.info(infoMarker, category: "Test")
+        AppLogger.warning(warnMarker, category: "Test")
+        Thread.sleep(forTimeInterval: 0.15)
+        let content = FileLogger.shared.mergedContent()
+        #expect(!content.contains(infoMarker))
+        #expect(content.contains(warnMarker))
     }
 }
