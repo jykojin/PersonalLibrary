@@ -217,6 +217,39 @@ struct EditBookView: View {
                 }
             }
 
+            // 开始阅读时间
+            if let startDate = book.startedReadingDate {
+                HStack {
+                    Text("开始阅读")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(startDate, format: .dateTime.year().month().day())
+                        .foregroundStyle(.primary)
+                }
+            }
+
+            // 读完时间
+            if let finishDate = book.finishedDate {
+                HStack {
+                    Text("读完时间")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(finishDate, format: .dateTime.year().month().day())
+                        .foregroundStyle(.primary)
+                }
+            }
+
+            // 微信读书阅读时长
+            if book.wereadReadingHours > 0 {
+                HStack {
+                    Text("阅读时长")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(String(format: "%.1f 小时", book.wereadReadingHours))
+                        .foregroundStyle(.primary)
+                }
+            }
+
             // 评分
             HStack {
                 Text("评分")
@@ -448,8 +481,13 @@ struct EditBookView: View {
             Text("数据补全")
         } footer: {
             if fillResult == nil && !isAutoFilling {
-                Text("从豆瓣、Open Library、Google Books、Goodreads 查找：出版社、页数、作者、图书简介、作者简介")
-                    .font(.caption2)
+                if book.wereadBookId != nil {
+                    Text("从微信读书补全：出版社、简介、阅读时长等")
+                        .font(.caption2)
+                } else {
+                    Text("从豆瓣、Open Library、Google Books 查找：出版社、页数、作者、图书简介、作者简介")
+                        .font(.caption2)
+                }
             }
         }
     }
@@ -468,13 +506,30 @@ struct EditBookView: View {
         autoFillMessage = "正在查询数据源..."
         defer { isAutoFilling = false }
 
-        // 微信读书电纸书：优先从微信读书 API 补全
+        // 微信读书电纸书：只从微信读书 + 本地补全，不走外部 ISBN 源
         let wereadId = book.wereadBookId
-        AppLogger.warning("performSmartFill: wereadBookId=\(wereadId ?? "nil"), bookType=\(book.bookType.rawValue)", category: "EditBook")
         if let wereadId, !wereadId.isEmpty {
             await fillFromWeRead(bookId: wereadId)
+
+            // 本地作者简介
+            if authorDescription.isEmpty && !author.isEmpty && author != "未知作者" {
+                autoFillMessage = "正在从本地书库查找作者简介..."
+                if let localDesc = findLocalAuthorDescription(for: author) {
+                    authorDescription = localDesc
+                }
+            }
+
+            // 构建结果（只显示微信读书 + 本地）
+            var statuses: [(name: String, status: LookupSourceStatus)] = []
+            statuses.append(("微信读书", book.wereadEnrichedDate != nil ? .found : .notFound))
+            if !authorDescription.isEmpty {
+                statuses.append(("本地书库", .found))
+            }
+            fillResult = SmartFillResult(sourceStatuses: statuses)
+            return
         }
 
+        // 非微信读书的书：走 ISBN 外部源
         var needsAuthorDesc = authorDescription.isEmpty
 
         // 优先从本地数据库查找同名作者的简介

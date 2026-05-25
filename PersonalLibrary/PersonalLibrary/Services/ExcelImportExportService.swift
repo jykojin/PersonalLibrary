@@ -15,7 +15,8 @@ actor ExcelImportExportService {
         "ISBN", "定价", "总页数", "加入时间", "阅读状态", "读完时间",
         "所在书架", "标签", "图书简介", "作者简介", "备注", "豆瓣链接",
         "封面链接", "书籍类型", "加入方式", "评分", "当前页码", "是否归档",
-        "微信读书ID", "微信读书进度"
+        "微信读书ID", "微信读书进度", "微信读书阅读时长",
+        "开始阅读日期", "状态变更时间"
     ]
 
     // MARK: - Import
@@ -157,7 +158,10 @@ actor ExcelImportExportService {
                 book.currentPage > 0 ? String(book.currentPage) : "",      // 当前页码
                 book.isArchived ? "是" : "",                                 // 是否归档
                 book.wereadBookId ?? "",                                     // 微信读书ID
-                book.wereadProgress > 0 ? String(book.wereadProgress) : ""  // 微信读书进度
+                book.wereadProgress > 0 ? String(book.wereadProgress) : "", // 微信读书进度
+                book.wereadReadingHours > 0 ? String(format: "%.2f", book.wereadReadingHours) : "", // 微信读书阅读时长
+                book.startedReadingDate.map { dateFormatter.string(from: $0) } ?? "", // 开始阅读日期
+                book.statusChangedDate.map { dateFormatter.string(from: $0) } ?? ""   // 状态变更时间
             ]
             // 对每个字段进行转义（替换制表符为空格）
             let escaped = fields.map { escapeField($0) }
@@ -305,6 +309,22 @@ actor ExcelImportExportService {
         if let progressStr = columnMap["微信读书进度"].flatMap({ getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }),
            let progress = Int(progressStr.replacingOccurrences(of: ".0", with: "")) {
             book.wereadProgress = progress
+        }
+
+        // 微信读书阅读时长
+        if let hoursStr = columnMap["微信读书阅读时长"].flatMap({ getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }),
+           let hours = Double(hoursStr) {
+            book.wereadReadingHours = hours
+        }
+
+        // 开始阅读日期
+        if let startedStr = columnMap["开始阅读日期"].flatMap({ getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }) {
+            book.startedReadingDate = parseDateTime(startedStr)
+        }
+
+        // 状态变更时间
+        if let statusChangedStr = columnMap["状态变更时间"].flatMap({ getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }) {
+            book.statusChangedDate = parseDateTime(statusChangedStr)
         }
 
         // 解析加入时间

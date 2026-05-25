@@ -11,6 +11,9 @@ struct DataMaintenanceView: View {
 
     @State private var selectedTab = 0  // 0=作者, 1=出版社, 2=标签, 3=批量工具
     @State private var searchText = ""
+    @State private var cachedAuthors: [NameCountItem]?
+    @State private var cachedPublishers: [NameCountItem]?
+    @State private var cachedTags: [NameCountItem]?
 
     // 编辑
     @State private var editingItem: NameCountItem?
@@ -52,12 +55,19 @@ struct DataMaintenanceView: View {
 
             if selectedTab == 3 {
                 batchToolsView
+            } else if cachedAuthors == nil {
+                Spacer()
+                ProgressView("加载中…")
+                Spacer()
             } else {
                 dataListView
             }
         }
         .navigationTitle("数据维护")
         .navigationBarTitleDisplayMode(.inline)
+        .task {
+            rebuildCaches()
+        }
         .sheet(item: $editingItem) { item in
             editSheet(for: item)
         }
@@ -271,51 +281,42 @@ struct DataMaintenanceView: View {
 
     // MARK: - Data
 
-    private var authorItems: [NameCountItem] {
-        var dict: [String: Int] = [:]
+    private func rebuildCaches() {
+        var authorDict: [String: Int] = [:]
+        var publisherDict: [String: Int] = [:]
         for book in allBooks where !book.isArchived {
             let authors = book.author.components(separatedBy: ", ")
             for name in authors {
                 let trimmed = name.trimmingCharacters(in: .whitespaces)
                 if !trimmed.isEmpty && trimmed != "未知作者" {
-                    dict[trimmed, default: 0] += 1
+                    authorDict[trimmed, default: 0] += 1
                 }
             }
-        }
-        return dict.map { NameCountItem(name: $0.key, count: $0.value) }
-            .sorted { $0.count > $1.count }
-    }
-
-    private var publisherItems: [NameCountItem] {
-        var dict: [String: Int] = [:]
-        for book in allBooks where !book.isArchived {
             if let p = book.publisher, !p.isEmpty {
                 let publishers = p.components(separatedBy: ", ")
                 for name in publishers {
                     let trimmed = name.trimmingCharacters(in: .whitespaces)
                     if !trimmed.isEmpty {
-                        dict[trimmed, default: 0] += 1
+                        publisherDict[trimmed, default: 0] += 1
                     }
                 }
             }
         }
-        return dict.map { NameCountItem(name: $0.key, count: $0.value) }
+        cachedAuthors = authorDict.map { NameCountItem(name: $0.key, count: $0.value) }
             .sorted { $0.count > $1.count }
-    }
-
-    private var tagItems: [NameCountItem] {
-        allTags.map { tag in
+        cachedPublishers = publisherDict.map { NameCountItem(name: $0.key, count: $0.value) }
+            .sorted { $0.count > $1.count }
+        cachedTags = allTags.map { tag in
             let count = (tag.books ?? []).filter { !$0.isArchived }.count
             return NameCountItem(name: tag.name, count: count)
-        }
-        .sorted { $0.count > $1.count }
+        }.sorted { $0.count > $1.count }
     }
 
     private var currentItems: [NameCountItem] {
         switch selectedTab {
-        case 0: return authorItems
-        case 1: return publisherItems
-        default: return tagItems
+        case 0: return cachedAuthors ?? []
+        case 1: return cachedPublishers ?? []
+        default: return cachedTags ?? []
         }
     }
 
@@ -436,6 +437,7 @@ struct DataMaintenanceView: View {
 
             resultMessage = "已将「\(oldName)」改为「\(trimmedNew)」，更新了 \(updatedCount) 本书"
             showingResult = true
+            rebuildCaches()
         }
     }
 
@@ -443,6 +445,7 @@ struct DataMaintenanceView: View {
         guard let tag = allTags.first(where: { $0.name == name }) else { return }
         modelContext.delete(tag)
         try? modelContext.save()
+        rebuildCaches()
     }
 
     private func addTag() {
@@ -456,6 +459,7 @@ struct DataMaintenanceView: View {
         modelContext.insert(tag)
         try? modelContext.save()
         newTagName = ""
+        rebuildCaches()
     }
 
     // MARK: - 批量工具
@@ -490,6 +494,7 @@ struct DataMaintenanceView: View {
             ? "已将 \(updatedCount) 本书的作者名转为简体"
             : "所有作者名已是简体，无需修改"
         showingCleanResult = true
+        if updatedCount > 0 { rebuildCaches() }
     }
 
     private func normalizeMultiValues() async {
@@ -536,6 +541,7 @@ struct DataMaintenanceView: View {
             ? "已修复 \(totalFixes) 条记录的分隔符格式"
             : "所有数据格式已正确，无需修复"
         showingCleanResult = true
+        if totalFixes > 0 { rebuildCaches() }
     }
 
     private func normalizeField(_ value: String, separators: CharacterSet) -> String {

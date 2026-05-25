@@ -438,14 +438,17 @@ struct ExcelExportTests {
         #expect(dataLine.contains("标题 含Tab"))
     }
 
-    @Test("columnHeaders 包含26列")
+    @Test("columnHeaders 包含29列")
     func columnHeadersCount() {
-        #expect(ExcelImportExportService.columnHeaders.count == 26)
+        #expect(ExcelImportExportService.columnHeaders.count == 29)
         #expect(ExcelImportExportService.columnHeaders[0] == "序号")
         #expect(ExcelImportExportService.columnHeaders[1] == "书名")
         #expect(ExcelImportExportService.columnHeaders[17] == "豆瓣链接")
         #expect(ExcelImportExportService.columnHeaders[24] == "微信读书ID")
         #expect(ExcelImportExportService.columnHeaders[25] == "微信读书进度")
+        #expect(ExcelImportExportService.columnHeaders[26] == "微信读书阅读时长")
+        #expect(ExcelImportExportService.columnHeaders[27] == "开始阅读日期")
+        #expect(ExcelImportExportService.columnHeaders[28] == "状态变更时间")
     }
 
     @Test("阅读状态正确映射到导出字符串")
@@ -2748,5 +2751,187 @@ struct AppLoggerTests {
         let content = FileLogger.shared.mergedContent()
         #expect(!content.contains(infoMarker))
         #expect(content.contains(warnMarker))
+    }
+}
+
+// MARK: - New Fields Tests (startedReadingDate, wereadEnrichedDate, export/import)
+
+@Suite("Book New Fields Tests")
+struct BookNewFieldsTests {
+
+    @Test("startedReadingDate 默认为 nil")
+    func startedReadingDateDefault() {
+        let book = Book(title: "测试", author: "作者")
+        #expect(book.startedReadingDate == nil)
+    }
+
+    @Test("startedReadingDate 可设置和读取")
+    func startedReadingDateSettable() {
+        let book = Book(title: "测试", author: "作者")
+        let date = Date()
+        book.startedReadingDate = date
+        #expect(book.startedReadingDate == date)
+    }
+
+    @Test("wereadEnrichedDate 默认为 nil")
+    func wereadEnrichedDateDefault() {
+        let book = Book(title: "测试", author: "作者")
+        #expect(book.wereadEnrichedDate == nil)
+    }
+
+    @Test("wereadEnrichedDate 可设置（标记已补全）")
+    func wereadEnrichedDateSettable() {
+        let book = Book(title: "测试", author: "作者")
+        let now = Date()
+        book.wereadEnrichedDate = now
+        #expect(book.wereadEnrichedDate == now)
+    }
+
+    @Test("applyToBook 填充 startedReadingDate（本地无记录时）")
+    func applyToBookSetsStartedDate() {
+        let book = Book(title: "测试", author: "作者", bookType: .ebook)
+        let startDate = Date(timeIntervalSince1970: 1700000000)
+
+        var result = WeReadEnrichResult()
+        result.startedReadingTime = startDate
+        result.applyToBook(book)
+
+        #expect(book.startedReadingDate == startDate)
+    }
+
+    @Test("applyToBook 不覆盖已有 startedReadingDate")
+    func applyToBookDoesNotOverwriteStartedDate() {
+        let book = Book(title: "测试", author: "作者", bookType: .ebook)
+        let existingDate = Date(timeIntervalSince1970: 1600000000)
+        book.startedReadingDate = existingDate
+
+        var result = WeReadEnrichResult()
+        result.startedReadingTime = Date(timeIntervalSince1970: 1700000000)
+        result.applyToBook(book)
+
+        #expect(book.startedReadingDate == existingDate)
+    }
+
+    @Test("applyToBook 填充 finishedDate（本地无记录时）")
+    func applyToBookSetsFinishedDate() {
+        let book = Book(title: "测试", author: "作者", bookType: .ebook)
+        let finishDate = Date(timeIntervalSince1970: 1700000000)
+
+        var result = WeReadEnrichResult()
+        result.finishedTime = finishDate
+        result.applyToBook(book)
+
+        #expect(book.finishedDate == finishDate)
+    }
+
+    @Test("applyToBook 不覆盖已有 finishedDate")
+    func applyToBookDoesNotOverwriteFinishedDate() {
+        let book = Book(title: "测试", author: "作者", bookType: .ebook)
+        let existingDate = Date(timeIntervalSince1970: 1600000000)
+        book.finishedDate = existingDate
+
+        var result = WeReadEnrichResult()
+        result.finishedTime = Date(timeIntervalSince1970: 1700000000)
+        result.applyToBook(book)
+
+        #expect(book.finishedDate == existingDate)
+    }
+}
+
+// MARK: - Export New Fields Tests
+
+@Suite("Export New Fields Tests")
+struct ExportNewFieldsTests {
+
+    @Test("导出包含微信读书阅读时长")
+    func exportIncludesReadingHours() async throws {
+        let service = ExcelImportExportService()
+        let book = Book(title: "测试导出时长", author: "作者")
+        book.wereadReadingHours = 12.5
+
+        let data = try await service.exportBooks(books: [book])
+        let content = String(data: data, encoding: .utf8)!
+
+        #expect(content.contains("12.50"))
+    }
+
+    @Test("导出包含开始阅读日期")
+    func exportIncludesStartedDate() async throws {
+        let service = ExcelImportExportService()
+        let book = Book(title: "测试导出开始日期", author: "作者")
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        book.startedReadingDate = formatter.date(from: "2024-03-15 10:30")
+
+        let data = try await service.exportBooks(books: [book])
+        let content = String(data: data, encoding: .utf8)!
+
+        #expect(content.contains("2024-03-15 10:30"))
+    }
+
+    @Test("导出包含状态变更时间")
+    func exportIncludesStatusChangedDate() async throws {
+        let service = ExcelImportExportService()
+        let book = Book(title: "测试导出状态时间", author: "作者")
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        book.statusChangedDate = formatter.date(from: "2024-06-01 09:00")
+
+        let data = try await service.exportBooks(books: [book])
+        let content = String(data: data, encoding: .utf8)!
+
+        #expect(content.contains("2024-06-01 09:00"))
+    }
+
+    @Test("导出空新字段不产生多余内容")
+    func exportEmptyNewFields() async throws {
+        let service = ExcelImportExportService()
+        let book = Book(title: "无新字段", author: "作者")
+        // wereadReadingHours = 0, startedReadingDate = nil, statusChangedDate = nil
+
+        let data = try await service.exportBooks(books: [book])
+        let content = String(data: data, encoding: .utf8)!
+        let lines = content.components(separatedBy: "\n")
+        let dataLine = lines[1]
+        let fields = dataLine.components(separatedBy: "\t")
+
+        // 最后三个字段应为空
+        #expect(fields[26] == "") // 微信读书阅读时长
+        #expect(fields[27] == "") // 开始阅读日期
+        #expect(fields[28] == "") // 状态变更时间
+    }
+}
+
+// MARK: - WeReadEnrichResult startedReadingTime/finishedTime Tests
+
+@Suite("WeReadEnrichResult Date Fields Tests")
+struct WeReadEnrichResultDateTests {
+
+    @Test("startedReadingTime 默认 nil")
+    func defaultStartedReadingTime() {
+        let result = WeReadEnrichResult()
+        #expect(result.startedReadingTime == nil)
+    }
+
+    @Test("finishedTime 默认 nil")
+    func defaultFinishedTime() {
+        let result = WeReadEnrichResult()
+        #expect(result.finishedTime == nil)
+    }
+
+    @Test("startedReadingTime 可设置")
+    func setStartedReadingTime() {
+        var result = WeReadEnrichResult()
+        let date = Date(timeIntervalSince1970: 1700000000)
+        result.startedReadingTime = date
+        #expect(result.startedReadingTime == date)
+    }
+
+    @Test("finishedTime 可设置")
+    func setFinishedTime() {
+        var result = WeReadEnrichResult()
+        let date = Date(timeIntervalSince1970: 1700000000)
+        result.finishedTime = date
+        #expect(result.finishedTime == date)
     }
 }

@@ -56,6 +56,12 @@ struct WeReadBookProgress: Codable {
     let finishedDate: Int?  // 读完时间（Unix 时间戳）
 }
 
+/// 阅读详情（开始/完成时间）
+struct WeReadReadDetail {
+    var startReadingTime: Int?
+    var finishReadingTime: Int?
+}
+
 /// 用于 UI 展示的导入条目
 struct WeReadImportItem: Identifiable {
     let id: String  // bookId
@@ -214,6 +220,21 @@ actor WeReadService: WeReadDataSource {
         return response.updated ?? []
     }
 
+    /// 获取阅读详情（开始阅读时间、完成时间等）
+    func fetchReadDetail(bookId: String) async throws -> WeReadReadDetail {
+        let safeId = try validateBookId(bookId)
+        let url = URL(string: "\(baseURL)/web/book/getProgress?bookId=\(safeId)")!
+        let data = try await makeRequest(url: url)
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let book = json["book"] as? [String: Any] else {
+            return WeReadReadDetail()
+        }
+        return WeReadReadDetail(
+            startReadingTime: book["startReadingTime"] as? Int,
+            finishReadingTime: book["finishReadingTime"] as? Int
+        )
+    }
+
     /// 刷新 Cookie
     func renewCookie() async throws -> Bool {
         var request = URLRequest(url: URL(string: "\(baseURL)/web/login/renewal")!)
@@ -319,6 +340,20 @@ actor WeReadService: WeReadDataSource {
             }
         } catch {
             AppLogger.warning("enrichBook[\(bookId)] step3 failed: \(error)", category: "WeRead")
+        }
+
+        // 4. 获取阅读详情（开始阅读时间、完成时间）
+        do {
+            let detail = try await fetchReadDetail(bookId: bookId)
+            if let startTime = detail.startReadingTime, startTime > 0 {
+                result.startedReadingTime = Date(timeIntervalSince1970: TimeInterval(startTime))
+            }
+            if let finishTime = detail.finishReadingTime, finishTime > 0 {
+                result.finishedTime = Date(timeIntervalSince1970: TimeInterval(finishTime))
+            }
+            AppLogger.warning("enrichBook[\(bookId)] step4 ok: start=\(detail.startReadingTime as Any), finish=\(detail.finishReadingTime as Any)", category: "WeRead")
+        } catch {
+            AppLogger.warning("enrichBook[\(bookId)] step4 readDetail failed: \(error)", category: "WeRead")
         }
 
         return result

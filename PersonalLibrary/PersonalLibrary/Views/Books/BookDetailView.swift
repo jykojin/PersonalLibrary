@@ -283,9 +283,14 @@ struct BookDetailView: View {
                 .font(.subheadline)
             }
 
-            // 微信读书阅读时长 + 完成日期
-            if book.wereadReadingHours > 0 || (book.status == .finished && book.finishedDate != nil) {
+            // 阅读时间线：开始阅读 → 累计时长 → 读完
+            if book.startedReadingDate != nil || book.wereadReadingHours > 0 || (book.status == .finished && book.finishedDate != nil) {
                 VStack(alignment: .leading, spacing: 4) {
+                    if let startDate = book.startedReadingDate {
+                        Label("开始阅读于 \(startDate, style: .date)", systemImage: "play.circle")
+                            .font(.subheadline)
+                            .foregroundStyle(.blue)
+                    }
                     if let summary = book.readingSummaryText {
                         Label(summary, systemImage: "clock")
                             .font(.subheadline)

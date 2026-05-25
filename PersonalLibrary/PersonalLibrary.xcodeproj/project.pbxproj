@@ -49,6 +49,7 @@
 		C551971A4E370D924C8088A8 /* EditBookView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8094BF7B50E8C310346BD62 /* EditBookView.swift */; };
 		CB816F264CEE6FC093F34C85 /* Book.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEFD01915041338525804236 /* Book.swift */; };
 		CC8BC6559F0277E35E120C23 /* BatchActionBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA5005EFDEC15CED4F9D5889 /* BatchActionBar.swift */; };
+		E2BDFD0F0D246A80DF84ED14 /* DataBackupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C28FE3D9EE058BC7758DDF70 /* DataBackupView.swift */; };
 		E4F62D5464026A921EBCB6E4 /* DoubanDescriptionFetcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4D9FBC97AC9CCCC3F252253 /* DoubanDescriptionFetcher.swift */; };
 		E6E6169E7D9AD9BD37E5B956 /* AuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD70F02DDA17AEF6E793FE28 /* AuthService.swift */; };
 		E7E73C9ED56AB64680A0DBA6 /* AddBookView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B85318DE00198B35B0A6090 /* AddBookView.swift */; };
@@ -118,6 +119,7 @@
 		BDEC24B8D2A8205B1888FC19 /* FilteredBooksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilteredBooksView.swift; sourceTree = "<group>"; };
 		BEFD01915041338525804236 /* Book.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Book.swift; sourceTree = "<group>"; };
 		C03C6E6FCF4B713FB853A884 /* WeReadSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeReadSyncService.swift; sourceTree = "<group>"; };
+		C28FE3D9EE058BC7758DDF70 /* DataBackupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataBackupView.swift; sourceTree = "<group>"; };
 		C804FF15BDE4A5A85C367911 /* AddReadingRecordView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddReadingRecordView.swift; sourceTree = "<group>"; };
 		C8DF422DC96BD3A2EE17EB8A /* PersonalLibraryUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PersonalLibraryUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		CDB95BE34A79F5D4E93F7D3C /* StorageManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageManager.swift; sourceTree = "<group>"; };
@@ -308,6 +310,7 @@
 			isa = PBXGroup;
 			children = (
 				1D53D9AD5D55B69FFEE275CA /* AuthorPublisherMaintenanceView.swift */,
+				C28FE3D9EE058BC7758DDF70 /* DataBackupView.swift */,
 				DB9498C95CCCDC9A51B5EECF /* ImportExportView.swift */,
 				A95E2C460974691EB8538BB5 /* ImportHistoryView.swift */,
 				F3E7F069DC0B427109F37150 /* LogViewerView.swift */,
@@ -476,6 +479,7 @@
 				5817492A88473ABA6FB56F9B /* BookshelfListView.swift in Sources */,
 				52D01BBD46ACCD3E5E5ABEAA /* ContentView.swift in Sources */,
 				EF65473F98061A197DD20854 /* CoverFetchService.swift in Sources */,
+				E2BDFD0F0D246A80DF84ED14 /* DataBackupView.swift in Sources */,
 				E4F62D5464026A921EBCB6E4 /* DoubanDescriptionFetcher.swift in Sources */,
 				C551971A4E370D924C8088A8 /* EditBookView.swift in Sources */,
 				A490080504DE0091F1993BE0 /* ExcelImportExportService.swift in Sources */,
