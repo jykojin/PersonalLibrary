@@ -4,11 +4,9 @@ import SwiftUI
 struct LogViewerView: View {
     @State private var logFiles: [LogFileInfo] = []
     @State private var totalSize: String = ""
-    @State private var showingShareSheet = false
-    @State private var shareURL: URL?
+    @State private var shareItem: LogShareItem?
     @State private var showingClearConfirm = false
-    @State private var previewContent: String = ""
-    @State private var showingPreview = false
+    @State private var previewItem: LogPreviewItem?
     @State private var logMode: AppLogger.Mode = AppLogger.currentMode
 
     var body: some View {
@@ -101,24 +99,23 @@ struct LogViewerView: View {
         }
         .navigationTitle("应用日志")
         .onAppear { refreshFileList() }
-        .sheet(isPresented: $showingShareSheet) {
-            if let url = shareURL {
-                ShareSheet(items: [url])
-            }
+        .sheet(item: $shareItem) { item in
+            ShareSheet(items: [item.url])
         }
-        .sheet(isPresented: $showingPreview) {
+        .sheet(item: $previewItem) { item in
             NavigationStack {
                 ScrollView {
-                    Text(previewContent)
+                    Text(item.content)
                         .font(.system(.caption2, design: .monospaced))
-                        .padding()
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                        .textSelection(.enabled)
                 }
                 .navigationTitle("最近日志")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("关闭") { showingPreview = false }
+                        Button("关闭") { previewItem = nil }
                     }
                 }
             }
@@ -150,11 +147,24 @@ struct LogViewerView: View {
 
     private func previewRecentLogs() {
         let content = FileLogger.shared.mergedContent()
-        // 只显示最后 200 行
         let lines = content.components(separatedBy: "\n")
         let tail = lines.suffix(200)
-        previewContent = tail.joined(separator: "\n")
-        showingPreview = true
+        let joined = tail.joined(separator: "\n")
+
+        if joined.isEmpty {
+            // 回退：直接读文件
+            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            let logFile = docs.appendingPathComponent("logs/app.log")
+            if let data = try? Data(contentsOf: logFile) {
+                let fallback = String(data: data, encoding: .utf8) ?? "无法解码"
+                let fallbackLines = fallback.components(separatedBy: "\n")
+                previewItem = LogPreviewItem(content: fallbackLines.suffix(200).joined(separator: "\n"))
+            } else {
+                previewItem = LogPreviewItem(content: "文件读取失败: \(logFile.path)")
+            }
+        } else {
+            previewItem = LogPreviewItem(content: joined)
+        }
     }
 
     private func exportLogs() {
@@ -162,8 +172,7 @@ struct LogViewerView: View {
         let fileName = "PersonalLibrary_logs_\(exportDateString()).txt"
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
         try? content.write(to: tempURL, atomically: true, encoding: .utf8)
-        shareURL = tempURL
-        showingShareSheet = true
+        shareItem = LogShareItem(url: tempURL)
     }
 
     private func formatSize(_ bytes: UInt64) -> String {
@@ -179,7 +188,18 @@ struct LogViewerView: View {
     }
 }
 
-// MARK: - Model
+// MARK: - Models
+
+/// 用于 sheet(item:) 的包装类型，确保 sheet 内容绑定到实际数据
+private struct LogPreviewItem: Identifiable {
+    let id = UUID()
+    let content: String
+}
+
+private struct LogShareItem: Identifiable {
+    let id = UUID()
+    let url: URL
+}
 
 private struct LogFileInfo: Identifiable {
     let url: URL

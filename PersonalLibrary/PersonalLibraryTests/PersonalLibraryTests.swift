@@ -93,6 +93,30 @@ struct BookModelTests {
         #expect(book.finishedDate == nil)
     }
 
+    @Test("新建书籍默认阅读时长为0")
+    func newBookReadingHoursIsZero() {
+        let book = Book(title: "测试", author: "测试")
+        #expect(book.wereadReadingHours == 0)
+    }
+
+    @Test("可以设置微信读书阅读时长")
+    func setWereadReadingHours() {
+        let book = Book(title: "测试", author: "测试")
+        book.wereadReadingHours = 5.5
+        #expect(book.wereadReadingHours == 5.5)
+    }
+
+    @Test("微信读书阅读时长从秒正确转换为小时")
+    func readingTimeSecondsToHours() {
+        let book = Book(title: "测试", author: "测试")
+        // 3600秒 = 1小时
+        book.wereadReadingHours = Double(3600) / 3600.0
+        #expect(book.wereadReadingHours == 1.0)
+        // 5400秒 = 1.5小时
+        book.wereadReadingHours = Double(5400) / 3600.0
+        #expect(book.wereadReadingHours == 1.5)
+    }
+
     @Test("可以修改阅读状态")
     func statusChange() {
         let book = Book(title: "测试", author: "测试")
@@ -590,6 +614,94 @@ struct WeReadImportItemTests {
     }
 }
 
+// MARK: - WeRead Smart Fill Tests
+
+@Suite("WeRead Smart Fill Tests")
+struct WeReadSmartFillTests {
+
+    @Test("电纸书导入时阅读时长正确存入")
+    func importSetsReadingHours() {
+        let book = Book(title: "测试电纸书", author: "作者", bookType: .ebook)
+        book.wereadBookId = "weread123"
+        // 模拟导入：7200秒 = 2小时
+        book.wereadReadingHours = Double(7200 + 0) / 3600.0
+        #expect(book.wereadReadingHours == 2.0)
+    }
+
+    @Test("同步时阅读时长只增不减")
+    func syncOnlyIncreasesHours() {
+        let book = Book(title: "测试", author: "作者", bookType: .ebook)
+        book.wereadBookId = "weread456"
+        book.wereadReadingHours = 3.0
+        // 新值更小，不更新
+        let newHours = Double(5400) / 3600.0  // 1.5小时
+        if newHours > book.wereadReadingHours {
+            book.wereadReadingHours = newHours
+        }
+        #expect(book.wereadReadingHours == 3.0)
+    }
+
+    @Test("同步时阅读时长增加时更新")
+    func syncUpdatesWhenLarger() {
+        let book = Book(title: "测试", author: "作者", bookType: .ebook)
+        book.wereadBookId = "weread789"
+        book.wereadReadingHours = 1.0
+        // 新值更大，更新
+        let newHours = Double(10800) / 3600.0  // 3小时
+        if newHours > book.wereadReadingHours {
+            book.wereadReadingHours = newHours
+        }
+        #expect(book.wereadReadingHours == 3.0)
+    }
+
+    @Test("readingTime + ttsTime 合计计算")
+    func combinedReadingAndTtsTime() {
+        let book = Book(title: "有声书", author: "作者", bookType: .audiobook)
+        book.wereadBookId = "audio001"
+        let readingTime = 1800  // 30分钟阅读
+        let ttsTime = 5400     // 1.5小时听书
+        book.wereadReadingHours = Double(readingTime + ttsTime) / 3600.0
+        #expect(book.wereadReadingHours == 2.0)
+    }
+}
+
+// MARK: - Reading Summary Display Tests
+
+@Suite("Reading Summary Display Tests")
+struct ReadingSummaryDisplayTests {
+
+    @Test("readingSummaryText 无阅读时长返回nil")
+    func noReadingHoursReturnsNil() {
+        let book = Book(title: "测试", author: "作者", bookType: .ebook)
+        book.wereadReadingHours = 0
+        #expect(book.readingSummaryText == nil)
+    }
+
+    @Test("readingSummaryText 有阅读时长返回格式化文本")
+    func hasReadingHoursReturnsFormatted() {
+        let book = Book(title: "测试", author: "作者", bookType: .ebook)
+        book.wereadReadingHours = 3.5
+        #expect(book.readingSummaryText == "微信读书累计 3.5 小时")
+    }
+
+    @Test("readingSummaryText 整数小时不显示小数")
+    func wholeHoursNoDecimal() {
+        let book = Book(title: "测试", author: "作者", bookType: .ebook)
+        book.wereadReadingHours = 5.0
+        #expect(book.readingSummaryText == "微信读书累计 5.0 小时")
+    }
+
+    @Test("finishedDate 在已读状态下有值")
+    func finishedDateSetWhenFinished() {
+        let book = Book(title: "测试", author: "作者", bookType: .ebook)
+        book.status = .finished
+        let now = Date()
+        book.finishedDate = now
+        #expect(book.finishedDate == now)
+        #expect(book.status == .finished)
+    }
+}
+
 // MARK: - WeReadError Tests
 
 @Suite("WeReadError Tests")
@@ -603,6 +715,128 @@ struct WeReadErrorTests {
         #expect(WeReadError.httpError(statusCode: 404).errorDescription == "HTTP 错误 (404)")
         #expect(WeReadError.apiError(code: -1, message: "测试错误").errorDescription == "API 错误: 测试错误")
         #expect(WeReadError.noData.errorDescription == "没有获取到数据")
+    }
+}
+
+// MARK: - WeReadEnrichResult Tests
+
+@Suite("WeReadEnrichResult Tests")
+struct WeReadEnrichResultTests {
+
+    @Test("enrichResult 默认值全为 nil/0")
+    func defaultValues() {
+        let result = WeReadEnrichResult()
+        #expect(result.publisher == nil)
+        #expect(result.isbn == nil)
+        #expect(result.intro == nil)
+        #expect(result.price == nil)
+        #expect(result.publishTime == nil)
+        #expect(result.bookType == nil)
+        #expect(result.readingHours == 0)
+    }
+
+    @Test("enrichResult 正确存储所有字段")
+    func allFieldsPopulated() {
+        var result = WeReadEnrichResult()
+        result.publisher = "人民文学出版社"
+        result.isbn = "9787020170623"
+        result.intro = "测试简介"
+        result.price = 45.0
+        result.publishTime = "2023-01"
+        result.bookType = .audiobook
+        result.readingHours = 5.5
+        #expect(result.publisher == "人民文学出版社")
+        #expect(result.isbn == "9787020170623")
+        #expect(result.intro == "测试简介")
+        #expect(result.price == 45.0)
+        #expect(result.publishTime == "2023-01")
+        #expect(result.bookType == .audiobook)
+        #expect(result.readingHours == 5.5)
+    }
+
+    @Test("enrichResult readingHours 从秒正确转换")
+    func readingHoursFromSeconds() {
+        var result = WeReadEnrichResult()
+        let readingTime = 3600  // 1小时
+        let ttsTime = 1800     // 0.5小时
+        result.readingHours = Double(readingTime + ttsTime) / 3600.0
+        #expect(result.readingHours == 1.5)
+    }
+
+    @Test("applyToBook 只填充空字段不覆盖已有值")
+    func applyDoesNotOverwrite() {
+        let book = Book(title: "测试", author: "作者", bookType: .ebook)
+        book.publisher = "已有出版社"
+        book.isbn = "existing-isbn"
+        book.wereadReadingHours = 5.0
+
+        var result = WeReadEnrichResult()
+        result.publisher = "新出版社"
+        result.isbn = "new-isbn"
+        result.intro = "新简介"
+        result.readingHours = 3.0  // 比已有值小
+
+        result.applyToBook(book)
+
+        // 已有字段不被覆盖
+        #expect(book.publisher == "已有出版社")
+        #expect(book.isbn == "existing-isbn")
+        // 空字段被填充
+        #expect(book.bookDescription == "新简介")
+        // 阅读时长只增不减
+        #expect(book.wereadReadingHours == 5.0)
+    }
+
+    @Test("applyToBook 阅读时长增加时更新")
+    func applyUpdatesLargerHours() {
+        let book = Book(title: "测试", author: "作者", bookType: .ebook)
+        book.wereadReadingHours = 2.0
+
+        var result = WeReadEnrichResult()
+        result.readingHours = 8.5
+
+        result.applyToBook(book)
+
+        #expect(book.wereadReadingHours == 8.5)
+    }
+
+    @Test("applyToBook 填充出版社和价格")
+    func applyFillsPublisherAndPrice() {
+        let book = Book(title: "测试", author: "作者", bookType: .ebook)
+
+        var result = WeReadEnrichResult()
+        result.publisher = "中信出版社"
+        result.price = 59.0
+
+        result.applyToBook(book)
+
+        #expect(book.publisher == "中信出版社")
+        #expect(book.price == "¥59.00")
+    }
+
+    @Test("applyToBook 修正书籍类型为有声书")
+    func applyFixesAudiobookType() {
+        let book = Book(title: "测试", author: "作者", bookType: .ebook)
+
+        var result = WeReadEnrichResult()
+        result.bookType = .audiobook
+
+        result.applyToBook(book)
+
+        #expect(book.bookType == .audiobook)
+    }
+
+    @Test("applyToBook 不会将有声书改为电子书")
+    func applyDoesNotDowngradeType() {
+        let book = Book(title: "测试", author: "作者", bookType: .audiobook)
+
+        var result = WeReadEnrichResult()
+        result.bookType = .ebook
+
+        result.applyToBook(book)
+
+        // 有声书不会被改为电子书
+        #expect(book.bookType == .audiobook)
     }
 }
 
@@ -2430,6 +2664,20 @@ struct AppLoggerTests {
     func fileLoggerTotalSize() {
         // 至少有 launch separator
         #expect(FileLogger.shared.totalSize > 0)
+    }
+
+    @Test("FileLogger mergedContent 在并发写入时不死锁")
+    func fileLoggerConcurrentReadWrite() {
+        // 写入多条日志后立即读取（验证 queue.sync 不会死锁）
+        for i in 0..<10 {
+            FileLogger.shared.log("concurrent_test_\(i)")
+        }
+        let content = FileLogger.shared.mergedContent()
+        #expect(!content.isEmpty)
+        let files = FileLogger.shared.logFiles
+        #expect(!files.isEmpty)
+        let size = FileLogger.shared.totalSize
+        #expect(size > 0)
     }
 
     @Test("AppLogger.Mode 包含三档")

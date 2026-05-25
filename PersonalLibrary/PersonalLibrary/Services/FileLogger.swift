@@ -40,6 +40,42 @@ final class FileLogger: @unchecked Sendable {
 
     /// 返回所有日志文件路径（最新在前）
     var logFiles: [URL] {
+        queue.sync { listLogFiles() }
+    }
+
+    /// 当前日志文件大小（字节）
+    var currentFileSize: UInt64 {
+        queue.sync {
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: currentLogURL.path) else {
+                return 0
+            }
+            return attrs[.size] as? UInt64 ?? 0
+        }
+    }
+
+    /// 所有日志文件总大小（字节）
+    var totalSize: UInt64 {
+        queue.sync {
+            let fm = FileManager.default
+            return listLogFiles().reduce(0) { total, url in
+                let size = (try? fm.attributesOfItem(atPath: url.path)[.size] as? UInt64) ?? 0
+                return total + size
+            }
+        }
+    }
+
+    /// 清空所有日志
+    func clearAll() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            for file in self.listLogFiles() {
+                try? FileManager.default.removeItem(at: file)
+            }
+        }
+    }
+
+    /// 内部方法：列出日志文件（调用方需已在 queue 上）
+    private func listLogFiles() -> [URL] {
         let fm = FileManager.default
         guard let contents = try? fm.contentsOfDirectory(at: logDirectory, includingPropertiesForKeys: [.fileSizeKey]) else {
             return []
@@ -49,41 +85,31 @@ final class FileLogger: @unchecked Sendable {
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
-    /// 当前日志文件大小（字节）
-    var currentFileSize: UInt64 {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: currentLogURL.path) else {
-            return 0
-        }
-        return attrs[.size] as? UInt64 ?? 0
-    }
-
-    /// 所有日志文件总大小（字节）
-    var totalSize: UInt64 {
-        logFiles.reduce(0) { total, url in
-            let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? UInt64) ?? 0
-            return total + size
-        }
-    }
-
-    /// 清空所有日志
-    func clearAll() {
-        queue.async { [weak self] in
-            guard let self else { return }
-            for file in self.logFiles {
-                try? FileManager.default.removeItem(at: file)
-            }
-        }
-    }
-
     /// 合并所有日志内容（用于导出）
+    /// 在 queue 上同步执行，确保与写入不冲突
     func mergedContent() -> String {
-        var result = ""
-        for file in logFiles.reversed() {  // 旧的在前
-            if let content = try? String(contentsOf: file, encoding: .utf8) {
-                result += content
+        queue.sync {
+            let fm = FileManager.default
+            guard let contents = try? fm.contentsOfDirectory(at: logDirectory, includingPropertiesForKeys: nil) else {
+                return "[ERROR] Cannot list logDirectory: \(logDirectory.path)"
             }
+            let files = contents.filter { $0.pathExtension == "log" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+            if files.isEmpty {
+                return "[ERROR] No .log files in: \(logDirectory.path), contents: \(contents.map(\.lastPathComponent))"
+            }
+            var result = ""
+            for file in files {
+                if let data = try? Data(contentsOf: file) {
+                    let content = String(data: data, encoding: .utf8)
+                        ?? String(data: data, encoding: .isoLatin1)
+                        ?? ""
+                    result += content
+                } else {
+                    result += "[ERROR] Failed to read: \(file.lastPathComponent)\n"
+                }
+            }
+            return result
         }
-        return result
     }
 
     /// 日志目录路径
@@ -105,7 +131,9 @@ final class FileLogger: @unchecked Sendable {
     }
 
     private func rotateIfNeeded() {
-        guard currentFileSize > maxFileSize else { return }
+        // 直接读文件大小（已在 queue 内，不能调用 queue.sync 的 currentFileSize）
+        let size = (try? FileManager.default.attributesOfItem(atPath: currentLogURL.path)[.size] as? UInt64) ?? 0
+        guard size > maxFileSize else { return }
 
         let fm = FileManager.default
 

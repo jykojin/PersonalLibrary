@@ -184,6 +184,11 @@ actor WeReadSyncService {
                     book.wereadProgress = item.progress
                     progressCount += 1
                 }
+                // 更新阅读时长
+                let newHours = Double(item.readingTime + item.ttsTime) / 3600.0
+                if newHours > book.wereadReadingHours {
+                    book.wereadReadingHours = newHours
+                }
                 // 补充加入时间
                 if let addedTime = item.addedTime, book.addedDate > addedTime {
                     book.addedDate = addedTime
@@ -607,6 +612,11 @@ actor WeReadSyncService {
                 book.wereadProgress = item.progress
                 result.progressChanged = true
             }
+            // 更新阅读时长
+            let newHours = Double(item.readingTime + item.ttsTime) / 3600.0
+            if newHours > book.wereadReadingHours {
+                book.wereadReadingHours = newHours
+            }
 
             // 补充加入时间（如果本地是默认的当前时间、远端有真实时间）
             if let addedTime = item.addedTime, book.addedDate > addedTime {
@@ -657,6 +667,7 @@ actor WeReadSyncService {
 
             book.wereadBookId = item.id
             book.wereadProgress = item.progress
+            book.wereadReadingHours = Double(item.readingTime + item.ttsTime) / 3600.0
             book.addSource = .wereadImported
 
             // 加入时间：优先微信读书的加入书架时间

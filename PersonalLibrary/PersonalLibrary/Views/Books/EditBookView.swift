@@ -468,6 +468,13 @@ struct EditBookView: View {
         autoFillMessage = "正在查询数据源..."
         defer { isAutoFilling = false }
 
+        // 微信读书电纸书：优先从微信读书 API 补全
+        let wereadId = book.wereadBookId
+        AppLogger.warning("performSmartFill: wereadBookId=\(wereadId ?? "nil"), bookType=\(book.bookType.rawValue)", category: "EditBook")
+        if let wereadId, !wereadId.isEmpty {
+            await fillFromWeRead(bookId: wereadId)
+        }
+
         var needsAuthorDesc = authorDescription.isEmpty
 
         // 优先从本地数据库查找同名作者的简介
@@ -505,6 +512,54 @@ struct EditBookView: View {
         if let d = result.authorDescription { authorDescription = d }
 
         fillResult = result
+    }
+
+    /// 从微信读书 API 补全书籍信息 + 阅读时长（使用统一 enrichBook 方法）
+    private func fillFromWeRead(bookId: String) async {
+        let service = WeReadService()
+        let loggedIn = await service.isLoggedIn()
+        AppLogger.warning("fillFromWeRead: bookId=\(bookId), loggedIn=\(loggedIn)", category: "EditBook")
+        guard loggedIn else {
+            return
+        }
+
+        autoFillMessage = "正在从微信读书补全..."
+
+        do {
+            let result = try await service.enrichBook(bookId: bookId)
+
+            // 应用到表单字段（表单字段为 @State，不直接用 applyToBook）
+            if publisher.isEmpty, let p = result.publisher, !p.isEmpty {
+                publisher = p
+            }
+            if isbn.isEmpty, let i = result.isbn, !i.isEmpty {
+                isbn = i
+            }
+            if bookDescription.isEmpty, let d = result.intro, !d.isEmpty {
+                bookDescription = d
+            }
+            if price.isEmpty, let p = result.price, p > 0, p.isFinite {
+                price = "¥\(String(format: "%.2f", p))"
+            }
+            if publishDate == nil, let pt = result.publishTime, !pt.isEmpty {
+                publishDate = parsePublishDateString(pt)
+            }
+            if let type = result.bookType, type == .audiobook, bookType != .audiobook {
+                bookType = .audiobook
+            }
+            // 阅读时长只增不减
+            if result.readingHours > book.wereadReadingHours {
+                book.wereadReadingHours = result.readingHours
+                AppLogger.warning("fillFromWeRead: set wereadReadingHours=\(result.readingHours)h", category: "EditBook")
+            }
+            // 持久化
+            if book.wereadReadingHours > 0 {
+                try? modelContext.save()
+                AppLogger.warning("fillFromWeRead: saved, book.wereadReadingHours=\(book.wereadReadingHours)", category: "EditBook")
+            }
+        } catch {
+            AppLogger.warning("fillFromWeRead enrichBook failed: \(error)", category: "EditBook")
+        }
     }
 
     /// 解析出版日期字符串为 Date

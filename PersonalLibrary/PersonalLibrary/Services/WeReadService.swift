@@ -148,6 +148,27 @@ actor WeReadService {
     func fetchShelf() async throws -> WeReadShelfResponse {
         let url = URL(string: "\(baseURL)/web/shelf/sync")!
         let data = try await makeRequest(url: url)
+
+        // 诊断：dump 金刚经相关的原始 JSON
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            // 搜索 books 数组中包含金刚经的条目
+            if let books = json["books"] as? [[String: Any]] {
+                for book in books {
+                    if let title = book["title"] as? String, title.contains("金刚经") {
+                        AppLogger.warning("[DIAG-RAW-BOOK] \(title): \(book)", category: "WeRead")
+                    }
+                }
+            }
+            // 搜索 bookProgress 中对应的条目
+            if let progressList = json["bookProgress"] as? [[String: Any]] {
+                for p in progressList {
+                    if let bookId = p["bookId"] as? String, bookId == "3300198684" {
+                        AppLogger.warning("[DIAG-RAW-PROGRESS] bookId=3300198684: \(p)", category: "WeRead")
+                    }
+                }
+            }
+        }
+
         return try JSONDecoder().decode(WeReadShelfResponse.self, from: data)
     }
 
@@ -156,6 +177,21 @@ actor WeReadService {
         let safeId = try validateBookId(bookId)
         let url = URL(string: "\(baseURL)/web/book/info?bookId=\(safeId)")!
         let data = try await makeRequest(url: url)
+
+        // 诊断：dump 金刚经的 bookInfo 时间相关字段
+        if bookId == "3300198684" {
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let keys = json.keys.sorted()
+                AppLogger.warning("[DIAG-BOOKINFO-KEYS] \(keys)", category: "WeRead")
+                // 找所有包含 time/date/finish 的字段
+                let timeFields = json.filter { k, _ in
+                    let lk = k.lowercased()
+                    return lk.contains("time") || lk.contains("date") || lk.contains("finish") || lk.contains("update")
+                }
+                AppLogger.warning("[DIAG-BOOKINFO-TIME] \(timeFields)", category: "WeRead")
+            }
+        }
+
         return try JSONDecoder().decode(WeReadShelfBook.self, from: data)
     }
 
@@ -228,6 +264,56 @@ actor WeReadService {
 
     // MARK: - 导入逻辑
 
+    // MARK: - 统一补全方法
+
+    /// 补全单本微信读书图书信息（cookie 续期 + 书籍详情 + 阅读时长）
+    /// - Parameter bookId: 微信读书 bookId
+    /// - Returns: 补全结果（调用方用 `applyToBook` 写入 Book）
+    func enrichBook(bookId: String) async throws -> WeReadEnrichResult {
+        // 1. 续期 Cookie
+        AppLogger.warning("enrichBook[\(bookId)] step1: renewCookie", category: "WeRead")
+        _ = try? await renewCookie()
+        AppLogger.warning("enrichBook[\(bookId)] step1 done", category: "WeRead")
+
+        var result = WeReadEnrichResult()
+
+        // 2. 获取书籍详情
+        AppLogger.warning("enrichBook[\(bookId)] step2: fetchBookInfo", category: "WeRead")
+        do {
+            let info = try await fetchBookInfo(bookId: bookId)
+            result.publisher = info.publisher
+            result.isbn = info.isbn
+            result.intro = info.intro
+            result.price = info.price
+            result.publishTime = info.publishTime
+            if let type = info.type, (type == 2 || type == 3) {
+                result.bookType = .audiobook
+            }
+            AppLogger.warning("enrichBook[\(bookId)] step2 ok: publisher=\(info.publisher ?? "nil")", category: "WeRead")
+        } catch {
+            AppLogger.warning("enrichBook[\(bookId)] step2 failed: \(error)", category: "WeRead")
+        }
+
+        // 3. 获取阅读时长（从书架进度数据）
+        AppLogger.warning("enrichBook[\(bookId)] step3: fetchShelf", category: "WeRead")
+        do {
+            let shelfData = try await fetchShelf()
+            let progressCount = shelfData.bookProgress?.count ?? 0
+            if let progressList = shelfData.bookProgress,
+               let progress = progressList.first(where: { $0.bookId == bookId }) {
+                let totalSeconds = (progress.readingTime ?? 0) + (progress.ttsTime ?? 0)
+                result.readingHours = Double(totalSeconds) / 3600.0
+                AppLogger.warning("enrichBook[\(bookId)] step3 ok: \(totalSeconds)s = \(result.readingHours)h", category: "WeRead")
+            } else {
+                AppLogger.warning("enrichBook[\(bookId)] step3: no progress found in \(progressCount) entries", category: "WeRead")
+            }
+        } catch {
+            AppLogger.warning("enrichBook[\(bookId)] step3 failed: \(error)", category: "WeRead")
+        }
+
+        return result
+    }
+
     /// 获取所有可导入的书籍（合并书架和进度信息）
     func fetchAllBooks() async throws -> [WeReadImportItem] {
         let shelfData = try await fetchShelf()
@@ -289,6 +375,11 @@ actor WeReadService {
                 }
             } else {
                 finishedTime = nil
+            }
+
+            // 诊断日志：dump 已读完书的时间字段
+            if isFinished, let title = book.title, title.contains("金刚经") {
+                AppLogger.warning("[DIAG] \(title) bookId=\(book.bookId) finishReadingTime=\(book.finishReadingTime as Any) progress.finishedDate=\(progress?.finishedDate as Any) progress.updateTime=\(progress?.updateTime as Any) → finishedTime=\(finishedTime as Any)", category: "WeRead")
             }
 
             let item = WeReadImportItem(
@@ -506,6 +597,44 @@ actor WeReadService {
     /// 查找或创建标签（委托给 BookService）
     nonisolated private func findOrCreateTag(name: String, modelContext: ModelContext) throws -> Tag {
         try BookService.findOrCreateTag(name: name, modelContext: modelContext)
+    }
+}
+
+// MARK: - Enrich Result
+
+/// 微信读书图书信息补全结果（统一数据结构）
+struct WeReadEnrichResult {
+    var publisher: String?
+    var isbn: String?
+    var intro: String?
+    var price: Double?
+    var publishTime: String?
+    var bookType: BookType?
+    var readingHours: Double = 0
+
+    /// 将补全结果应用到 Book（只填充空字段，阅读时长只增不减）
+    func applyToBook(_ book: Book) {
+        if (book.publisher == nil || book.publisher!.isEmpty), let p = publisher, !p.isEmpty {
+            book.publisher = p
+        }
+        if (book.isbn == nil || book.isbn!.isEmpty), let i = isbn, !i.isEmpty {
+            book.isbn = i
+        }
+        if (book.bookDescription == nil || book.bookDescription!.isEmpty), let d = intro, !d.isEmpty {
+            book.bookDescription = d
+        }
+        if (book.price == nil || book.price!.isEmpty), let p = price, p > 0, p.isFinite {
+            book.price = "¥\(String(format: "%.2f", p))"
+        }
+        // publishTime 由调用方自行解析为 Date（格式因来源不同而异）
+        // bookType: 只往有声书方向修正，不降级
+        if let type = bookType, type == .audiobook, book.bookType != .audiobook {
+            book.bookType = .audiobook
+        }
+        // 阅读时长只增不减
+        if readingHours > book.wereadReadingHours {
+            book.wereadReadingHours = readingHours
+        }
     }
 }
 

@@ -77,6 +77,7 @@ final class Book {
     // 微信读书关联
     var wereadBookId: String?  // 微信读书 bookId，用于同步匹配
     var wereadProgress: Int = 0  // 微信读书阅读进度 (0-100)
+    var wereadReadingHours: Double = 0  // 微信读书阅读时长（小时）
 
     // 批量补全标记
     var lastEnrichmentDate: Date?  // 上次批量补全的时间，nil 表示从未处理
@@ -134,6 +135,12 @@ final class Book {
     var progress: Double {
         guard totalPages > 0 else { return 0 }
         return Double(currentPage) / Double(totalPages)
+    }
+
+    /// 微信读书阅读时长摘要文本（用于阅读记录区域展示）
+    var readingSummaryText: String? {
+        guard wereadReadingHours > 0 else { return nil }
+        return "微信读书累计 \(String(format: "%.1f", wereadReadingHours)) 小时"
     }
 
     /// 是否需要外部源数据补全（缺出版社/页数/定价/出版日期/简介/作者简介任一）

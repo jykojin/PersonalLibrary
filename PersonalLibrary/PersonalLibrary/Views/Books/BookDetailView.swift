@@ -128,7 +128,6 @@ struct BookDetailView: View {
         }
         .task {
             await loadCover()
-            await fetchWeReadInfoIfNeeded()
         }
     }
 
@@ -284,11 +283,30 @@ struct BookDetailView: View {
                 .font(.subheadline)
             }
 
+            // 微信读书阅读时长 + 完成日期
+            if book.wereadReadingHours > 0 || (book.status == .finished && book.finishedDate != nil) {
+                VStack(alignment: .leading, spacing: 4) {
+                    if let summary = book.readingSummaryText {
+                        Label(summary, systemImage: "clock")
+                            .font(.subheadline)
+                            .foregroundStyle(.blue)
+                    }
+                    if book.status == .finished, let date = book.finishedDate {
+                        Label("读完于 \(date, style: .date)", systemImage: "checkmark.circle")
+                            .font(.subheadline)
+                            .foregroundStyle(.green)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+
             if (book.readingRecords ?? []).isEmpty {
-                Text("还没有阅读记录，开始读书吧！")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .padding(.vertical, 8)
+                if book.wereadReadingHours == 0 {
+                    Text("还没有阅读记录，开始读书吧！")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 8)
+                }
             } else {
                 ForEach((book.readingRecords ?? []).sorted(by: { $0.date > $1.date })) { record in
                     ReadingRecordRow(record: record)
@@ -346,50 +364,6 @@ struct BookDetailView: View {
         }
     }
 
-    // MARK: - WeRead 详情按需补全
-
-    private func fetchWeReadInfoIfNeeded() async {
-        // 只对微信读书导入、缺出版社的书触发
-        guard let bookId = book.wereadBookId,
-              (book.publisher == nil || book.publisher?.isEmpty == true) else {
-            return
-        }
-
-        let service = WeReadService()
-        guard await service.isLoggedIn() else { return }
-
-        do {
-            let info = try await service.fetchBookInfo(bookId: bookId)
-            if let publisher = info.publisher, !publisher.isEmpty {
-                book.publisher = publisher
-            }
-            if let isbn = info.isbn, !isbn.isEmpty, book.isbn == nil {
-                book.isbn = isbn
-            }
-            if let intro = info.intro, !intro.isEmpty, book.bookDescription == nil {
-                book.bookDescription = intro
-            }
-            if let price = info.price, price > 0, book.price == nil {
-                book.price = "¥\(String(format: "%.2f", price))"
-            }
-            if let publishTime = info.publishTime, !publishTime.isEmpty, book.publishDate == nil {
-                let formatter = DateFormatter()
-                for format in ["yyyy-MM-dd", "yyyy-MM", "yyyy"] {
-                    formatter.dateFormat = format
-                    if let date = formatter.date(from: publishTime) {
-                        book.publishDate = date
-                        break
-                    }
-                }
-            }
-            if let type = info.type, (type == 2 || type == 3), book.bookType != .audiobook {
-                book.bookType = .audiobook
-            }
-            try? modelContext.save()
-        } catch {
-            AppLogger.warning("WeRead info fetch failed: \(error)", category: "BookDetail")
-        }
-    }
 }
 
 struct ReadingRecordRow: View {
