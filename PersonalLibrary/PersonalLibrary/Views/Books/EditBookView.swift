@@ -855,7 +855,7 @@ struct CoverWebSearchView: View {
 
             imageResults = results
         } catch {
-            print("[CoverSearch] Bing error: \(error)")
+            AppLogger.warning("Bing error: \(error)", category: "CoverSearch")
         }
     }
 
@@ -904,7 +904,7 @@ struct CoverWebSearchView: View {
 
             imageResults = results
         } catch {
-            print("[CoverSearch] Baidu error: \(error)")
+            AppLogger.warning("Baidu error: \(error)", category: "CoverSearch")
         }
     }
 
@@ -929,7 +929,7 @@ struct CoverWebSearchView: View {
                 dismiss()
             }
         } catch {
-            print("[CoverSearch] Download failed: \(error)")
+            AppLogger.warning("Download failed: \(error)", category: "CoverSearch")
         }
     }
 }

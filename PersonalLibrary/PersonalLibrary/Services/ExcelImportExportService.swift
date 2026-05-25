@@ -53,7 +53,7 @@ actor ExcelImportExportService {
         do {
             xlsxFile = try XLSXFile(data: data)
         } catch {
-            print("[ExcelImport] XLSXFile(data:) failed: \(error)")
+            AppLogger.error("XLSXFile(data:) failed: \(error)", category: "ExcelImport")
             throw ImportError.invalidFormat
         }
         // sharedStrings 可能不存在（某些导出工具使用 inline strings）

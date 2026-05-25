@@ -112,7 +112,7 @@ actor ISBNLookupService {
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
-            print("[ISBNLookup] Douban HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+            AppLogger.debug("Douban HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)", category: "ISBNLookup")
             return nil
         }
 
@@ -162,7 +162,7 @@ actor ISBNLookupService {
         // 豆瓣链接（最终跳转的 URL）
         let doubanURL = response.url?.absoluteString
 
-        print("[ISBNLookup] Douban found: \(title) by \(author)")
+        AppLogger.info("Douban found: \(title) by \(author)", category: "ISBNLookup")
 
         return ISBNLookupResult(
             title: title,
@@ -464,7 +464,7 @@ actor ISBNLookupService {
         let coverURL = extractPattern(#"property="og:image"\s+content="([^"]+)""#, from: html)
             ?? extractPattern(#"content="([^"]+)"\s+property="og:image""#, from: html)
 
-        print("[ISBNLookup] Goodreads found: \(title) by \(authorName)")
+        AppLogger.info("Goodreads found: \(title) by \(authorName)", category: "ISBNLookup")
 
         return ISBNLookupResult(
             title: title,

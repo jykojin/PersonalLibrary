@@ -375,7 +375,7 @@ struct BookDetailView: View {
             }
             try? modelContext.save()
         } catch {
-            print("[BookDetail] WeRead info fetch failed: \(error)")
+            AppLogger.warning("WeRead info fetch failed: \(error)", category: "BookDetail")
         }
     }
 }

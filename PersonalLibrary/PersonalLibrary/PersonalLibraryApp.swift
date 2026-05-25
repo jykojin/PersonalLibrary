@@ -53,10 +53,10 @@ struct PersonalLibraryApp: App {
             }
             if migrated > 0 {
                 try context.save()
-                print("[Migration] 已将 \(migrated) 本书的 addSource 从 '导入' 迁移为 '文件导入'")
+                AppLogger.info("已将 \(migrated) 本书的 addSource 从 '导入' 迁移为 '文件导入'", category: "Migration")
             }
         } catch {
-            print("[Migration] addSource 迁移失败: \(error)")
+            AppLogger.error("addSource 迁移失败: \(error)", category: "Migration")
         }
 
         UserDefaults.standard.set(true, forKey: migrationKey)
@@ -109,9 +109,9 @@ struct PersonalLibraryApp: App {
                 }
             }
             try context.save()
-            print("[Migration] 已为 \(wereadBooks.count) 本微信读书书籍补上书架和标签")
+            AppLogger.info("已为 \(wereadBooks.count) 本微信读书书籍补上书架和标签", category: "Migration")
         } catch {
-            print("[Migration] 微信读书书架迁移失败: \(error)")
+            AppLogger.error("微信读书书架迁移失败: \(error)", category: "Migration")
         }
 
         UserDefaults.standard.set(true, forKey: migrationKey)
@@ -128,7 +128,7 @@ struct PersonalLibraryApp: App {
         Task {
             let result = await syncService.sync(modelContext: context)
             if result.hasChanges {
-                print("[WeReadSync] 自动同步完成: \(result.summary)")
+                AppLogger.info("自动同步完成: \(result.summary)", category: "WeReadSync")
             }
         }
     }
@@ -169,7 +169,7 @@ struct PersonalLibraryApp: App {
         }
 
         guard !tasks.isEmpty else { return }
-        print("[BackgroundCover] 开始补全 \(tasks.count) 本书的封面")
+        AppLogger.info("开始补全 \(tasks.count) 本书的封面", category: "BackgroundCover")
 
         let container = modelContainer
 
@@ -204,7 +204,7 @@ struct PersonalLibraryApp: App {
 
             if fetched > 0 {
                 try? bgContext.save()
-                print("[BackgroundCover] 后台补全完成：\(fetched)/\(tasks.count) 本")
+                AppLogger.info("后台补全完成：\(fetched)/\(tasks.count) 本", category: "BackgroundCover")
             }
         }.value
     }

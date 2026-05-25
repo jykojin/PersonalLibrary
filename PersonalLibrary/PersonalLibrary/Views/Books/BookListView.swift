@@ -1,8 +1,5 @@
 import SwiftUI
 import SwiftData
-import os.log
-
-private let perfLog = Logger(subsystem: "com.example.PersonalLibrary", category: "ListPerf")
 
 // MARK: - 搜索范围
 
@@ -246,8 +243,7 @@ struct BookListView: View {
         let t0 = CFAbsoluteTimeGetCurrent()
         defer {
             let ms = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
-            perfLog.info("recomputeFilteredBooks: \(ms)ms count:\(cachedFilteredBooks.count)")
-            FileLogger.shared.log("recompute: \(ms)ms count:\(cachedFilteredBooks.count) shelf:\(selectedShelf)")
+            AppLogger.perf("recompute: \(ms)ms count:\(cachedFilteredBooks.count) shelf:\(selectedShelf)", category: "ListPerf")
         }
         if let advResults = advancedSearchResults {
             cachedFilteredBooks = advResults
@@ -548,8 +544,7 @@ struct BookRowView: View {
             let shelfMs = Int((t1 - t0) * 1000)
             let tagsMs = Int((t2 - t1) * 1000)
             if shelfMs > 1 || tagsMs > 1 {
-                perfLog.warning("ROW FAULT \(book.title) | shelf:\(shelfMs)ms tags:\(tagsMs)ms")
-                FileLogger.shared.log("ROW FAULT \(book.title) | shelf:\(shelfMs)ms tags:\(tagsMs)ms")
+                AppLogger.perf("ROW FAULT \(book.title) | shelf:\(shelfMs)ms tags:\(tagsMs)ms", category: "ListPerf")
             }
             loadCoverOnAppear()
         }
@@ -655,8 +650,7 @@ struct BookRowView: View {
                     return UIImage(data: data)
                 }.value
                 let t1 = CFAbsoluteTimeGetCurrent()
-                perfLog.debug("cover DB \(bookTitle) | total:\(Int((t1-t0)*1000))ms")
-                FileLogger.shared.log("cover DB \(bookTitle) | total:\(Int((t1-t0)*1000))ms")
+                AppLogger.perf("cover DB \(bookTitle) | total:\(Int((t1-t0)*1000))ms", category: "ListPerf")
                 guard let img, !Task.isCancelled else { return }
                 CoverImageCache.shared.set(img, for: cacheKey)
                 coverImage = img
@@ -676,8 +670,7 @@ struct BookRowView: View {
                 author: author
             )
             let tNet1 = CFAbsoluteTimeGetCurrent()
-            perfLog.debug("cover NET \(bookTitle) | time:\(Int((tNet1-tNet0)*1000))ms got:\(data?.count ?? 0)")
-            FileLogger.shared.log("cover NET \(bookTitle) | time:\(Int((tNet1-tNet0)*1000))ms got:\(data?.count ?? 0)")
+            AppLogger.perf("cover NET \(bookTitle) | time:\(Int((tNet1-tNet0)*1000))ms got:\(data?.count ?? 0)", category: "ListPerf")
 
             guard let data, !Task.isCancelled else { return }
             let img = await Task.detached(priority: .utility) {

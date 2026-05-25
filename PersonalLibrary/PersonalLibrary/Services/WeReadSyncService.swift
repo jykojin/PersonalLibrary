@@ -91,7 +91,7 @@ actor WeReadSyncService {
         do {
             _ = try await weReadService.renewCookie()
         } catch {
-            print("[WeReadSync] Cookie renewal error: \(error), trying anyway")
+            AppLogger.warning("Cookie renewal error: \(error), trying anyway", category: "WeReadSync")
         }
 
         // 3. 拉取微信读书书架
@@ -241,7 +241,7 @@ actor WeReadSyncService {
                 do {
                     try await MainActor.run { try modelContext.save() }
                 } catch {
-                    print("[WeReadSync] 增量保存失败: \(error)")
+                    AppLogger.error("增量保存失败: \(error)", category: "WeReadSync")
                 }
             }
         }
@@ -344,7 +344,7 @@ actor WeReadSyncService {
                             }
                         }
                     } catch {
-                        print("[WeReadSync] 拉取书籍详情失败 (\(book.title)): \(error)")
+                        AppLogger.warning("拉取书籍详情失败 (\(book.title)): \(error)", category: "WeReadSync")
                     }
                 }
                 await MainActor.run { try? bgContext.save() }
@@ -367,7 +367,7 @@ actor WeReadSyncService {
                             await MainActor.run { book.notes = notesText }
                         }
                     } catch {
-                        print("[WeReadSync] 拉取划线失败 (\(book.title)): \(error)")
+                        AppLogger.warning("拉取划线失败 (\(book.title)): \(error)", category: "WeReadSync")
                     }
                 }
                 await MainActor.run { try? bgContext.save() }
@@ -399,11 +399,11 @@ actor WeReadSyncService {
         }
 
         guard !booksNeedEnrich.isEmpty else {
-            print("[WeReadSync] 无需补全的书籍")
+            AppLogger.debug("无需补全的书籍", category: "WeReadSync")
             return
         }
 
-        print("[WeReadSync] 开始批量补全 \(booksNeedEnrich.count) 本书")
+        AppLogger.info("开始批量补全 \(booksNeedEnrich.count) 本书", category: "WeReadSync")
 
         let lookupService = ISBNLookupService()
         let doubanFetcher = DoubanDescriptionFetcher()
@@ -424,10 +424,10 @@ actor WeReadSyncService {
 
             // 每批结束统一保存
             await MainActor.run { try? context.save() }
-            print("[WeReadSync] 补全进度: \(batchEnd)/\(booksNeedEnrich.count)")
+            AppLogger.debug("补全进度: \(batchEnd)/\(booksNeedEnrich.count)", category: "WeReadSync")
         }
 
-        print("[WeReadSync] 批量补全完成")
+        AppLogger.info("批量补全完成", category: "WeReadSync")
     }
 
     /// 补全单本书的缺失信息

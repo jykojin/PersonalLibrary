@@ -167,6 +167,9 @@ struct ImportExportView: View {
                 NavigationLink(destination: ImportHistoryView()) {
                     Label("导入/添加历史", systemImage: "clock.arrow.circlepath")
                 }
+                NavigationLink(destination: LogViewerView()) {
+                    Label("应用日志", systemImage: "doc.text.magnifyingglass")
+                }
             }
 
             // MARK: - 存储位置

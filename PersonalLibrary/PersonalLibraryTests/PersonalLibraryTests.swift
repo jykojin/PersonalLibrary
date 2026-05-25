@@ -2377,3 +2377,58 @@ struct BackgroundContextPerformanceTests {
         #expect(tags.count == 2)
     }
 }
+
+// MARK: - AppLogger Tests
+
+@Suite("AppLogger Tests")
+struct AppLoggerTests {
+
+    @Test("AppLogger.Level 比较顺序正确")
+    func levelOrdering() {
+        #expect(AppLogger.Level.debug < .info)
+        #expect(AppLogger.Level.info < .warning)
+        #expect(AppLogger.Level.warning < .error)
+    }
+
+    @Test("AppLogger.Level prefix 正确")
+    func levelPrefix() {
+        #expect(AppLogger.Level.debug.prefix == "DEBUG")
+        #expect(AppLogger.Level.info.prefix == "INFO")
+        #expect(AppLogger.Level.warning.prefix == "WARN")
+        #expect(AppLogger.Level.error.prefix == "ERROR")
+    }
+
+    @Test("AppLogger 各级别方法不崩溃")
+    func logAllLevels() {
+        // 验证调用不崩溃
+        AppLogger.debug("test debug", category: "Test")
+        AppLogger.info("test info", category: "Test")
+        AppLogger.warning("test warning", category: "Test")
+        AppLogger.error("test error", category: "Test")
+        AppLogger.perf("test perf 100ms", category: "Test")
+    }
+
+    @Test("FileLogger rotation 参数合理")
+    func fileLoggerConfig() {
+        // FileLogger.shared 应该能正常初始化
+        let files = FileLogger.shared.logFiles
+        // 启动时至少有 app.log
+        #expect(files.count >= 1)
+    }
+
+    @Test("FileLogger 写入后可读取内容")
+    func fileLoggerWriteAndRead() {
+        let marker = "TEST_MARKER_\(UUID().uuidString)"
+        FileLogger.shared.log(marker)
+        // 等待异步写入
+        Thread.sleep(forTimeInterval: 0.1)
+        let content = FileLogger.shared.mergedContent()
+        #expect(content.contains(marker))
+    }
+
+    @Test("FileLogger totalSize 返回正数")
+    func fileLoggerTotalSize() {
+        // 至少有 launch separator
+        #expect(FileLogger.shared.totalSize > 0)
+    }
+}

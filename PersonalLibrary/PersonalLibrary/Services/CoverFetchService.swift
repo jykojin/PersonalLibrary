@@ -123,20 +123,20 @@ actor CoverFetchService {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else {
-                print("[CoverFetch] Douban HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+                AppLogger.debug("Douban HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)", category: "CoverFetch")
                 return nil
             }
 
             guard let html = String(data: data, encoding: .utf8) else { return nil }
             guard let imageURL = parseCoverImageURL(from: html) else {
-                print("[CoverFetch] No cover URL found in douban page")
+                AppLogger.debug("No cover URL found in douban page", category: "CoverFetch")
                 return nil
             }
 
-            print("[CoverFetch] Found cover URL: \(imageURL)")
+            AppLogger.debug("Found cover URL: \(imageURL)", category: "CoverFetch")
             return await downloadImage(from: imageURL)
         } catch {
-            print("[CoverFetch] Error fetching douban page: \(error)")
+            AppLogger.warning("Error fetching douban page: \(error)", category: "CoverFetch")
             return nil
         }
     }
@@ -263,10 +263,10 @@ actor CoverFetchService {
             // 将小图 URL (/s/) 替换为大图 (/l/)
             let largePicURL = picURL.replacingOccurrences(of: "/view/subject/s/", with: "/view/subject/l/")
 
-            print("[CoverFetch] Douban search found cover: \(largePicURL)")
+            AppLogger.debug("Douban search found cover: \(largePicURL)", category: "CoverFetch")
             return await downloadImage(from: largePicURL)
         } catch {
-            print("[CoverFetch] Douban search error: \(error)")
+            AppLogger.warning("Douban search error: \(error)", category: "CoverFetch")
             return nil
         }
     }
@@ -312,7 +312,7 @@ actor CoverFetchService {
             }
             return data
         } catch {
-            print("[CoverFetch] Direct download failed: \(error)")
+            AppLogger.warning("Direct download failed: \(error)", category: "CoverFetch")
             return nil
         }
     }
@@ -376,17 +376,17 @@ actor CoverFetchService {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else {
-                print("[CoverFetch] Image download HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+                AppLogger.debug("Image download HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)", category: "CoverFetch")
                 return nil
             }
             // 防止超大响应导致内存耗尽
             guard data.count <= Self.maxImageSize else {
-                print("[CoverFetch] Image too large: \(data.count) bytes, skipping")
+                AppLogger.warning("Image too large: \(data.count) bytes, skipping", category: "CoverFetch")
                 return nil
             }
             return data
         } catch {
-            print("[CoverFetch] Download failed: \(error)")
+            AppLogger.warning("Download failed: \(error)", category: "CoverFetch")
             return nil
         }
     }

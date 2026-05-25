@@ -12,6 +12,7 @@
 		1E1EC4207C8894113677EC0D /* FileLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E3F97857DF70CD057FA821D /* FileLogger.swift */; };
 		2386F85B97813D45A1DDD932 /* BarcodeScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29B551E5CF1C3716F351163F /* BarcodeScannerView.swift */; };
 		38ADE73E0227DB03E950A0E6 /* BackupService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89CB1AAC1ECF1D2707E175DA /* BackupService.swift */; };
+		38D77722B89BE2728F8CD6D4 /* LogViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3E7F069DC0B427109F37150 /* LogViewerView.swift */; };
 		3BFDD4CE26D896FBF8A4BEAC /* WeReadLoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88640782F12C94E8F4CD7B87 /* WeReadLoginView.swift */; };
 		4C465925427AA6A4D744FA06 /* BookDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 527950641E4AC110D1BE65C5 /* BookDetailView.swift */; };
 		4DC5326C64DD0B9213C839E9 /* SelectableBookRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76F823AFBF5BF4E3B9F1EA2B /* SelectableBookRow.swift */; };
@@ -27,6 +28,7 @@
 		6C8AE9DF37C4A008A7ECCE67 /* PersonalLibraryUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A1027FC1EC39B3B063C02B6 /* PersonalLibraryUITests.swift */; };
 		702DA6722866A49A53DE202F /* ReadingProgressView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8D4589CBB7976795276F23D /* ReadingProgressView.swift */; };
 		765B208CE0801D80C7E654C9 /* WeReadImportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 843A18820B905386EE81983F /* WeReadImportView.swift */; };
+		7741253C1B0746B9F6EC1344 /* AppLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F0A0333C6DF63A521270EF4 /* AppLogger.swift */; };
 		7E530469E88E657A6DF3E936 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D3F152D29BC867FAF1D8381 /* KeychainService.swift */; };
 		8009E568951057DFB76F26E4 /* AuthorPublisherMaintenanceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D53D9AD5D55B69FFEE275CA /* AuthorPublisherMaintenanceView.swift */; };
 		8DBF25BCFE9473223BA371E0 /* FilteredBooksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDEC24B8D2A8205B1888FC19 /* FilteredBooksView.swift */; };
@@ -84,6 +86,7 @@
 		4D2E3C7560B14260793E3C54 /* ExcelImportExportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExcelImportExportService.swift; sourceTree = "<group>"; };
 		4E3F97857DF70CD057FA821D /* FileLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileLogger.swift; sourceTree = "<group>"; };
 		527950641E4AC110D1BE65C5 /* BookDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookDetailView.swift; sourceTree = "<group>"; };
+		5F0A0333C6DF63A521270EF4 /* AppLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLogger.swift; sourceTree = "<group>"; };
 		5F1F4735287F12B60CE6CEE6 /* ReadingRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingRecord.swift; sourceTree = "<group>"; };
 		705F4B59E1366B9C933D78BE /* WeReadSyncView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeReadSyncView.swift; sourceTree = "<group>"; };
 		76F823AFBF5BF4E3B9F1EA2B /* SelectableBookRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectableBookRow.swift; sourceTree = "<group>"; };
@@ -118,6 +121,7 @@
 		DD64B2DD2CB3C57DFE3DE2FB /* BookService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookService.swift; sourceTree = "<group>"; };
 		E8094BF7B50E8C310346BD62 /* EditBookView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditBookView.swift; sourceTree = "<group>"; };
 		E8D4589CBB7976795276F23D /* ReadingProgressView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingProgressView.swift; sourceTree = "<group>"; };
+		F3E7F069DC0B427109F37150 /* LogViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogViewerView.swift; sourceTree = "<group>"; };
 		F77EAA99251DD746575AEE56 /* CoverFetchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoverFetchService.swift; sourceTree = "<group>"; };
 		F9FC0BCC1F18C4E124299ADE /* ProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileView.swift; sourceTree = "<group>"; };
 		FD0C4ECB47E8B8E9F4E601D5 /* BookListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookListView.swift; sourceTree = "<group>"; };
@@ -226,6 +230,7 @@
 		6CE04CCCA1F942AF034B819A /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				5F0A0333C6DF63A521270EF4 /* AppLogger.swift */,
 				AD70F02DDA17AEF6E793FE28 /* AuthService.swift */,
 				89CB1AAC1ECF1D2707E175DA /* BackupService.swift */,
 				DD64B2DD2CB3C57DFE3DE2FB /* BookService.swift */,
@@ -296,6 +301,7 @@
 				1D53D9AD5D55B69FFEE275CA /* AuthorPublisherMaintenanceView.swift */,
 				DB9498C95CCCDC9A51B5EECF /* ImportExportView.swift */,
 				A95E2C460974691EB8538BB5 /* ImportHistoryView.swift */,
+				F3E7F069DC0B427109F37150 /* LogViewerView.swift */,
 				F9FC0BCC1F18C4E124299ADE /* ProfileView.swift */,
 			);
 			path = Settings;
@@ -447,6 +453,7 @@
 				E7E73C9ED56AB64680A0DBA6 /* AddBookView.swift in Sources */,
 				B46C376CEDC2632F7B5943EB /* AddReadingRecordView.swift in Sources */,
 				9C1171958691DE41B44C355A /* AdvancedSearchView.swift in Sources */,
+				7741253C1B0746B9F6EC1344 /* AppLogger.swift in Sources */,
 				E6E6169E7D9AD9BD37E5B956 /* AuthService.swift in Sources */,
 				8009E568951057DFB76F26E4 /* AuthorPublisherMaintenanceView.swift in Sources */,
 				38ADE73E0227DB03E950A0E6 /* BackupService.swift in Sources */,
@@ -470,6 +477,7 @@
 				6AD293434A6CFCA5CA49D39E /* ImportHistoryView.swift in Sources */,
 				B156F621F880FF7035F11EB6 /* ImportRecord.swift in Sources */,
 				7E530469E88E657A6DF3E936 /* KeychainService.swift in Sources */,
+				38D77722B89BE2728F8CD6D4 /* LogViewerView.swift in Sources */,
 				5C9F6BE6FDA2C3F5F75966E3 /* PersonalLibraryApp.swift in Sources */,
 				686546E07C7991552DF4424B /* ProfileView.swift in Sources */,
 				702DA6722866A49A53DE202F /* ReadingProgressView.swift in Sources */,

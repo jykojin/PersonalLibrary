@@ -1,8 +1,5 @@
 import SwiftUI
 import SwiftData
-import os.log
-
-private let batchLog = Logger(subsystem: "com.example.PersonalLibrary", category: "BatchEnrich")
 
 /// 数据维护视图
 /// 四个 Tab：作者、出版社、标签、批量工具
@@ -630,7 +627,7 @@ struct DataMaintenanceView: View {
                     needsAuthorDesc: (book.authorDescription ?? "").isEmpty
                 )
                 let tFill1 = CFAbsoluteTimeGetCurrent()
-                FileLogger.shared.log("paper[\(index+1)/\(totalCount)] \(book.title) | smartFill:\(Int((tFill1-tFill0)*1000))ms filled:\(result.hasAnyFill)")
+                AppLogger.perf("paper[\(index+1)/\(totalCount)] \(book.title) | smartFill:\(Int((tFill1-tFill0)*1000))ms filled:\(result.hasAnyFill)", category: "BatchEnrich")
 
                 if await MainActor.run(body: { self.batchCancelled }) { break }
 
@@ -656,7 +653,7 @@ struct DataMaintenanceView: View {
                     let tSave0 = CFAbsoluteTimeGetCurrent()
                     try? bgContext.save()
                     let tSave1 = CFAbsoluteTimeGetCurrent()
-                    FileLogger.shared.log("paper SAVE batch \(index+1) | \(Int((tSave1-tSave0)*1000))ms")
+                    AppLogger.perf("paper SAVE batch \(index+1) | \(Int((tSave1-tSave0)*1000))ms", category: "BatchEnrich")
                 }
 
                 // 限速：5 秒间隔，降低 CPU/网络负载
@@ -762,7 +759,7 @@ struct DataMaintenanceView: View {
                     needsAuthorDesc: (book.authorDescription ?? "").isEmpty
                 )
                 let tFill1 = CFAbsoluteTimeGetCurrent()
-                FileLogger.shared.log("weread[\(index+1)/\(totalCount)] \(book.title) | smartFill:\(Int((tFill1-tFill0)*1000))ms filled:\(result.hasAnyFill)")
+                AppLogger.perf("weread[\(index+1)/\(totalCount)] \(book.title) | smartFill:\(Int((tFill1-tFill0)*1000))ms filled:\(result.hasAnyFill)", category: "BatchEnrich")
 
                 if await MainActor.run(body: { self.batchCancelled }) { break }
 
@@ -788,7 +785,7 @@ struct DataMaintenanceView: View {
                     let tSave0 = CFAbsoluteTimeGetCurrent()
                     try? bgContext.save()
                     let tSave1 = CFAbsoluteTimeGetCurrent()
-                    FileLogger.shared.log("weread SAVE batch \(index+1) | \(Int((tSave1-tSave0)*1000))ms")
+                    AppLogger.perf("weread SAVE batch \(index+1) | \(Int((tSave1-tSave0)*1000))ms", category: "BatchEnrich")
                 }
 
                 // 限速：5 秒
