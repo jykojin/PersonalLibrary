@@ -232,22 +232,37 @@ struct BookshelfListView: View {
 
     private func deleteShelf(withBooks: Bool) {
         guard let shelf = shelfToDelete else { return }
-        if withBooks {
-            if let books = shelf.books {
-                for book in books {
-                    modelContext.delete(book)
-                }
-            }
-        } else {
-            if let books = shelf.books {
-                for book in books {
-                    book.bookshelf = nil
-                }
-            }
-        }
-        modelContext.delete(shelf)
-        try? modelContext.save()
+        let shelfID = shelf.persistentModelID
+        let bookIDs = (shelf.books ?? []).map(\.persistentModelID)
+        let container = modelContext.container
+
         shelfToDelete = nil
+
+        Task {
+            await Task.detached(priority: .userInitiated) {
+                let bgContext = ModelContext(container)
+                bgContext.autosaveEnabled = false
+
+                if withBooks {
+                    for id in bookIDs {
+                        if let book = bgContext.model(for: id) as? Book {
+                            bgContext.delete(book)
+                        }
+                    }
+                } else {
+                    for id in bookIDs {
+                        if let book = bgContext.model(for: id) as? Book {
+                            book.bookshelf = nil
+                        }
+                    }
+                }
+
+                if let shelfObj = bgContext.model(for: shelfID) as? Bookshelf {
+                    bgContext.delete(shelfObj)
+                }
+                try? bgContext.save()
+            }.value
+        }
     }
 }
 
@@ -476,17 +491,35 @@ struct BookshelfDetailView: View {
     }
 
     private func deleteShelf(withBooks: Bool) {
-        if withBooks {
-            for book in books {
-                modelContext.delete(book)
-            }
-        } else {
-            for book in books {
-                book.bookshelf = nil
-            }
+        let shelfID = shelf.persistentModelID
+        let bookIDs = books.map(\.persistentModelID)
+        let container = modelContext.container
+
+        Task {
+            await Task.detached(priority: .userInitiated) {
+                let bgContext = ModelContext(container)
+                bgContext.autosaveEnabled = false
+
+                if withBooks {
+                    for id in bookIDs {
+                        if let book = bgContext.model(for: id) as? Book {
+                            bgContext.delete(book)
+                        }
+                    }
+                } else {
+                    for id in bookIDs {
+                        if let book = bgContext.model(for: id) as? Book {
+                            book.bookshelf = nil
+                        }
+                    }
+                }
+
+                if let shelfObj = bgContext.model(for: shelfID) as? Bookshelf {
+                    bgContext.delete(shelfObj)
+                }
+                try? bgContext.save()
+            }.value
         }
-        modelContext.delete(shelf)
-        try? modelContext.save()
     }
 }
 

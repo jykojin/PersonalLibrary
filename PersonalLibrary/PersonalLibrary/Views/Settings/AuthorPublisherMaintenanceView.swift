@@ -374,53 +374,70 @@ struct DataMaintenanceView: View {
         let trimmedNew = newName.trimmingCharacters(in: .whitespaces)
         guard !trimmedNew.isEmpty, trimmedNew != oldName else { return }
 
-        var updatedCount = 0
-
-        if selectedTab == 0 {
-            for book in allBooks {
-                if book.author == oldName {
-                    book.author = trimmedNew
-                    updatedCount += 1
-                } else if book.author.contains(oldName) {
-                    let parts = book.author.components(separatedBy: ", ")
-                    let newParts = parts.map { $0 == oldName ? trimmedNew : $0 }
-                    let joined = newParts.joined(separator: ", ")
-                    if joined != book.author {
-                        book.author = joined
-                        updatedCount += 1
-                    }
-                }
-            }
-        } else if selectedTab == 1 {
-            for book in allBooks {
-                if book.publisher == oldName {
-                    book.publisher = trimmedNew
-                    updatedCount += 1
-                } else if let p = book.publisher, p.contains(oldName) {
-                    let parts = p.components(separatedBy: ", ")
-                    let newParts = parts.map { $0 == oldName ? trimmedNew : $0 }
-                    let joined = newParts.joined(separator: ", ")
-                    if joined != p {
-                        book.publisher = joined
-                        updatedCount += 1
-                    }
-                }
-            }
-        } else {
-            // 标签重命名
-            if let tag = allTags.first(where: { $0.name == oldName }) {
-                tag.name = trimmedNew
-                updatedCount = (tag.books ?? []).count
-            }
-        }
-
-        if updatedCount > 0 || selectedTab == 2 {
-            try? modelContext.save()
-        }
+        let tab = selectedTab
+        let container = modelContext.container
+        let bookIDs = allBooks.map(\.persistentModelID)
+        let tagIDs = allTags.map(\.persistentModelID)
 
         editingItem = nil
-        resultMessage = "已将「\(oldName)」改为「\(trimmedNew)」，更新了 \(updatedCount) 本书"
-        showingResult = true
+
+        Task {
+            let updatedCount = await Task.detached(priority: .utility) {
+                let bgContext = ModelContext(container)
+                bgContext.autosaveEnabled = false
+                var count = 0
+
+                if tab == 0 {
+                    for id in bookIDs {
+                        guard let book = bgContext.model(for: id) as? Book else { continue }
+                        if book.author == oldName {
+                            book.author = trimmedNew
+                            count += 1
+                        } else if book.author.contains(oldName) {
+                            let parts = book.author.components(separatedBy: ", ")
+                            let newParts = parts.map { $0 == oldName ? trimmedNew : $0 }
+                            let joined = newParts.joined(separator: ", ")
+                            if joined != book.author {
+                                book.author = joined
+                                count += 1
+                            }
+                        }
+                    }
+                } else if tab == 1 {
+                    for id in bookIDs {
+                        guard let book = bgContext.model(for: id) as? Book else { continue }
+                        if book.publisher == oldName {
+                            book.publisher = trimmedNew
+                            count += 1
+                        } else if let p = book.publisher, p.contains(oldName) {
+                            let parts = p.components(separatedBy: ", ")
+                            let newParts = parts.map { $0 == oldName ? trimmedNew : $0 }
+                            let joined = newParts.joined(separator: ", ")
+                            if joined != p {
+                                book.publisher = joined
+                                count += 1
+                            }
+                        }
+                    }
+                } else {
+                    // 标签重命名
+                    for id in tagIDs {
+                        guard let tag = bgContext.model(for: id) as? Tag else { continue }
+                        if tag.name == oldName {
+                            tag.name = trimmedNew
+                            count = (tag.books ?? []).count
+                            break
+                        }
+                    }
+                }
+
+                if count > 0 { try? bgContext.save() }
+                return count
+            }.value
+
+            resultMessage = "已将「\(oldName)」改为「\(trimmedNew)」，更新了 \(updatedCount) 本书"
+            showingResult = true
+        }
     }
 
     private func deleteTag(named name: String) {

@@ -148,41 +148,64 @@ struct PersonalLibraryApp: App {
             return
         }
 
-        // 筛选没有封面但有 URL 或有 ISBN/豆瓣链接的书
-        let booksNeedingCover = allBooks.filter { book in
-            !book.hasCoverData && !book.isArchived &&
-            (book.coverImageURL != nil || book.isbn != nil || book.doubanURL != nil)
+        // 在主线程收集需要补全的书的 ID 和元数据（只读标量，不触发 externalStorage）
+        struct CoverTask: Sendable {
+            let id: PersistentIdentifier
+            let coverURL: String?
+            let isbn: String?
+            let doubanURL: String?
+            let title: String
+            let author: String
         }
 
-        guard !booksNeedingCover.isEmpty else { return }
-        print("[BackgroundCover] 开始补全 \(booksNeedingCover.count) 本书的封面")
+        let tasks = allBooks.compactMap { book -> CoverTask? in
+            guard !book.hasCoverData && !book.isArchived &&
+                  (book.coverImageURL != nil || book.isbn != nil || book.doubanURL != nil) else {
+                return nil
+            }
+            return CoverTask(id: book.persistentModelID, coverURL: book.coverImageURL,
+                             isbn: book.isbn, doubanURL: book.doubanURL,
+                             title: book.title, author: book.author)
+        }
 
-        var fetched = 0
-        for book in booksNeedingCover {
-            // 每本间隔 2s，降低对豆瓣 API 的压力
-            try? await Task.sleep(for: .seconds(2))
+        guard !tasks.isEmpty else { return }
+        print("[BackgroundCover] 开始补全 \(tasks.count) 本书的封面")
 
-            let data = await CoverFetchService.shared.fetchCoverThrottled(
-                coverImageURL: book.coverImageURL,
-                isbn: book.isbn,
-                doubanURL: book.doubanURL,
-                title: book.title,
-                author: book.author
-            )
+        let container = modelContainer
 
-            if let data, data.count > 100 {
-                book.coverImageData = data
-                fetched += 1
-                // 每补全 10 本保存一次
-                if fetched % 10 == 0 {
-                    try? context.save()
+        // 全部在后台线程执行：网络下载 + externalStorage 写入 + save
+        await Task.detached(priority: .utility) {
+            let bgContext = ModelContext(container)
+            bgContext.autosaveEnabled = false
+            var fetched = 0
+
+            for task in tasks {
+                try? await Task.sleep(for: .seconds(2))
+
+                let data = await CoverFetchService.shared.fetchCoverThrottled(
+                    coverImageURL: task.coverURL,
+                    isbn: task.isbn,
+                    doubanURL: task.doubanURL,
+                    title: task.title,
+                    author: task.author
+                )
+
+                if let data, data.count > 100 {
+                    if let book = bgContext.model(for: task.id) as? Book {
+                        book.coverImageData = data
+                        fetched += 1
+                        // 每 20 本保存一次（降低 @Query 刷新频率）
+                        if fetched % 20 == 0 {
+                            try? bgContext.save()
+                        }
+                    }
                 }
             }
-        }
 
-        if fetched > 0 {
-            try? context.save()
-            print("[BackgroundCover] 后台补全完成：\(fetched)/\(booksNeedingCover.count) 本")
-        }
+            if fetched > 0 {
+                try? bgContext.save()
+                print("[BackgroundCover] 后台补全完成：\(fetched)/\(tasks.count) 本")
+            }
+        }.value
     }
 }

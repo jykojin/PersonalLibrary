@@ -819,24 +819,47 @@ struct BatchTagView: View {
     }
 
     private func applyTags() {
-        for book in books {
-            var bookTags = book.tags ?? []
-            for tagName in selectedTags {
-                if !bookTags.contains(where: { $0.name == tagName }) {
-                    if let existing = existingTags.first(where: { $0.name == tagName }) {
-                        bookTags.append(existing)
-                    } else {
-                        let newTag = Tag(name: tagName)
-                        modelContext.insert(newTag)
-                        bookTags.append(newTag)
-                    }
-                }
-            }
-            book.tags = bookTags
-        }
-        try? modelContext.save()
+        let container = modelContext.container
+        let bookIDs = books.map(\.persistentModelID)
+        let tagNames = Array(selectedTags)
+
         dismiss()
-        onDone()
+
+        Task {
+            await Task.detached(priority: .userInitiated) {
+                let bgContext = ModelContext(container)
+                bgContext.autosaveEnabled = false
+
+                // 获取或创建标签
+                var tagMap: [String: Tag] = [:]
+                let allTags = (try? bgContext.fetch(FetchDescriptor<Tag>())) ?? []
+                for tag in allTags {
+                    tagMap[tag.name] = tag
+                }
+                for name in tagNames where tagMap[name] == nil {
+                    let newTag = Tag(name: name)
+                    bgContext.insert(newTag)
+                    tagMap[name] = newTag
+                }
+
+                // 给每本书打标签
+                for id in bookIDs {
+                    guard let book = bgContext.model(for: id) as? Book else { continue }
+                    var bookTags = book.tags ?? []
+                    for name in tagNames {
+                        if !bookTags.contains(where: { $0.name == name }),
+                           let tag = tagMap[name] {
+                            bookTags.append(tag)
+                        }
+                    }
+                    book.tags = bookTags
+                }
+
+                try? bgContext.save()
+            }.value
+
+            await MainActor.run { onDone() }
+        }
     }
 }
 
