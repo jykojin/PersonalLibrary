@@ -700,6 +700,7 @@ struct DataMaintenanceView: View {
 
         isBatchRunning = false
         batchTask = nil
+        batchCancelled = false
 
         if wasCancelled {
             cleanResultMessage = "已停止。已补全 \(successCount)/\(processedCount) 本（共 \(totalCount) 本待处理）"
