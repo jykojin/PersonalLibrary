@@ -37,9 +37,7 @@ struct DataMaintenanceView: View {
     @State private var batchStatusText: String = ""
     @State private var isBatchRunning = false
     @State private var batchTask: Task<Void, Never>?
-    @State private var activeBatchType: BatchType = .paper
     @State private var batchCancelled = false  // 手动取消标志（跨 Task.detached）
-    private enum BatchType { case paper, weread }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -126,60 +124,32 @@ struct DataMaintenanceView: View {
 
             Section {
                 Button {
-                    if isBatchRunning && activeBatchType == .paper {
+                    if isBatchRunning {
                         batchCancelled = true
                         batchTask?.cancel()
                         batchStatusText = "正在停止…"
                     } else {
-                        activeBatchType = .paper
                         batchCancelled = false
                         batchTask = Task { await batchEnrichPaperBooks() }
                     }
                 } label: {
                     HStack {
-                        let isActive = isBatchRunning && activeBatchType == .paper
                         Label(
-                            isActive ? (batchCancelled ? "正在停止…" : "停止补全") : "批量补全纸质书信息",
-                            systemImage: isActive ? "stop.circle" : "book.closed"
+                            isBatchRunning ? (batchCancelled ? "正在停止…" : "停止补全") : "批量补全纸质书信息",
+                            systemImage: isBatchRunning ? "stop.circle" : "book.closed"
                         )
-                        .foregroundStyle(isActive ? .red : .accentColor)
+                        .foregroundStyle(isBatchRunning ? .red : .accentColor)
                         Spacer()
-                        if isActive {
+                        if isBatchRunning {
                             ProgressView().controlSize(.small)
                         }
                     }
                 }
-                .disabled(isCleaning || (isBatchRunning && activeBatchType != .paper) || batchCancelled)
-
-                Button {
-                    if isBatchRunning && activeBatchType == .weread {
-                        batchCancelled = true
-                        batchTask?.cancel()
-                        batchStatusText = "正在停止…"
-                    } else {
-                        activeBatchType = .weread
-                        batchCancelled = false
-                        batchTask = Task { await batchEnrichWeReadBooks() }
-                    }
-                } label: {
-                    HStack {
-                        let isActive = isBatchRunning && activeBatchType == .weread
-                        Label(
-                            isActive ? (batchCancelled ? "正在停止…" : "停止补全") : "批量补全微信读书图书信息",
-                            systemImage: isActive ? "stop.circle" : "headphones"
-                        )
-                        .foregroundStyle(isActive ? .red : .accentColor)
-                        Spacer()
-                        if isActive {
-                            ProgressView().controlSize(.small)
-                        }
-                    }
-                }
-                .disabled(isCleaning || (isBatchRunning && activeBatchType != .weread))
+                .disabled(isCleaning || batchCancelled)
             } header: {
                 Text("信息补全")
             } footer: {
-                Text("纸质书：从豆瓣 → Open Library → Google Books → Goodreads 查询补全\n微信读书：从微信读书 API 补全出版社、定价、简介、阅读时长、完成日期")
+                Text("从豆瓣 → Open Library → Google Books 查询补全纸质书信息\n微信读书图书请使用「微信读书同步」功能自动补全")
             }
 
             // 进度区域
@@ -566,74 +536,6 @@ struct DataMaintenanceView: View {
             emptyMessage: "所有纸质书信息已完整，无需补全",
             doneMessage: { s, t in "完成！\(s)/\(t) 本书成功补全信息" }
         )
-    }
-
-    private func batchEnrichWeReadBooks() async {
-        let books = allBooks.filter {
-            !$0.isArchived && $0.wereadBookId != nil && $0.wereadEnrichedDate == nil
-        }
-
-        guard !books.isEmpty else {
-            cleanResultMessage = "所有微信读书图书信息已完整，无需补全"
-            showingCleanResult = true
-            return
-        }
-
-        isBatchRunning = true
-        batchTotal = books.count
-        batchCurrent = 0
-        batchProgress = 0
-        batchStatusText = "正在补全..."
-
-        let provider: any WeReadDataSource = WeReadConnectionMode.current == .skill
-            ? WeReadSkillProvider()
-            : WeReadService()
-
-        var successCount = 0
-
-        for (index, book) in books.enumerated() {
-            if batchCancelled || Task.isCancelled { break }
-            guard let bookId = book.wereadBookId else { continue }
-
-            await MainActor.run {
-                self.batchCurrent = index + 1
-                self.batchProgress = Double(index + 1) / Double(books.count)
-                self.batchStatusText = "正在补全（\(book.title)）\(index + 1)/\(books.count)"
-            }
-
-            if index > 0 && index % 3 == 0 {
-                try? await Task.sleep(for: .seconds(1))
-            }
-
-            do {
-                let enrichResult = try await provider.enrichBook(bookId: bookId)
-                await MainActor.run {
-                    enrichResult.applyToBook(book)
-                    book.wereadEnrichedDate = Date()
-                }
-                successCount += 1
-            } catch {
-                AppLogger.warning("批量补全微信读书失败 (\(book.title)): \(error)", category: "BatchEnrich")
-            }
-
-            // 每 10 本保存一次
-            if (index + 1) % 10 == 0 {
-                try? await MainActor.run { try modelContext.save() }
-            }
-        }
-
-        try? await MainActor.run { try modelContext.save() }
-
-        let wasCancelled = batchCancelled
-        await MainActor.run {
-            isBatchRunning = false
-            if wasCancelled {
-                cleanResultMessage = "已停止。已补全 \(successCount)/\(books.count) 本"
-            } else {
-                cleanResultMessage = "完成！\(successCount)/\(books.count) 本微信读书图书成功补全信息"
-            }
-            showingCleanResult = true
-        }
     }
 
     /// 通用批量补全逻辑

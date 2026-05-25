@@ -1,21 +1,25 @@
 import Foundation
 import SwiftData
 
-/// 批量补全配置
-struct BatchEnrichmentConfig {
-    /// 每批处理书籍数
-    var batchSize: Int = 5
-    /// 批间暂停（秒）
-    var batchDelaySeconds: Double = 2.0
-    /// 每次同步最多补全书籍数
-    var maxBooksPerSync: Int = 30
-}
-
 /// 微信读书同步服务
 /// 负责增量同步：新书导入 + 已有书进度更新
 actor WeReadSyncService {
 
     private let weReadService: any WeReadDataSource
+
+    /// 全局同步锁：防止多个 sync 实例同时运行（自动同步 + 手动触发）
+    private static let syncLock = NSLock()
+    private static var _isSyncing = false
+    static var isSyncing: Bool {
+        syncLock.lock()
+        defer { syncLock.unlock() }
+        return _isSyncing
+    }
+    private static func setSyncing(_ value: Bool) {
+        syncLock.lock()
+        _isSyncing = value
+        syncLock.unlock()
+    }
 
     init(provider: any WeReadDataSource = WeReadService()) {
         self.weReadService = provider
@@ -33,6 +37,25 @@ actor WeReadSyncService {
     static var lastSyncDate: Date? {
         get { UserDefaults.standard.object(forKey: "weread_last_sync_date") as? Date }
         set { UserDefaults.standard.set(newValue, forKey: "weread_last_sync_date") }
+    }
+
+    /// 重置同步状态：清除所有微信读书的 wereadEnrichedDate，使下次同步重新补全
+    static func resetEnrichmentState(container: ModelContainer) throws -> Int {
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        let descriptor = FetchDescriptor<Book>(
+            predicate: #Predicate { $0.wereadBookId != nil }
+        )
+        let books = try context.fetch(descriptor)
+        var count = 0
+        for book in books {
+            if book.wereadEnrichedDate != nil {
+                book.wereadEnrichedDate = nil
+                count += 1
+            }
+        }
+        if count > 0 { try context.save() }
+        return count
     }
 
     /// 同步间隔（秒），默认 1 小时
@@ -89,8 +112,26 @@ actor WeReadSyncService {
     }
 
     /// 执行增量同步（带进度回调）
+    /// 使用 background ModelContext 避免频繁 save 触发主线程 @Query 刷新
     func sync(modelContext: ModelContext, onProgress: (@Sendable (SyncProgress) -> Void)? = nil) async -> SyncResult {
+        return await sync(container: modelContext.container, onProgress: onProgress)
+    }
+
+    /// 执行增量同步（container 版本，内部创建 background context）
+    func sync(container: ModelContainer, onProgress: (@Sendable (SyncProgress) -> Void)? = nil) async -> SyncResult {
         var result = SyncResult()
+
+        // 0. 防止重复触发：如果已有同步在运行，直接返回
+        guard !Self.isSyncing else {
+            result.error = "同步正在进行中，请稍候"
+            return result
+        }
+        Self.setSyncing(true)
+        defer { Self.setSyncing(false) }
+
+        // 使用 background context，减少对主线程 UI 的影响
+        let modelContext = ModelContext(container)
+        modelContext.autosaveEnabled = false
 
         // 1. 检查连接状态
         onProgress?(SyncProgress(current: 0, total: 0, phase: "检查登录"))
@@ -131,12 +172,10 @@ actor WeReadSyncService {
         // 4. 获取本地已有的微信读书书籍
         let localWeReadBooks: [Book]
         do {
-            localWeReadBooks = try await MainActor.run {
-                let descriptor = FetchDescriptor<Book>(
-                    predicate: #Predicate { $0.wereadBookId != nil }
-                )
-                return try modelContext.fetch(descriptor)
-            }
+            let descriptor = FetchDescriptor<Book>(
+                predicate: #Predicate { $0.wereadBookId != nil }
+            )
+            localWeReadBooks = try modelContext.fetch(descriptor)
         } catch {
             result.error = "读取本地数据失败: \(error.localizedDescription)"
             return result
@@ -154,11 +193,8 @@ actor WeReadSyncService {
         let wereadTag: Tag
         let wereadShelf: Bookshelf
         do {
-            (wereadTag, wereadShelf) = try await MainActor.run {
-                let tag = try findOrCreateTag(name: "微信读书", modelContext: modelContext)
-                let shelf = try findOrCreateBookshelf(name: "微信读书", icon: "iphone", modelContext: modelContext)
-                return (tag, shelf)
-            }
+            wereadTag = try findOrCreateTag(name: "微信读书", modelContext: modelContext)
+            wereadShelf = try findOrCreateBookshelf(name: "微信读书", icon: "iphone", modelContext: modelContext)
         } catch {
             result.error = "创建标签/书架失败"
             return result
@@ -179,51 +215,56 @@ actor WeReadSyncService {
             }
         }
 
-        // 6a. 批量更新已存在的书（一次 MainActor.run 处理全部）
-        let existingResults = await MainActor.run {
-            var progressCount = 0
-            var statusCount = 0
-            for (book, item) in existingItems {
-                // 补充书架/标签（仅缺失时）
-                if book.bookshelf == nil {
-                    book.bookshelf = wereadShelf
-                }
-                if book.tags?.contains(where: { $0.name == "微信读书" }) != true {
-                    var tags = book.tags ?? []
-                    tags.append(wereadTag)
-                    book.tags = tags
-                }
-                // 更新进度
-                if item.progress > book.wereadProgress {
-                    book.wereadProgress = item.progress
-                    progressCount += 1
-                }
-                // 更新阅读时长
-                let newHours = Double(item.readingTime + item.ttsTime) / 3600.0
-                if newHours > book.wereadReadingHours {
-                    book.wereadReadingHours = newHours
-                }
-                // 补充加入时间
-                if let addedTime = item.addedTime, book.addedDate > addedTime {
-                    book.addedDate = addedTime
-                }
-                // 状态更新
-                if item.isFinished && book.status != .finished && book.status != .dropped {
-                    book.status = .finished
-                    book.statusChangedDate = Date()
-                    if book.finishedDate == nil {
-                        book.finishedDate = item.finishedTime ?? Date()
-                    }
-                    statusCount += 1
-                } else if !item.isFinished && item.progress > 0 &&
-                          (book.status == .idle || book.status == .wishlist) {
-                    book.status = .reading
-                    book.statusChangedDate = Date()
-                    statusCount += 1
+        // 6a. 批量更新已存在的书
+        var progressCount = 0
+        var statusCount = 0
+        for (book, item) in existingItems {
+            // 同步用户导入标识（老数据补全）
+            // 优先用 type 字段，兜底用 CB_ 前缀
+            if !book.isWereadUserImported {
+                if item.isUserImported || item.id.hasPrefix("CB_") {
+                    book.isWereadUserImported = true
                 }
             }
-            return (progressCount, statusCount)
+            // 补充书架/标签（仅缺失时）
+            if book.bookshelf == nil {
+                book.bookshelf = wereadShelf
+            }
+            if book.tags?.contains(where: { $0.name == "微信读书" }) != true {
+                var tags = book.tags ?? []
+                tags.append(wereadTag)
+                book.tags = tags
+            }
+            // 更新进度
+            if item.progress > book.wereadProgress {
+                book.wereadProgress = item.progress
+                progressCount += 1
+            }
+            // 更新阅读时长
+            let newHours = Double(item.readingTime + item.ttsTime) / 3600.0
+            if newHours > book.wereadReadingHours {
+                book.wereadReadingHours = newHours
+            }
+            // 补充加入时间
+            if let addedTime = item.addedTime, book.addedDate > addedTime {
+                book.addedDate = addedTime
+            }
+            // 状态更新
+            if item.isFinished && book.status != .finished && book.status != .dropped {
+                book.status = .finished
+                book.statusChangedDate = Date()
+                if book.finishedDate == nil {
+                    book.finishedDate = item.finishedTime ?? Date()
+                }
+                statusCount += 1
+            } else if !item.isFinished && item.progress > 0 &&
+                      (book.status == .idle || book.status == .wishlist) {
+                book.status = .reading
+                book.statusChangedDate = Date()
+                statusCount += 1
+            }
         }
+        let existingResults = (progressCount, statusCount)
         result.progressUpdated = existingResults.0
         result.statusUpdated = existingResults.1
 
@@ -235,71 +276,55 @@ actor WeReadSyncService {
             if index % 20 == 0 {
                 onProgress?(SyncProgress(current: existingItems.count + index, total: totalRemoteCount, phase: "处理书籍"))
             }
-            let matched = await findExistingBook(item: item, modelContext: modelContext)
+            let matched = findExistingBook(item: item, modelContext: modelContext)
             if let existingBook = matched {
-                await MainActor.run {
-                    existingBook.wereadBookId = item.id
-                    if existingBook.bookshelf == nil {
-                        existingBook.bookshelf = wereadShelf
-                    }
-                    if existingBook.tags?.contains(where: { $0.name == "微信读书" }) != true {
-                        var tags = existingBook.tags ?? []
-                        tags.append(wereadTag)
-                        existingBook.tags = tags
-                    }
+                existingBook.wereadBookId = item.id
+                if existingBook.bookshelf == nil {
+                    existingBook.bookshelf = wereadShelf
                 }
-                let updated = await updateExistingBook(book: existingBook, item: item)
+                if existingBook.tags?.contains(where: { $0.name == "微信读书" }) != true {
+                    var tags = existingBook.tags ?? []
+                    tags.append(wereadTag)
+                    existingBook.tags = tags
+                }
+                let updated = updateExistingBook(book: existingBook, item: item)
                 if updated.progressChanged { result.progressUpdated += 1 }
                 if updated.statusChanged { result.statusUpdated += 1 }
             } else {
-                await importNewBook(item: item, tag: wereadTag, shelf: wereadShelf, modelContext: modelContext)
+                importNewBook(item: item, tag: wereadTag, shelf: wereadShelf, modelContext: modelContext)
                 result.newBooksImported += 1
-            }
-
-            // 增量保存：每 50 本新书保存一次
-            if index > 0 && index % 50 == 0 {
-                do {
-                    try await MainActor.run { try modelContext.save() }
-                } catch {
-                    AppLogger.error("增量保存失败: \(error)", category: "WeReadSync")
-                }
             }
         }
 
         // 6c. 删除检测：本地有 wereadBookId 但远程书架中不存在 → 逻辑删除
         let remoteBookIds = Set(remoteBooks.map(\.id))
-        let archivedCount = await MainActor.run {
-            var count = 0
-            for book in localWeReadBooks {
-                guard let wid = book.wereadBookId else { continue }
-                if !remoteBookIds.contains(wid) && !book.isArchived {
-                    book.isArchived = true
-                    count += 1
-                }
+        var archivedCount = 0
+        for book in localWeReadBooks {
+            guard let wid = book.wereadBookId else { continue }
+            if !remoteBookIds.contains(wid) && !book.isArchived {
+                book.isArchived = true
+                archivedCount += 1
             }
-            return count
         }
         result.booksArchived = archivedCount
 
         // 7. 最终保存
         do {
-            try await MainActor.run { try modelContext.save() }
+            try modelContext.save()
         } catch {
             result.error = "保存数据失败: \(error.localizedDescription)"
         }
 
         // 8. 记录导入历史（仅当有新书导入时）
         if result.newBooksImported > 0 {
-            await MainActor.run {
-                let record = ImportRecord(
-                    source: "微信读书导入",
-                    totalCount: result.newBooksImported,
-                    successCount: result.newBooksImported,
-                    note: "自动同步"
-                )
-                modelContext.insert(record)
-                try? modelContext.save()
-            }
+            let record = ImportRecord(
+                source: "微信读书导入",
+                totalCount: result.newBooksImported,
+                successCount: result.newBooksImported,
+                note: "自动同步"
+            )
+            modelContext.insert(record)
+            try? modelContext.save()
         }
 
         // 9. 串行执行：封面下载 → 信息补全 → 划线拉取（带进度回调，支持取消）
@@ -309,7 +334,7 @@ actor WeReadSyncService {
             let coverDescriptor = FetchDescriptor<Book>(
                 predicate: #Predicate { $0.coverImageData == nil && $0.coverImageURL != nil }
             )
-            let booksNeedCover = (try? await MainActor.run { try modelContext.fetch(coverDescriptor) }) ?? []
+            let booksNeedCover = (try? modelContext.fetch(coverDescriptor)) ?? []
             for (index, book) in booksNeedCover.enumerated() {
                 guard !Task.isCancelled else { break }
                 onProgress?(SyncProgress(current: index + 1, total: booksNeedCover.count, phase: "下载封面", detail: book.title))
@@ -318,40 +343,58 @@ actor WeReadSyncService {
                     try? await Task.sleep(for: .seconds(1))
                 }
                 if let data = await self.downloadImage(from: urlStr) {
-                    await MainActor.run { book.coverImageData = data }
+                    book.coverImageData = data
                 }
             }
-            try? await MainActor.run { try modelContext.save() }
+            try? modelContext.save()
         }
 
-        // 9b. 微信读书 API 补全（所有未标记过的书，每 3 个请求暂停 1 秒）
+        // 9b. 微信读书 API 补全（预拉取书架进度，避免每本书重复请求）
         if !Task.isCancelled {
             let enrichDescriptor = FetchDescriptor<Book>(
                 predicate: #Predicate<Book> { $0.wereadBookId != nil && $0.wereadEnrichedDate == nil }
             )
-            let booksNeedEnrich = (try? await MainActor.run { try modelContext.fetch(enrichDescriptor) }) ?? []
-            for (index, book) in booksNeedEnrich.enumerated() {
-                guard !Task.isCancelled else { break }
-                onProgress?(SyncProgress(current: index + 1, total: booksNeedEnrich.count, phase: "补全信息", detail: book.title))
-                guard let bookId = book.wereadBookId else { continue }
-                if index > 0 && index % 3 == 0 {
-                    try? await Task.sleep(for: .seconds(1))
+            let booksNeedEnrich = (try? modelContext.fetch(enrichDescriptor)) ?? []
+
+            if !booksNeedEnrich.isEmpty {
+                // 一次性拉取书架进度数据（缓存，不再每本书重复拉）
+                var progressMap: [String: WeReadBookProgress]?
+                if let webService = self.weReadService as? WeReadService {
+                    do {
+                        let shelfData = try await webService.fetchShelf()
+                        var map: [String: WeReadBookProgress] = [:]
+                        if let progressList = shelfData.bookProgress {
+                            for p in progressList { map[p.bookId] = p }
+                        }
+                        progressMap = map
+                    } catch {
+                        AppLogger.warning("预拉取书架进度失败: \(error)", category: "WeReadSync")
+                    }
                 }
-                do {
-                    let enrichResult = try await self.weReadService.enrichBook(bookId: bookId)
-                    await MainActor.run {
+
+                for (index, book) in booksNeedEnrich.enumerated() {
+                    guard !Task.isCancelled else { break }
+                    onProgress?(SyncProgress(current: index + 1, total: booksNeedEnrich.count, phase: "补全信息", detail: book.title))
+                    guard let bookId = book.wereadBookId else { continue }
+                    if index > 0 && index % 5 == 0 {
+                        try? await Task.sleep(for: .seconds(1))
+                    }
+                    do {
+                        let enrichResult: WeReadEnrichResult
+                        if let webService = self.weReadService as? WeReadService, let map = progressMap {
+                            enrichResult = try await webService.enrichBook(bookId: bookId, cachedProgress: map)
+                        } else {
+                            enrichResult = try await self.weReadService.enrichBook(bookId: bookId)
+                        }
                         enrichResult.applyToBook(book)
                         book.wereadEnrichedDate = Date()
+                    } catch {
+                        AppLogger.warning("微信读书补全失败 (\(book.title)): \(error)", category: "WeReadSync")
                     }
-                } catch {
-                    AppLogger.warning("微信读书补全失败 (\(book.title)): \(error)", category: "WeReadSync")
                 }
-                // 每 10 本保存一次
-                if (index + 1) % 10 == 0 {
-                    try? await MainActor.run { try modelContext.save() }
-                }
+                // 补全阶段统一保存一次
+                try? modelContext.save()
             }
-            try? await MainActor.run { try modelContext.save() }
         }
 
         // 9c. 划线拉取（所有缺划线的书，每 3 个请求暂停 1 秒）
@@ -359,7 +402,7 @@ actor WeReadSyncService {
             let bookmarkDescriptor = FetchDescriptor<Book>(
                 predicate: #Predicate { $0.wereadBookId != nil && $0.notes == nil }
             )
-            let booksNeedBookmarks = (try? await MainActor.run { try modelContext.fetch(bookmarkDescriptor) }) ?? []
+            let booksNeedBookmarks = (try? modelContext.fetch(bookmarkDescriptor)) ?? []
             for (index, book) in booksNeedBookmarks.enumerated() {
                 guard !Task.isCancelled else { break }
                 onProgress?(SyncProgress(current: index + 1, total: booksNeedBookmarks.count, phase: "拉取划线", detail: book.title))
@@ -371,230 +414,19 @@ actor WeReadSyncService {
                     let bookmarks = try await self.weReadService.fetchBookmarks(bookId: bookId)
                     if !bookmarks.isEmpty {
                         let notesText = self.formatBookmarks(bookmarks)
-                        await MainActor.run { book.notes = notesText }
+                        book.notes = notesText
                     }
                 } catch {
                     AppLogger.warning("拉取划线失败 (\(book.title)): \(error)", category: "WeReadSync")
                 }
             }
-            try? await MainActor.run { try modelContext.save() }
+            try? modelContext.save()
         }
 
         // 12. 记录同步时间
         Self.lastSyncDate = Date()
 
         return result
-    }
-
-    // MARK: - Batch Enrichment (9d)
-
-    /// 批量从外部源补全缺失数据
-    /// 分批处理，每批 5 本，批间暂停 2 秒，每批结束统一保存
-    private func batchEnrichBooks(
-        context: ModelContext,
-        config: BatchEnrichmentConfig = BatchEnrichmentConfig()
-    ) async {
-        // 查找需要补全的微信读书书籍
-        let booksNeedEnrich: [Book] = await MainActor.run {
-            var descriptor = FetchDescriptor<Book>(
-                predicate: #Predicate<Book> { $0.wereadBookId != nil }
-            )
-            descriptor.fetchLimit = config.maxBooksPerSync
-            let allWereadBooks = (try? context.fetch(descriptor)) ?? []
-            return allWereadBooks.filter { $0.needsEnrichment }
-        }
-
-        guard !booksNeedEnrich.isEmpty else {
-            AppLogger.debug("无需补全的书籍", category: "WeReadSync")
-            return
-        }
-
-        AppLogger.info("开始批量补全 \(booksNeedEnrich.count) 本书", category: "WeReadSync")
-
-        let lookupService = ISBNLookupService()
-        let doubanFetcher = DoubanDescriptionFetcher()
-
-        // 分批处理
-        for batchStart in stride(from: 0, to: booksNeedEnrich.count, by: config.batchSize) {
-            let batchEnd = min(batchStart + config.batchSize, booksNeedEnrich.count)
-            let batch = Array(booksNeedEnrich[batchStart..<batchEnd])
-
-            // 批间暂停（第一批不需要）
-            if batchStart > 0 {
-                try? await Task.sleep(for: .seconds(config.batchDelaySeconds))
-            }
-
-            for book in batch {
-                await enrichSingleBook(book, lookupService: lookupService, doubanFetcher: doubanFetcher, context: context)
-            }
-
-            // 每批结束统一保存
-            await MainActor.run { try? context.save() }
-            AppLogger.debug("补全进度: \(batchEnd)/\(booksNeedEnrich.count)", category: "WeReadSync")
-        }
-
-        AppLogger.info("批量补全完成", category: "WeReadSync")
-    }
-
-    /// 补全单本书的缺失信息
-    private func enrichSingleBook(
-        _ book: Book,
-        lookupService: ISBNLookupService,
-        doubanFetcher: DoubanDescriptionFetcher,
-        context: ModelContext
-    ) async {
-        let needsPublisher = book.publisher == nil || book.publisher?.isEmpty == true
-        let needsPages = book.totalPages == 0
-        let needsBookDesc = book.bookDescription == nil || book.bookDescription?.isEmpty == true
-        let needsAuthorDesc = book.authorDescription == nil || book.authorDescription?.isEmpty == true
-
-        // 先查本地数据库是否有同作者的作者简介
-        if needsAuthorDesc {
-            let localAuthorDesc = await findLocalAuthorDescription(for: book.author, excludingBook: book, context: context)
-            if let localAuthorDesc {
-                await MainActor.run { book.authorDescription = localAuthorDesc }
-            }
-        }
-
-        // 重新检查是否还需要补全
-        let stillNeedsPublisher = needsPublisher
-        let stillNeedsPages = needsPages
-        let stillNeedsBookDesc = needsBookDesc
-        let stillNeedsAuthorDesc = (book.authorDescription == nil || book.authorDescription?.isEmpty == true)
-
-        guard stillNeedsPublisher || stillNeedsPages || stillNeedsBookDesc || stillNeedsAuthorDesc else {
-            return
-        }
-
-        // 判断走 ISBN 还是书名搜索
-        let isbn = book.isbn ?? ""
-        let cleanISBN = isbn.replacingOccurrences(of: "[^0-9Xx]", with: "", options: .regularExpression).uppercased()
-        let validISBN = !cleanISBN.isEmpty && (cleanISBN.count == 10 || cleanISBN.count == 13)
-
-        if validISBN {
-            // 有 ISBN：走 smartFill 逻辑（豆瓣ISBN → OL ISBN → Google ISBN → Goodreads）
-            let result = await lookupService.smartFill(
-                isbn: isbn, title: book.title, author: book.author,
-                needsPublisher: stillNeedsPublisher, needsPages: stillNeedsPages,
-                needsAuthor: false, needsBookDesc: stillNeedsBookDesc,
-                needsAuthorDesc: stillNeedsAuthorDesc
-            )
-            await applySmartFillResult(result, to: book)
-        } else {
-            // 无 ISBN：豆瓣书名搜索 → Open Library 书名搜索 → Google Books 书名搜索
-            await enrichByTitleSearch(
-                book: book,
-                lookupService: lookupService,
-                doubanFetcher: doubanFetcher,
-                needsPublisher: stillNeedsPublisher,
-                needsPages: stillNeedsPages,
-                needsBookDesc: stillNeedsBookDesc,
-                needsAuthorDesc: stillNeedsAuthorDesc
-            )
-        }
-    }
-
-    /// 通过书名搜索外部源补全
-    private func enrichByTitleSearch(
-        book: Book,
-        lookupService: ISBNLookupService,
-        doubanFetcher: DoubanDescriptionFetcher,
-        needsPublisher: Bool,
-        needsPages: Bool,
-        needsBookDesc: Bool,
-        needsAuthorDesc: Bool
-    ) async {
-        var filledPublisher: String?
-        var filledPages: Int?
-        var filledBookDesc: String?
-        var filledAuthorDesc: String?
-
-        // 1. 豆瓣书名搜索（简介 + 作者简介）
-        if needsBookDesc && filledBookDesc == nil {
-            let desc = await doubanFetcher.fetchBookDescriptionByTitle(title: book.title, author: book.author)
-            if let desc, !desc.isEmpty { filledBookDesc = desc }
-        }
-        if needsAuthorDesc && filledAuthorDesc == nil {
-            let desc = await doubanFetcher.fetchAuthorDescriptionByTitle(title: book.title, author: book.author)
-            if let desc, !desc.isEmpty { filledAuthorDesc = desc }
-        }
-
-        // 检查是否还需要继续
-        let stillNeeds = (needsPublisher && filledPublisher == nil)
-            || (needsPages && filledPages == nil)
-            || (needsBookDesc && filledBookDesc == nil)
-            || (needsAuthorDesc && filledAuthorDesc == nil)
-
-        // 2. Open Library 书名搜索
-        if stillNeeds {
-            if let olResult = await lookupService.searchOpenLibraryByTitle(title: book.title, author: book.author) {
-                if needsPublisher && filledPublisher == nil, let p = olResult.publisher, !p.isEmpty {
-                    filledPublisher = p
-                }
-                if needsPages && filledPages == nil, let p = olResult.totalPages, p > 0 {
-                    filledPages = p
-                }
-                if needsBookDesc && filledBookDesc == nil, let d = olResult.bookDescription, !d.isEmpty {
-                    filledBookDesc = d
-                }
-            }
-        }
-
-        // 再检查
-        let stillNeeds2 = (needsPublisher && filledPublisher == nil)
-            || (needsPages && filledPages == nil)
-            || (needsBookDesc && filledBookDesc == nil)
-            || (needsAuthorDesc && filledAuthorDesc == nil)
-
-        // 3. Google Books 书名搜索
-        if stillNeeds2 {
-            if let gbResult = await lookupService.searchGoogleBooksByTitle(title: book.title, author: book.author) {
-                if needsPublisher && filledPublisher == nil, let p = gbResult.publisher, !p.isEmpty {
-                    filledPublisher = p
-                }
-                if needsPages && filledPages == nil, let p = gbResult.totalPages, p > 0 {
-                    filledPages = p
-                }
-                if needsBookDesc && filledBookDesc == nil, let d = gbResult.bookDescription, !d.isEmpty {
-                    filledBookDesc = d
-                }
-            }
-        }
-
-        // 写入结果
-        await MainActor.run {
-            if let p = filledPublisher { book.publisher = p }
-            if let p = filledPages { book.totalPages = p }
-            if let d = filledBookDesc { book.bookDescription = d }
-            if let d = filledAuthorDesc { book.authorDescription = d }
-        }
-    }
-
-    /// 将 smartFill 结果写入 book
-    private func applySmartFillResult(_ result: SmartFillResult, to book: Book) async {
-        await MainActor.run {
-            if let p = result.publisher { book.publisher = p }
-            if let p = result.totalPages { book.totalPages = p }
-            if let d = result.bookDescription { book.bookDescription = d }
-            if let d = result.authorDescription { book.authorDescription = d }
-        }
-    }
-
-    /// 从本地数据库查找同作者的作者简介
-    private func findLocalAuthorDescription(for author: String, excludingBook: Book, context: ModelContext) async -> String? {
-        return await MainActor.run {
-            let authorName = author
-            var descriptor = FetchDescriptor<Book>(
-                predicate: #Predicate { $0.author == authorName && $0.authorDescription != nil }
-            )
-            let matches = (try? context.fetch(descriptor)) ?? []
-            // 排除当前书，取最详细的简介
-            return matches
-                .filter { $0.persistentModelID != excludingBook.persistentModelID }
-                .compactMap { $0.authorDescription }
-                .filter { !$0.isEmpty }
-                .max(by: { $0.count < $1.count })
-        }
     }
 
     // MARK: - Update Existing Book
@@ -604,42 +436,47 @@ actor WeReadSyncService {
         var statusChanged = false
     }
 
-    private func updateExistingBook(book: Book, item: WeReadImportItem) async -> UpdateResult {
+    private func updateExistingBook(book: Book, item: WeReadImportItem) -> UpdateResult {
         var result = UpdateResult()
 
-        await MainActor.run {
-            // 更新进度（只往前推进，不后退）
-            if item.progress > book.wereadProgress {
-                book.wereadProgress = item.progress
-                result.progressChanged = true
+        // 同步用户导入标识（老数据补全）— 用 type 字段或 CB_ 前缀
+        if !book.isWereadUserImported {
+            if item.isUserImported || item.id.hasPrefix("CB_") {
+                book.isWereadUserImported = true
             }
-            // 更新阅读时长
-            let newHours = Double(item.readingTime + item.ttsTime) / 3600.0
-            if newHours > book.wereadReadingHours {
-                book.wereadReadingHours = newHours
-            }
+        }
 
-            // 补充加入时间（如果本地是默认的当前时间、远端有真实时间）
-            if let addedTime = item.addedTime, book.addedDate > addedTime {
-                book.addedDate = addedTime
-            }
+        // 更新进度（只往前推进，不后退）
+        if item.progress > book.wereadProgress {
+            book.wereadProgress = item.progress
+            result.progressChanged = true
+        }
+        // 更新阅读时长
+        let newHours = Double(item.readingTime + item.ttsTime) / 3600.0
+        if newHours > book.wereadReadingHours {
+            book.wereadReadingHours = newHours
+        }
 
-            // 状态更新逻辑：
-            // - 微信读书标记"已读完" → 本地也标记已读（除非用户已手动设为弃读）
-            // - 微信读书有进度但本地还是"闲置/想读" → 更新为"正在读"
-            if item.isFinished && book.status != .finished && book.status != .dropped {
-                book.status = .finished
-                book.statusChangedDate = Date()
-                if book.finishedDate == nil {
-                    book.finishedDate = item.finishedTime ?? Date()
-                }
-                result.statusChanged = true
-            } else if !item.isFinished && item.progress > 0 &&
-                      (book.status == .idle || book.status == .wishlist) {
-                book.status = .reading
-                book.statusChangedDate = Date()
-                result.statusChanged = true
+        // 补充加入时间（如果本地是默认的当前时间、远端有真实时间）
+        if let addedTime = item.addedTime, book.addedDate > addedTime {
+            book.addedDate = addedTime
+        }
+
+        // 状态更新逻辑：
+        // - 微信读书标记"已读完" → 本地也标记已读（除非用户已手动设为弃读）
+        // - 微信读书有进度但本地还是"闲置/想读" → 更新为"正在读"
+        if item.isFinished && book.status != .finished && book.status != .dropped {
+            book.status = .finished
+            book.statusChangedDate = Date()
+            if book.finishedDate == nil {
+                book.finishedDate = item.finishedTime ?? Date()
             }
+            result.statusChanged = true
+        } else if !item.isFinished && item.progress > 0 &&
+                  (book.status == .idle || book.status == .wishlist) {
+            book.status = .reading
+            book.statusChangedDate = Date()
+            result.statusChanged = true
         }
 
         return result
@@ -652,55 +489,53 @@ actor WeReadSyncService {
         tag: Tag,
         shelf: Bookshelf,
         modelContext: ModelContext
-    ) async {
-        // 不下载封面，先插入数据（封面在 sync 完成后统一后台下载）
-        await MainActor.run {
-            let book = Book(
-                title: item.title,
-                author: item.author,
-                translator: item.translator,
-                isbn: item.isbn,
-                publisher: item.publisher,
-                bookType: item.bookType,
-                bookDescription: item.intro,
-                coverImageURL: item.cover
-            )
+    ) {
+        let book = Book(
+            title: item.title,
+            author: item.author,
+            translator: item.translator,
+            isbn: item.isbn,
+            publisher: item.publisher,
+            bookType: item.bookType,
+            bookDescription: item.intro,
+            coverImageURL: item.cover
+        )
 
-            book.wereadBookId = item.id
-            book.wereadProgress = item.progress
-            book.wereadReadingHours = Double(item.readingTime + item.ttsTime) / 3600.0
-            book.addSource = .wereadImported
+        book.wereadBookId = item.id
+        book.wereadProgress = item.progress
+        book.wereadReadingHours = Double(item.readingTime + item.ttsTime) / 3600.0
+        book.addSource = .wereadImported
+        book.isWereadUserImported = item.isUserImported || item.id.hasPrefix("CB_")
 
-            // 加入时间：优先微信读书的加入书架时间
-            if let addedTime = item.addedTime {
-                book.addedDate = addedTime
-            }
-
-            // 阅读状态
-            if item.isFinished {
-                book.status = .finished
-                book.finishedDate = item.finishedTime ?? Date()
-            } else if item.progress > 0 || item.readingTime > 0 || item.ttsTime > 0 {
-                book.status = .reading
-            } else {
-                book.status = .idle
-            }
-            book.statusChangedDate = Date()
-
-            // 书架
-            book.bookshelf = shelf
-
-            // 标签
-            var bookTags: [Tag] = [tag]
-            if let category = item.category, !category.isEmpty {
-                if let categoryTag = try? findOrCreateTag(name: category, modelContext: modelContext) {
-                    bookTags.append(categoryTag)
-                }
-            }
-            book.tags = bookTags
-
-            modelContext.insert(book)
+        // 加入时间：优先微信读书的加入书架时间
+        if let addedTime = item.addedTime {
+            book.addedDate = addedTime
         }
+
+        // 阅读状态
+        if item.isFinished {
+            book.status = .finished
+            book.finishedDate = item.finishedTime ?? Date()
+        } else if item.progress > 0 || item.readingTime > 0 || item.ttsTime > 0 {
+            book.status = .reading
+        } else {
+            book.status = .idle
+        }
+        book.statusChangedDate = Date()
+
+        // 书架
+        book.bookshelf = shelf
+
+        // 标签
+        var bookTags: [Tag] = [tag]
+        if let category = item.category, !category.isEmpty {
+            if let categoryTag = try? findOrCreateTag(name: category, modelContext: modelContext) {
+                bookTags.append(categoryTag)
+            }
+        }
+        book.tags = bookTags
+
+        modelContext.insert(book)
     }
 
     // MARK: - Helpers
@@ -711,33 +546,29 @@ actor WeReadSyncService {
     private func findExistingBook(
         item: WeReadImportItem,
         modelContext: ModelContext
-    ) async -> Book? {
-        return try? await MainActor.run {
-            // 1. 优先 ISBN + bookType（电子书/有声书）匹配
-            if let isbn = item.isbn, !isbn.isEmpty {
-                let isbnStr = isbn
-                var isbnDescriptor = FetchDescriptor<Book>(
-                    predicate: #Predicate { $0.isbn == isbnStr }
-                )
-                let isbnMatches = try modelContext.fetch(isbnDescriptor)
-                if let match = isbnMatches.first(where: {
-                    $0.bookType == .ebook || $0.bookType == .audiobook
-                }) {
-                    return match
-                }
-            }
-
-            // 2. 书名 + 作者 + bookType（只匹配电子书/有声书，不匹配纸质书）
-            let title = item.title
-            let author = item.author
-            var titleDescriptor = FetchDescriptor<Book>(
-                predicate: #Predicate { $0.title == title && $0.author == author }
+    ) -> Book? {
+        // 1. 优先 ISBN + bookType（电子书/有声书）匹配
+        if let isbn = item.isbn, !isbn.isEmpty {
+            let isbnStr = isbn
+            let isbnDescriptor = FetchDescriptor<Book>(
+                predicate: #Predicate { $0.isbn == isbnStr }
             )
-            let titleMatches = try modelContext.fetch(titleDescriptor)
-            return titleMatches.first(where: {
-                $0.bookType == .ebook || $0.bookType == .audiobook
-            })
+            if let isbnMatches = try? modelContext.fetch(isbnDescriptor),
+               let match = isbnMatches.first(where: { $0.bookType == .ebook || $0.bookType == .audiobook }) {
+                return match
+            }
         }
+
+        // 2. 书名 + 作者 + bookType（只匹配电子书/有声书，不匹配纸质书）
+        let title = item.title
+        let author = item.author
+        let titleDescriptor = FetchDescriptor<Book>(
+            predicate: #Predicate { $0.title == title && $0.author == author }
+        )
+        if let titleMatches = try? modelContext.fetch(titleDescriptor) {
+            return titleMatches.first(where: { $0.bookType == .ebook || $0.bookType == .audiobook })
+        }
+        return nil
     }
 
     /// 解析出版日期字符串（微信读书格式如 "2020-01" 或 "2020-01-15" 或 "2020"）

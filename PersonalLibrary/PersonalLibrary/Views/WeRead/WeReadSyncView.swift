@@ -18,6 +18,8 @@ struct WeReadSyncView: View {
     @State private var showingLogoutAlert = false
     @State private var showingWeReadImport = false
     @State private var showingSkillSetup = false
+    @State private var showingResetAlert = false
+    @State private var resetResultMessage: String?
 
     private let webService = WeReadService()
     private let skillService = WeReadSkillProvider()
@@ -161,6 +163,13 @@ struct WeReadSyncView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+
+                    Button(role: .destructive) {
+                        showingResetAlert = true
+                    } label: {
+                        Label("重置同步状态", systemImage: "arrow.counterclockwise")
+                    }
+                    .disabled(isSyncing)
                 } header: {
                     Text("同步")
                 } footer: {
@@ -220,6 +229,26 @@ struct WeReadSyncView: View {
             }
         } message: {
             Text("断开后将停止自动同步，已导入的书籍不受影响")
+        }
+        .alert("重置同步状态", isPresented: $showingResetAlert) {
+            Button("取消", role: .cancel) {}
+            Button("确认重置", role: .destructive) {
+                do {
+                    let count = try WeReadSyncService.resetEnrichmentState(container: modelContext.container)
+                    resetResultMessage = "已重置 \(count) 本书的同步状态，下次同步将重新补全"
+                } catch {
+                    resetResultMessage = "重置失败: \(error.localizedDescription)"
+                }
+            }
+        } message: {
+            Text("将清除所有微信读书电纸书（含有声书）的同步标记，下次同步时会重新补全所有书籍信息。已导入的书籍数据不会丢失。")
+        }
+        .alert("重置结果", isPresented: .init(get: { resetResultMessage != nil }, set: { if !$0 { resetResultMessage = nil } })) {
+            Button("好的") { resetResultMessage = nil }
+        } message: {
+            if let msg = resetResultMessage {
+                Text(msg)
+            }
         }
     }
 

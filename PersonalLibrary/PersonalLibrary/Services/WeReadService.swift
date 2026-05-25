@@ -78,6 +78,7 @@ struct WeReadImportItem: Identifiable {
     let ttsTime: Int  // 有声书时长（秒）
     let isFinished: Bool
     let bookType: BookType  // 电子书或有声书（微信读书不会有纸质书）
+    let isUserImported: Bool  // true = 用户导入(type==1), false = 平台书(type==0)
     let addedTime: Date?  // 加入书架时间
     let finishedTime: Date?  // 读完时间
     var isSelected: Bool = true
@@ -88,6 +89,7 @@ struct WeReadImportItem: Identifiable {
          translator: String? = nil, category: String? = nil,
          progress: Int = 0, readingTime: Int = 0, ttsTime: Int = 0,
          isFinished: Bool = false, bookType: BookType = .ebook,
+         isUserImported: Bool = false,
          addedTime: Date? = nil, finishedTime: Date? = nil,
          isSelected: Bool = true) {
         self.id = id
@@ -104,6 +106,7 @@ struct WeReadImportItem: Identifiable {
         self.ttsTime = ttsTime
         self.isFinished = isFinished
         self.bookType = bookType
+        self.isUserImported = isUserImported
         self.addedTime = addedTime
         self.finishedTime = finishedTime
         self.isSelected = isSelected
@@ -297,19 +300,26 @@ actor WeReadService: WeReadDataSource {
 
     // MARK: - 统一补全方法
 
-    /// 补全单本微信读书图书信息（cookie 续期 + 书籍详情 + 阅读时长）
-    /// - Parameter bookId: 微信读书 bookId
-    /// - Returns: 补全结果（调用方用 `applyToBook` 写入 Book）
+    /// 补全单本微信读书图书信息（协议方法，单本调用时使用）
     func enrichBook(bookId: String) async throws -> WeReadEnrichResult {
-        // 1. 续期 Cookie
-        AppLogger.warning("enrichBook[\(bookId)] step1: renewCookie", category: "WeRead")
-        _ = try? await renewCookie()
-        AppLogger.warning("enrichBook[\(bookId)] step1 done", category: "WeRead")
+        return try await enrichBook(bookId: bookId, cachedProgress: nil)
+    }
+
+    /// 补全单本微信读书图书信息（批量调用时传入缓存进度，避免重复拉取书架）
+    func enrichBook(bookId: String, cachedProgress: [String: WeReadBookProgress]?) async throws -> WeReadEnrichResult {
+        // 1. 续期 Cookie（仅无缓存时，即单本补全时需要）
+        if cachedProgress == nil {
+            _ = try? await renewCookie()
+        }
 
         var result = WeReadEnrichResult()
 
+        // CB_ 前缀是用户导入书的固定标识
+        if bookId.hasPrefix("CB_") {
+            result.isUserImported = true
+        }
+
         // 2. 获取书籍详情
-        AppLogger.warning("enrichBook[\(bookId)] step2: fetchBookInfo", category: "WeRead")
         do {
             let info = try await fetchBookInfo(bookId: bookId)
             result.publisher = info.publisher
@@ -317,29 +327,35 @@ actor WeReadService: WeReadDataSource {
             result.intro = info.intro
             result.price = info.price
             result.publishTime = info.publishTime
-            if let type = info.type, (type == 2 || type == 3) {
-                result.bookType = .audiobook
+            if let type = info.type {
+                if type == 2 || type == 3 {
+                    result.bookType = .audiobook
+                }
+                if type == 1 {
+                    result.isUserImported = true
+                }
             }
-            AppLogger.warning("enrichBook[\(bookId)] step2 ok: publisher=\(info.publisher ?? "nil")", category: "WeRead")
         } catch {
-            AppLogger.warning("enrichBook[\(bookId)] step2 failed: \(error)", category: "WeRead")
+            AppLogger.warning("enrichBook[\(bookId)] fetchBookInfo failed: \(error)", category: "WeRead")
         }
 
-        // 3. 获取阅读时长（从书架进度数据）
-        AppLogger.warning("enrichBook[\(bookId)] step3: fetchShelf", category: "WeRead")
-        do {
-            let shelfData = try await fetchShelf()
-            let progressCount = shelfData.bookProgress?.count ?? 0
-            if let progressList = shelfData.bookProgress,
-               let progress = progressList.first(where: { $0.bookId == bookId }) {
+        // 3. 获取阅读时长（优先用缓存，否则拉书架）
+        if let progressMap = cachedProgress {
+            if let progress = progressMap[bookId] {
                 let totalSeconds = (progress.readingTime ?? 0) + (progress.ttsTime ?? 0)
                 result.readingHours = Double(totalSeconds) / 3600.0
-                AppLogger.warning("enrichBook[\(bookId)] step3 ok: \(totalSeconds)s = \(result.readingHours)h", category: "WeRead")
-            } else {
-                AppLogger.warning("enrichBook[\(bookId)] step3: no progress found in \(progressCount) entries", category: "WeRead")
             }
-        } catch {
-            AppLogger.warning("enrichBook[\(bookId)] step3 failed: \(error)", category: "WeRead")
+        } else {
+            do {
+                let shelfData = try await fetchShelf()
+                if let progressList = shelfData.bookProgress,
+                   let progress = progressList.first(where: { $0.bookId == bookId }) {
+                    let totalSeconds = (progress.readingTime ?? 0) + (progress.ttsTime ?? 0)
+                    result.readingHours = Double(totalSeconds) / 3600.0
+                }
+            } catch {
+                AppLogger.warning("enrichBook[\(bookId)] fetchShelf failed: \(error)", category: "WeRead")
+            }
         }
 
         // 4. 获取阅读详情（开始阅读时间、完成时间）
@@ -351,9 +367,8 @@ actor WeReadService: WeReadDataSource {
             if let finishTime = detail.finishReadingTime, finishTime > 0 {
                 result.finishedTime = Date(timeIntervalSince1970: TimeInterval(finishTime))
             }
-            AppLogger.warning("enrichBook[\(bookId)] step4 ok: start=\(detail.startReadingTime as Any), finish=\(detail.finishReadingTime as Any)", category: "WeRead")
         } catch {
-            AppLogger.warning("enrichBook[\(bookId)] step4 readDetail failed: \(error)", category: "WeRead")
+            AppLogger.warning("enrichBook[\(bookId)] readDetail failed: \(error)", category: "WeRead")
         }
 
         return result
@@ -427,6 +442,9 @@ actor WeReadService: WeReadDataSource {
                 AppLogger.warning("[DIAG] \(title) bookId=\(book.bookId) finishReadingTime=\(book.finishReadingTime as Any) progress.finishedDate=\(progress?.finishedDate as Any) progress.updateTime=\(progress?.updateTime as Any) → finishedTime=\(finishedTime as Any)", category: "WeRead")
             }
 
+            // type == 1 表示用户自己导入到微信读书的书，CB_ 前缀也是
+            let isUserImported = book.type == 1 || book.bookId.hasPrefix("CB_")
+
             let item = WeReadImportItem(
                 id: book.bookId,
                 title: book.title ?? "未知书名",
@@ -442,6 +460,7 @@ actor WeReadService: WeReadDataSource {
                 ttsTime: ttsTime,
                 isFinished: isFinished,
                 bookType: bookType,
+                isUserImported: isUserImported,
                 addedTime: addedTime,
                 finishedTime: finishedTime
             )
@@ -497,6 +516,7 @@ actor WeReadService: WeReadDataSource {
                 )
                 book.wereadBookId = item.id
                 book.addSource = .wereadImported
+                book.isWereadUserImported = item.isUserImported
 
                 // 加入时间：优先微信读书的加入书架时间
                 if let addedTime = item.addedTime {
@@ -655,6 +675,7 @@ struct WeReadEnrichResult {
     var price: Double?
     var publishTime: String?
     var bookType: BookType?
+    var isUserImported: Bool?  // type==1 为用户导入
     var readingHours: Double = 0
     var startedReadingTime: Date?
     var finishedTime: Date?
@@ -681,6 +702,10 @@ struct WeReadEnrichResult {
         // 阅读时长只增不减
         if readingHours > book.wereadReadingHours {
             book.wereadReadingHours = readingHours
+        }
+        // 用户导入标识
+        if let imported = isUserImported, imported {
+            book.isWereadUserImported = true
         }
         // 开始阅读时间：只在本地无记录时填充
         if let st = startedReadingTime, book.startedReadingDate == nil {

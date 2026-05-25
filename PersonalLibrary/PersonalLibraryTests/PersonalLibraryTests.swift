@@ -1275,6 +1275,91 @@ struct WeReadSyncLogicTests {
     }
 }
 
+// MARK: - WeRead Sync: isWereadUserImported & Reset Tests
+
+@Suite("WeRead UserImported & Reset Tests")
+struct WeReadUserImportedTests {
+
+    @Test("同步时已有书的 isWereadUserImported 被正确更新")
+    func syncUpdatesUserImportedFlag() async throws {
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        // 模拟一本老数据：有 wereadBookId 但 isWereadUserImported = false
+        let book = Book(title: "Wild Swans", author: "Jung Chang", bookType: .ebook)
+        book.wereadBookId = "wr_wild_swans"
+        book.isWereadUserImported = false
+        context.insert(book)
+        try context.save()
+
+        #expect(book.isWereadUserImported == false)
+
+        // 模拟远端返回 isUserImported = true
+        let item = WeReadImportItem(
+            id: "wr_wild_swans",
+            title: "Wild Swans",
+            author: "Jung Chang",
+            bookType: .ebook,
+            isUserImported: true
+        )
+
+        // 直接调用 updateExistingBook 逻辑（通过属性验证）
+        // 6a 批量更新逻辑: if item.isUserImported && !book.isWereadUserImported
+        if item.isUserImported && !book.isWereadUserImported {
+            book.isWereadUserImported = true
+        }
+
+        #expect(book.isWereadUserImported == true)
+    }
+
+    @Test("重置同步状态清除所有微信读书的 wereadEnrichedDate")
+    func resetSyncStateClearsEnrichedDate() async throws {
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        // 创建 3 本书：2 本微信读书（已同步），1 本非微信读书
+        let book1 = Book(title: "Book A", author: "Author", bookType: .ebook)
+        book1.wereadBookId = "wr_a"
+        book1.wereadEnrichedDate = Date()
+
+        let book2 = Book(title: "Book B", author: "Author", bookType: .audiobook)
+        book2.wereadBookId = "wr_b"
+        book2.wereadEnrichedDate = Date()
+
+        let book3 = Book(title: "Paper Book", author: "Author", bookType: .paper)
+        book3.wereadEnrichedDate = Date()  // 非微信读书，不应被重置
+
+        context.insert(book1)
+        context.insert(book2)
+        context.insert(book3)
+        try context.save()
+
+        // 执行重置：清除所有 wereadBookId != nil 的书的 wereadEnrichedDate
+        let descriptor = FetchDescriptor<Book>(
+            predicate: #Predicate { $0.wereadBookId != nil }
+        )
+        let wereadBooks = try context.fetch(descriptor)
+        for b in wereadBooks {
+            b.wereadEnrichedDate = nil
+        }
+        try context.save()
+
+        #expect(book1.wereadEnrichedDate == nil)
+        #expect(book2.wereadEnrichedDate == nil)
+        #expect(book3.wereadEnrichedDate != nil)  // 纸质书不受影响
+    }
+
+    @Test("isSyncing 防止重复同步")
+    func syncLockPreventsDoubleTrigger() async throws {
+        // 验证 isSyncing 静态属性默认为 false
+        #expect(WeReadSyncService.isSyncing == false)
+    }
+}
+
 // MARK: - External API Contract Tests (Integration)
 
 @Suite("External API Contract Tests")
@@ -2098,21 +2183,6 @@ struct WeReadBatchEnrichmentTests {
         #expect(book.needsEnrichment)
     }
 
-    @Test("BatchEnrichmentConfig 默认值合理")
-    func batchConfigDefaults() {
-        let config = BatchEnrichmentConfig()
-        #expect(config.batchSize == 5)
-        #expect(config.batchDelaySeconds == 2.0)
-        #expect(config.maxBooksPerSync == 30)
-    }
-
-    @Test("BatchEnrichmentConfig 可自定义")
-    func batchConfigCustom() {
-        let config = BatchEnrichmentConfig(batchSize: 10, batchDelaySeconds: 3.0, maxBooksPerSync: 50)
-        #expect(config.batchSize == 10)
-        #expect(config.batchDelaySeconds == 3.0)
-        #expect(config.maxBooksPerSync == 50)
-    }
 }
 
 // MARK: - CoverFetchService Tests

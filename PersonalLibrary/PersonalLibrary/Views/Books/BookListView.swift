@@ -583,6 +583,18 @@ struct BookRowView: View {
                     .clipShape(Capsule())
             }
 
+            // 用户导入标识
+            if book.isWereadUserImported {
+                Text("用户导入")
+                    .font(.caption2)
+                    .fontWeight(.medium)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.teal.opacity(0.12))
+                    .foregroundStyle(.teal)
+                    .clipShape(Capsule())
+            }
+
             // 出版社
             if let publisher = book.publisher, !publisher.isEmpty {
                 Text(publisher)

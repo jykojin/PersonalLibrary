@@ -355,6 +355,21 @@ actor ISBNLookupService {
         return nil
     }
 
+    /// 从 Open Library 获取作者简介
+    private func fetchOpenLibraryAuthorBio(authorKey: String) async -> String? {
+        guard let url = URL(string: "https://openlibrary.org/authors/\(authorKey).json") else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        guard let (data, _) = try? await URLSession.shared.data(for: request),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        if let bio = json["bio"] as? String, !bio.isEmpty { return bio }
+        if let bioObj = json["bio"] as? [String: Any],
+           let value = bioObj["value"] as? String, !value.isEmpty { return value }
+        return nil
+    }
+
     // MARK: - Google Books API
 
     private func lookupFromGoogleBooks(isbn: String) async throws -> ISBNLookupResult? {
@@ -524,6 +539,82 @@ actor ISBNLookupService {
             .joined(separator: "\n")
     }
 
+    /// 通过书名搜索 Goodreads（无 ISBN 时使用）
+    private func searchGoodreadsByTitle(title: String, author: String) async -> ISBNLookupResult? {
+        let query = author.isEmpty || author == "未知作者" ? title : "\(title) \(author)"
+        guard var components = URLComponents(string: "https://www.goodreads.com/search") else { return nil }
+        components.queryItems = [URLQueryItem(name: "q", value: query)]
+        guard let url = components.url else { return nil }
+
+        var request = URLRequest(url: url)
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+        request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 15
+
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200,
+              data.count <= 5_000_000,
+              let html = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+
+        // 从搜索结果页提取第一本书的链接
+        let linkPattern = #"/book/show/(\d+)"#
+        guard let bookPath = extractPattern(linkPattern, from: html) else { return nil }
+
+        // 访问书籍详情页
+        guard let bookURL = URL(string: "https://www.goodreads.com/book/show/\(bookPath)") else { return nil }
+        var bookRequest = URLRequest(url: bookURL)
+        bookRequest.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+        bookRequest.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
+        bookRequest.timeoutInterval = 15
+
+        guard let (bookData, bookResp) = try? await URLSession.shared.data(for: bookRequest),
+              let bookHttpResp = bookResp as? HTTPURLResponse,
+              bookHttpResp.statusCode == 200,
+              bookData.count <= 5_000_000,
+              let bookHTML = String(data: bookData, encoding: .utf8) else {
+            return nil
+        }
+
+        // 复用现有解析逻辑
+        guard let jsonLD = extractGoodreadsJsonLD(from: bookHTML) else { return nil }
+
+        let bookTitle = jsonLD["name"] as? String ?? ""
+        guard !bookTitle.isEmpty else { return nil }
+
+        var authorName = "未知作者"
+        if let authorObj = jsonLD["author"] as? [[String: Any]],
+           let firstAuthor = authorObj.first,
+           let name = firstAuthor["name"] as? String {
+            authorName = name
+        } else if let authorObj = jsonLD["author"] as? [String: Any],
+                  let name = authorObj["name"] as? String {
+            authorName = name
+        }
+
+        let pages = (jsonLD["numberOfPages"] as? Int)
+            ?? (jsonLD["numberOfPages"] as? String).flatMap { Int($0) }
+
+        let description = extractGoodreadsDescription(from: bookHTML)
+
+        AppLogger.info("Goodreads(title search) found: \(bookTitle) by \(authorName)", category: "ISBNLookup")
+
+        return ISBNLookupResult(
+            title: bookTitle,
+            author: authorName,
+            publisher: nil,
+            publishDate: nil,
+            totalPages: pages,
+            price: nil,
+            bookDescription: description,
+            authorDescription: nil,
+            coverImageURL: nil,
+            isbn: jsonLD["isbn"] as? String ?? ""
+        )
+    }
+
     // MARK: - 智能补全（手动触发）
 
     /// 智能补全缺失字段 — 逐源查询，记录每个源的状态
@@ -652,8 +743,44 @@ actor ISBNLookupService {
             }
         }
 
-        // 如果 ISBN 无效但有书名，尝试用豆瓣书名搜索
+        // 如果 ISBN 无效但有书名，尝试用书名搜索
         if !validISBN && !title.isEmpty {
+            // 1. Open Library 书名搜索（无反爬，可靠，含作者简介）
+            if (needsBookDesc && result.bookDescription == nil) || (needsAuthorDesc && result.authorDescription == nil) {
+                let olResult = await searchOpenLibraryByTitle(title: title, author: author.isEmpty || author == "未知作者" ? nil : author)
+                var olFound = false
+                if needsBookDesc && result.bookDescription == nil,
+                   let desc = olResult?.bookDescription, !desc.isEmpty {
+                    result.bookDescription = desc
+                    olFound = true
+                }
+                if needsAuthorDesc && result.authorDescription == nil,
+                   let desc = olResult?.authorDescription, !desc.isEmpty {
+                    result.authorDescription = desc
+                    olFound = true
+                }
+                result.sourceStatuses.append((
+                    name: "Open Library(书名搜索)",
+                    status: olFound ? .found : .notFound
+                ))
+            }
+
+            // 2. Goodreads 书名搜索（英文书覆盖率高，可能被 WAF 拦截）
+            if (needsBookDesc && result.bookDescription == nil) {
+                let grResult = await searchGoodreadsByTitle(title: title, author: author)
+                var grFound = false
+                if needsBookDesc && result.bookDescription == nil,
+                   let desc = grResult?.bookDescription, !desc.isEmpty {
+                    result.bookDescription = desc
+                    grFound = true
+                }
+                result.sourceStatuses.append((
+                    name: "Goodreads(书名搜索)",
+                    status: grFound ? .found : .notFound
+                ))
+            }
+
+            // 3. 豆瓣书名搜索
             let fetcher = DoubanDescriptionFetcher()
             var foundSomething = false
 
@@ -685,6 +812,23 @@ actor ISBNLookupService {
 
     /// 通过书名搜索 Open Library
     func searchOpenLibraryByTitle(title: String, author: String?) async -> ISBNLookupResult? {
+        // 先用完整标题搜索，0 结果时用主标题（冒号/破折号前的部分）重试
+        if let result = await searchOpenLibraryByTitleOnce(title: title, author: author) {
+            return result
+        }
+        // 降级：截取主标题重试
+        let separators: [Character] = [":", "：", "—", "–", "｜", "|"]
+        if let idx = title.firstIndex(where: { separators.contains($0) }) {
+            let mainTitle = String(title[..<idx]).trimmingCharacters(in: .whitespaces)
+            if !mainTitle.isEmpty && mainTitle != title {
+                AppLogger.warning("OL title search: retry with mainTitle=\(mainTitle)", category: "ISBNLookup")
+                return await searchOpenLibraryByTitleOnce(title: mainTitle, author: author)
+            }
+        }
+        return nil
+    }
+
+    private func searchOpenLibraryByTitleOnce(title: String, author: String?) async -> ISBNLookupResult? {
         var components = URLComponents(string: "https://openlibrary.org/search.json")!
         var queryItems = [
             URLQueryItem(name: "title", value: title),
@@ -694,51 +838,76 @@ actor ISBNLookupService {
             queryItems.append(URLQueryItem(name: "author", value: author))
         }
         components.queryItems = queryItems
-        guard let url = components.url else { return nil }
+        guard let url = components.url else {
+            AppLogger.warning("OL title search: URL build failed", category: "ISBNLookup")
+            return nil
+        }
+
+        AppLogger.warning("OL title search: \(url.absoluteString)", category: "ISBNLookup")
 
         var request = URLRequest(url: url)
-        request.timeoutInterval = 10
+        request.timeoutInterval = 15
 
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                AppLogger.warning("OL title search: not HTTPURLResponse", category: "ISBNLookup")
+                return nil
+            }
+            AppLogger.warning("OL title search: HTTP \(httpResponse.statusCode), bytes=\(data.count)", category: "ISBNLookup")
+            guard httpResponse.statusCode == 200 else { return nil }
+
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let docs = json["docs"] as? [[String: Any]] else {
+                AppLogger.warning("OL title search: JSON parse failed or no docs array", category: "ISBNLookup")
+                return nil
+            }
+            AppLogger.warning("OL title search: \(docs.count) docs found", category: "ISBNLookup")
+            guard let firstDoc = docs.first else { return nil }
+
+            let resultTitle = firstDoc["title"] as? String ?? title
+            let authors = firstDoc["author_name"] as? [String] ?? []
+            let authorName = authors.first ?? "未知作者"
+            let publisher = (firstDoc["publisher"] as? [String])?.first
+            let pages = firstDoc["number_of_pages_median"] as? Int
+            let publishYear = (firstDoc["publish_year"] as? [Int])?.first.map { String($0) }
+
+            // 从 edition key 获取简介
+            var description: String?
+            let editionKey = firstDoc["cover_edition_key"] as? String
+            let workKey = firstDoc["key"] as? String
+            AppLogger.warning("OL title search: editionKey=\(editionKey ?? "nil"), workKey=\(workKey ?? "nil")", category: "ISBNLookup")
+
+            if let editionKey {
+                description = await fetchOpenLibraryDescription(bookKey: "/books/\(editionKey)")
+            }
+            if description == nil, let workKey {
+                description = await fetchOpenLibraryDescription(bookKey: workKey)
+            }
+
+            // 获取作者简介
+            var authorDescription: String?
+            if let authorKeys = firstDoc["author_key"] as? [String], let firstKey = authorKeys.first {
+                authorDescription = await fetchOpenLibraryAuthorBio(authorKey: firstKey)
+            }
+            AppLogger.warning("OL title search: description=\(description != nil), authorDesc=\(authorDescription != nil)", category: "ISBNLookup")
+
+            return ISBNLookupResult(
+                title: resultTitle,
+                author: authorName,
+                publisher: publisher,
+                publishDate: publishYear,
+                totalPages: pages,
+                price: nil,
+                bookDescription: description,
+                authorDescription: authorDescription,
+                coverImageURL: nil,
+                isbn: (firstDoc["isbn"] as? [String])?.first ?? ""
+            )
+        } catch {
+            AppLogger.warning("OL title search: network error: \(error)", category: "ISBNLookup")
             return nil
         }
-
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let docs = json["docs"] as? [[String: Any]],
-              let firstDoc = docs.first else {
-            return nil
-        }
-
-        let resultTitle = firstDoc["title"] as? String ?? title
-        let authors = firstDoc["author_name"] as? [String] ?? []
-        let authorName = authors.first ?? "未知作者"
-        let publisher = (firstDoc["publisher"] as? [String])?.first
-        let pages = firstDoc["number_of_pages_median"] as? Int
-        let publishYear = (firstDoc["publish_year"] as? [Int])?.first.map { String($0) }
-
-        // 从 edition key 获取简介
-        var description: String?
-        if let editionKey = firstDoc["cover_edition_key"] as? String {
-            description = await fetchOpenLibraryDescription(bookKey: "/books/\(editionKey)")
-        } else if let workKey = firstDoc["key"] as? String {
-            // fallback: use works key directly
-            description = await fetchOpenLibraryDescription(bookKey: workKey)
-        }
-
-        return ISBNLookupResult(
-            title: resultTitle,
-            author: authorName,
-            publisher: publisher,
-            publishDate: publishYear,
-            totalPages: pages,
-            price: nil,
-            bookDescription: description,
-            authorDescription: nil,
-            coverImageURL: nil,
-            isbn: (firstDoc["isbn"] as? [String])?.first ?? ""
-        )
     }
 
     /// 通过书名搜索 Google Books

@@ -75,6 +75,7 @@ actor WeReadSkillProvider: WeReadDataSource {
 
             let typeInt = bookDict["type"] as? Int ?? 0
             let bookType: BookType = (typeInt == 2 || typeInt == 3) ? .audiobook : .ebook
+            let isUserImported = typeInt == 1 || bookId.hasPrefix("CB_")
 
             let item = WeReadImportItem(
                 id: bookId,
@@ -91,6 +92,7 @@ actor WeReadSkillProvider: WeReadDataSource {
                 ttsTime: 0,
                 isFinished: isFinished,
                 bookType: bookType,
+                isUserImported: isUserImported,
                 addedTime: addedTime,
                 finishedTime: nil
             )
@@ -133,18 +135,32 @@ actor WeReadSkillProvider: WeReadDataSource {
     }
 
     func enrichBook(bookId: String) async throws -> WeReadEnrichResult {
+        AppLogger.warning("Skill enrichBook START: bookId=\(bookId)", category: "WeRead")
         var result = WeReadEnrichResult()
+
+        // CB_ 前缀是用户导入书的固定标识，最可靠
+        if bookId.hasPrefix("CB_") {
+            result.isUserImported = true
+        }
 
         // 1. 获取书籍详情
         do {
+            AppLogger.warning("Skill enrichBook: calling fetchBookInfo...", category: "WeRead")
             let info = try await fetchBookInfo(bookId: bookId)
+            AppLogger.warning("Skill enrichBook: fetchBookInfo OK, type=\(String(describing: info.type))", category: "WeRead")
             result.publisher = info.publisher
             result.isbn = info.isbn
             result.intro = info.intro
             result.price = info.price
             result.publishTime = info.publishTime
-            if let type = info.type, (type == 2 || type == 3) {
-                result.bookType = .audiobook
+            if let type = info.type {
+                if type == 2 || type == 3 {
+                    result.bookType = .audiobook
+                }
+                // 仅当 type==1 时额外确认（CB_ 已经设置过了）
+                if type == 1 {
+                    result.isUserImported = true
+                }
             }
         } catch {
             AppLogger.warning("Skill enrichBook[\(bookId)] fetchBookInfo failed: \(error)", category: "WeRead")
@@ -152,7 +168,9 @@ actor WeReadSkillProvider: WeReadDataSource {
 
         // 2. 获取阅读进度（含时长 + 开始阅读时间 + 完成时间）
         do {
+            AppLogger.warning("Skill enrichBook: calling getprogress...", category: "WeRead")
             let progressData = try await callAPI(apiName: "/book/getprogress", params: ["bookId": bookId])
+            AppLogger.warning("Skill enrichBook: getprogress OK", category: "WeRead")
             if let book = progressData["book"] as? [String: Any] {
                 let recordReadingTime = book["recordReadingTime"] as? Int ?? 0
                 if recordReadingTime > 0 {
@@ -171,6 +189,7 @@ actor WeReadSkillProvider: WeReadDataSource {
             AppLogger.warning("Skill enrichBook[\(bookId)] getprogress failed: \(error)", category: "WeRead")
         }
 
+        AppLogger.warning("Skill enrichBook END: isUserImported=\(String(describing: result.isUserImported))", category: "WeRead")
         return result
     }
 

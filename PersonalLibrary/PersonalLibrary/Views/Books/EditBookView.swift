@@ -506,7 +506,7 @@ struct EditBookView: View {
         autoFillMessage = "正在查询数据源..."
         defer { isAutoFilling = false }
 
-        // 微信读书电纸书：只从微信读书 + 本地补全，不走外部 ISBN 源
+        // 微信读书电纸书：先从微信读书补全
         let wereadId = book.wereadBookId
         if let wereadId, !wereadId.isEmpty {
             await fillFromWeRead(bookId: wereadId)
@@ -519,11 +519,41 @@ struct EditBookView: View {
                 }
             }
 
-            // 构建结果（只显示微信读书 + 本地）
+            // 微信读书缺描述时，再查外部源补全（用户导入书和平台书都可能缺描述）
+            var externalFilled = false
+            AppLogger.warning("performSmartFill: bookDesc.isEmpty=\(bookDescription.isEmpty), authorDesc.isEmpty=\(authorDescription.isEmpty), isbn=\(isbn), title=\(title), author=\(author)", category: "EditBook")
+            if bookDescription.isEmpty || authorDescription.isEmpty {
+                autoFillMessage = "正在从外部数据源补全描述..."
+                AppLogger.warning("performSmartFill: calling ISBNLookupService.smartFill for external sources...", category: "EditBook")
+                let service = ISBNLookupService()
+                let extResult = await service.smartFill(
+                    isbn: isbn,
+                    title: title,
+                    author: author,
+                    needsPublisher: false,
+                    needsPages: false,
+                    needsPrice: false,
+                    needsPublishDate: false,
+                    needsTranslator: false,
+                    needsAuthor: false,
+                    needsBookDesc: bookDescription.isEmpty,
+                    needsAuthorDesc: authorDescription.isEmpty
+                )
+                AppLogger.warning("performSmartFill: external result bookDesc=\(extResult.bookDescription != nil), authorDesc=\(extResult.authorDescription != nil)", category: "EditBook")
+                if let d = extResult.bookDescription { bookDescription = d; externalFilled = true }
+                if let d = extResult.authorDescription { authorDescription = d; externalFilled = true }
+            } else {
+                AppLogger.warning("performSmartFill: skipped external sources (both descriptions non-empty)", category: "EditBook")
+            }
+
+            // 构建结果
             var statuses: [(name: String, status: LookupSourceStatus)] = []
             statuses.append(("微信读书", book.wereadEnrichedDate != nil ? .found : .notFound))
             if !authorDescription.isEmpty {
                 statuses.append(("本地书库", .found))
+            }
+            if externalFilled {
+                statuses.append(("外部数据源", .found))
             }
             fillResult = SmartFillResult(sourceStatuses: statuses)
             return
@@ -571,19 +601,26 @@ struct EditBookView: View {
 
     /// 从微信读书 API 补全书籍信息 + 阅读时长（使用统一 enrichBook 方法）
     private func fillFromWeRead(bookId: String) async {
-        let service: any WeReadDataSource = WeReadConnectionMode.current == .skill
+        let mode = WeReadConnectionMode.current
+        AppLogger.warning("fillFromWeRead START: bookId=\(bookId), mode=\(mode.rawValue)", category: "EditBook")
+
+        let service: any WeReadDataSource = mode == .skill
             ? WeReadSkillProvider()
             : WeReadService()
         let connected = await service.isConnected()
-        AppLogger.warning("fillFromWeRead: bookId=\(bookId), connected=\(connected)", category: "EditBook")
+        AppLogger.warning("fillFromWeRead: connected=\(connected)", category: "EditBook")
         guard connected else {
+            AppLogger.warning("fillFromWeRead: NOT connected, returning", category: "EditBook")
             return
         }
 
         autoFillMessage = "正在从微信读书补全..."
 
+        // Step 1: enrichBook
+        AppLogger.warning("fillFromWeRead: calling enrichBook...", category: "EditBook")
         do {
             let result = try await service.enrichBook(bookId: bookId)
+            AppLogger.warning("fillFromWeRead: enrichBook OK, isUserImported=\(String(describing: result.isUserImported)), publisher=\(result.publisher ?? "nil"), isbn=\(result.isbn ?? "nil")", category: "EditBook")
 
             // 应用到表单字段（表单字段为 @State，不直接用 applyToBook）
             if publisher.isEmpty, let p = result.publisher, !p.isEmpty {
@@ -604,6 +641,11 @@ struct EditBookView: View {
             if let type = result.bookType, type == .audiobook, bookType != .audiobook {
                 bookType = .audiobook
             }
+            // 用户导入标识：enrichBook 从 /book/info 获取
+            if let imported = result.isUserImported, imported {
+                book.isWereadUserImported = true
+                AppLogger.warning("fillFromWeRead: set isWereadUserImported=true from enrichBook", category: "EditBook")
+            }
             // 阅读时长只增不减
             if result.readingHours > book.wereadReadingHours {
                 book.wereadReadingHours = result.readingHours
@@ -619,9 +661,44 @@ struct EditBookView: View {
             // 标记已补全
             book.wereadEnrichedDate = Date()
             try? modelContext.save()
+        } catch is CancellationError {
+            AppLogger.warning("fillFromWeRead: enrichBook CANCELLED (CancellationError)", category: "EditBook")
+            return
         } catch {
-            AppLogger.warning("fillFromWeRead enrichBook failed: \(error)", category: "EditBook")
+            AppLogger.warning("fillFromWeRead: enrichBook FAILED: \(error)", category: "EditBook")
         }
+
+        // Step 2: 如果 enrichBook 没能确定用户导入状态，用 bookId 前缀判断
+        // CB_ 前缀是微信读书用户导入书籍的固定标识
+        if !book.isWereadUserImported && bookId.hasPrefix("CB_") {
+            book.isWereadUserImported = true
+            try? modelContext.save()
+            AppLogger.warning("fillFromWeRead: set isWereadUserImported=true from CB_ prefix", category: "EditBook")
+        }
+
+        // Step 3: 仍未确定时，从书架列表查找（兜底）
+        if !book.isWereadUserImported {
+            autoFillMessage = "正在确认书籍来源..."
+            AppLogger.warning("fillFromWeRead: calling fetchAllBooks for type check...", category: "EditBook")
+            do {
+                let allBooks = try await service.fetchAllBooks()
+                AppLogger.warning("fillFromWeRead: fetchAllBooks returned \(allBooks.count) items", category: "EditBook")
+                if let item = allBooks.first(where: { $0.id == bookId }) {
+                    AppLogger.warning("fillFromWeRead: found book in shelf, isUserImported=\(item.isUserImported)", category: "EditBook")
+                    if item.isUserImported {
+                        book.isWereadUserImported = true
+                        try? modelContext.save()
+                    }
+                } else {
+                    AppLogger.warning("fillFromWeRead: book NOT found in shelf by id=\(bookId)", category: "EditBook")
+                }
+            } catch is CancellationError {
+                AppLogger.warning("fillFromWeRead: fetchAllBooks CANCELLED", category: "EditBook")
+            } catch {
+                AppLogger.warning("fillFromWeRead: fetchAllBooks FAILED: \(error)", category: "EditBook")
+            }
+        }
+        AppLogger.warning("fillFromWeRead END, isWereadUserImported=\(book.isWereadUserImported)", category: "EditBook")
     }
 
     /// 解析出版日期字符串为 Date
