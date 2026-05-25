@@ -106,8 +106,8 @@ struct WeReadImportItem: Identifiable {
 
 // MARK: - WeRead API Service
 
-/// 微信读书 API 服务
-actor WeReadService {
+/// 微信读书 API 服务（Web Cookie 模式）
+actor WeReadService: WeReadDataSource {
 
     private let baseURL = "https://weread.qq.com"
     private var cookies: String = ""
@@ -140,6 +140,16 @@ actor WeReadService {
     func logout() {
         cookies = ""
         KeychainService.delete(key: KeychainService.wereadCookieKey)
+    }
+
+    // MARK: - WeReadDataSource Protocol
+
+    func isConnected() -> Bool {
+        isLoggedIn()
+    }
+
+    func disconnect() {
+        logout()
     }
 
     // MARK: - API 调用
@@ -611,6 +621,8 @@ struct WeReadEnrichResult {
     var publishTime: String?
     var bookType: BookType?
     var readingHours: Double = 0
+    var startedReadingTime: Date?
+    var finishedTime: Date?
 
     /// 将补全结果应用到 Book（只填充空字段，阅读时长只增不减）
     func applyToBook(_ book: Book) {
@@ -634,6 +646,14 @@ struct WeReadEnrichResult {
         // 阅读时长只增不减
         if readingHours > book.wereadReadingHours {
             book.wereadReadingHours = readingHours
+        }
+        // 开始阅读时间：只在本地无记录时填充
+        if let st = startedReadingTime, book.startedReadingDate == nil {
+            book.startedReadingDate = st
+        }
+        // 完成时间：只在本地无记录时填充
+        if let ft = finishedTime, book.finishedDate == nil {
+            book.finishedDate = ft
         }
     }
 }

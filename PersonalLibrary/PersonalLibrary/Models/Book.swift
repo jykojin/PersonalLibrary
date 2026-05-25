@@ -71,6 +71,7 @@ final class Book {
 
     // 时间
     var addedDate: Date = Date()
+    var startedReadingDate: Date?  // 开始阅读日期
     var finishedDate: Date?
     var statusChangedDate: Date?  // 标记阅读状态的时间
 
@@ -78,6 +79,7 @@ final class Book {
     var wereadBookId: String?  // 微信读书 bookId，用于同步匹配
     var wereadProgress: Int = 0  // 微信读书阅读进度 (0-100)
     var wereadReadingHours: Double = 0  // 微信读书阅读时长（小时）
+    var wereadEnrichedDate: Date?  // 上次通过微信读书 API 补全的时间，nil 表示从未补全
 
     // 批量补全标记
     var lastEnrichmentDate: Date?  // 上次批量补全的时间，nil 表示从未处理

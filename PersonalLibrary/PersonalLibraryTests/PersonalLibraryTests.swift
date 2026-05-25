@@ -1215,7 +1215,7 @@ struct WeReadSyncLogicTests {
         let syncService = WeReadSyncService()
         let result = await syncService.sync(modelContext: context)
 
-        #expect(result.error == "未登录微信读书")
+        #expect(result.error == "未连接微信读书")
         #expect(result.hasChanges == false)
     }
 

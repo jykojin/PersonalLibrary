@@ -169,7 +169,7 @@ struct DataMaintenanceView: View {
             } header: {
                 Text("信息补全")
             } footer: {
-                Text("补全纸质书/微信读书图书缺失的出版社、定价、页数、出版日期、作者、作者简介、图书简介。\n查询顺序：豆瓣 → Open Library → Google Books → Goodreads")
+                Text("纸质书：从豆瓣 → Open Library → Google Books → Goodreads 查询补全\n微信读书：从微信读书 API 补全出版社、定价、简介、阅读时长、完成日期")
             }
 
             // 进度区域
@@ -563,16 +563,71 @@ struct DataMaintenanceView: View {
     }
 
     private func batchEnrichWeReadBooks() async {
-        let bookIDs = allBooks.filter {
-            !$0.isArchived && $0.wereadBookId != nil && $0.needsEnrichment
-        }.map(\.persistentModelID)
+        let books = allBooks.filter {
+            !$0.isArchived && $0.wereadBookId != nil && $0.wereadEnrichedDate == nil
+        }
 
-        await batchEnrich(
-            bookIDs: bookIDs,
-            label: "weread",
-            emptyMessage: "所有微信读书图书信息已完整，无需补全",
-            doneMessage: { s, t in "完成！\(s)/\(t) 本微信读书图书成功补全信息" }
-        )
+        guard !books.isEmpty else {
+            cleanResultMessage = "所有微信读书图书信息已完整，无需补全"
+            showingCleanResult = true
+            return
+        }
+
+        isBatchRunning = true
+        batchTotal = books.count
+        batchCurrent = 0
+        batchProgress = 0
+        batchStatusText = "正在补全..."
+
+        let provider: any WeReadDataSource = WeReadConnectionMode.current == .skill
+            ? WeReadSkillProvider()
+            : WeReadService()
+
+        var successCount = 0
+
+        for (index, book) in books.enumerated() {
+            if batchCancelled || Task.isCancelled { break }
+            guard let bookId = book.wereadBookId else { continue }
+
+            await MainActor.run {
+                self.batchCurrent = index + 1
+                self.batchProgress = Double(index + 1) / Double(books.count)
+                self.batchStatusText = "正在补全（\(book.title)）\(index + 1)/\(books.count)"
+            }
+
+            if index > 0 && index % 3 == 0 {
+                try? await Task.sleep(for: .seconds(1))
+            }
+
+            do {
+                let enrichResult = try await provider.enrichBook(bookId: bookId)
+                await MainActor.run {
+                    enrichResult.applyToBook(book)
+                    book.wereadEnrichedDate = Date()
+                }
+                successCount += 1
+            } catch {
+                AppLogger.warning("批量补全微信读书失败 (\(book.title)): \(error)", category: "BatchEnrich")
+            }
+
+            // 每 10 本保存一次
+            if (index + 1) % 10 == 0 {
+                try? await MainActor.run { try modelContext.save() }
+            }
+        }
+
+        try? await MainActor.run { try modelContext.save() }
+
+        let wasCancelled = batchCancelled
+        await MainActor.run {
+            isBatchRunning = false
+            if wasCancelled {
+                cleanResultMessage = "已停止。已补全 \(successCount)/\(books.count) 本"
+            } else {
+                cleanResultMessage = "完成！\(successCount)/\(books.count) 本微信读书图书成功补全信息"
+            }
+            showingCleanResult = true
+        }
     }
 
     /// 通用批量补全逻辑

@@ -123,7 +123,10 @@ struct PersonalLibraryApp: App {
         guard WeReadSyncService.shouldAutoSync() else { return }
 
         let context = modelContainer.mainContext
-        let syncService = WeReadSyncService()
+        let provider: any WeReadDataSource = WeReadConnectionMode.current == .skill
+            ? WeReadSkillProvider()
+            : WeReadService()
+        let syncService = WeReadSyncService(provider: provider)
 
         Task {
             let result = await syncService.sync(modelContext: context)

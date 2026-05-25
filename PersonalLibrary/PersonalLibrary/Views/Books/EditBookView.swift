@@ -516,10 +516,12 @@ struct EditBookView: View {
 
     /// 从微信读书 API 补全书籍信息 + 阅读时长（使用统一 enrichBook 方法）
     private func fillFromWeRead(bookId: String) async {
-        let service = WeReadService()
-        let loggedIn = await service.isLoggedIn()
-        AppLogger.warning("fillFromWeRead: bookId=\(bookId), loggedIn=\(loggedIn)", category: "EditBook")
-        guard loggedIn else {
+        let service: any WeReadDataSource = WeReadConnectionMode.current == .skill
+            ? WeReadSkillProvider()
+            : WeReadService()
+        let connected = await service.isConnected()
+        AppLogger.warning("fillFromWeRead: bookId=\(bookId), connected=\(connected)", category: "EditBook")
+        guard connected else {
             return
         }
 
@@ -550,13 +552,18 @@ struct EditBookView: View {
             // 阅读时长只增不减
             if result.readingHours > book.wereadReadingHours {
                 book.wereadReadingHours = result.readingHours
-                AppLogger.warning("fillFromWeRead: set wereadReadingHours=\(result.readingHours)h", category: "EditBook")
             }
-            // 持久化
-            if book.wereadReadingHours > 0 {
-                try? modelContext.save()
-                AppLogger.warning("fillFromWeRead: saved, book.wereadReadingHours=\(book.wereadReadingHours)", category: "EditBook")
+            // 开始阅读时间
+            if let st = result.startedReadingTime, book.startedReadingDate == nil {
+                book.startedReadingDate = st
             }
+            // 完成时间
+            if let ft = result.finishedTime, book.finishedDate == nil {
+                book.finishedDate = ft
+            }
+            // 标记已补全
+            book.wereadEnrichedDate = Date()
+            try? modelContext.save()
         } catch {
             AppLogger.warning("fillFromWeRead enrichBook failed: \(error)", category: "EditBook")
         }

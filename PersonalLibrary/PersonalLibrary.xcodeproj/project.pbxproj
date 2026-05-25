@@ -7,8 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0C48FCD9F03D0B3AF0242062 /* WeReadSkillSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5139540D5CB335C7D3C65206 /* WeReadSkillSetupView.swift */; };
 		10B780DEF9C5DBB65903FA05 /* WeChatAuthManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C2E9C48A0B7910575824F3F /* WeChatAuthManager.swift */; };
 		1770006A3A1C772420E36766 /* WeReadService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 077352B9E63F07D5B9FF2AE3 /* WeReadService.swift */; };
+		1BA7CD18E5B03E1D1D79BC00 /* WeReadSkillProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C5B9966B774AF6B75A6242E /* WeReadSkillProvider.swift */; };
 		1E1EC4207C8894113677EC0D /* FileLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E3F97857DF70CD057FA821D /* FileLogger.swift */; };
 		2386F85B97813D45A1DDD932 /* BarcodeScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29B551E5CF1C3716F351163F /* BarcodeScannerView.swift */; };
 		38ADE73E0227DB03E950A0E6 /* BackupService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89CB1AAC1ECF1D2707E175DA /* BackupService.swift */; };
@@ -35,6 +37,7 @@
 		9C1171958691DE41B44C355A /* AdvancedSearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13D0C01BAB671BED7B139079 /* AdvancedSearchView.swift */; };
 		9C1DE30F494E63DEF129C8DF /* ISBNLookupService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C274353DDACF027AB1E5A87 /* ISBNLookupService.swift */; };
 		9C998EC413F7EF8D12D92316 /* ReadingRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F1F4735287F12B60CE6CEE6 /* ReadingRecord.swift */; };
+		9DE7988AE83CABE3BD043A13 /* WeReadDataSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8668B75C4E8BD6F9F1B013B6 /* WeReadDataSource.swift */; };
 		A490080504DE0091F1993BE0 /* ExcelImportExportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D2E3C7560B14260793E3C54 /* ExcelImportExportService.swift */; };
 		A8381A1722F0F43B5228D813 /* Bookshelf.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC5361797A17134EBBC3B518 /* Bookshelf.swift */; };
 		A931AF1221AB2786C34C6D85 /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 0A5F617F7BA886A2A83F6679 /* Preview Assets.xcassets */; };
@@ -83,8 +86,10 @@
 		1D53D9AD5D55B69FFEE275CA /* AuthorPublisherMaintenanceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthorPublisherMaintenanceView.swift; sourceTree = "<group>"; };
 		29B551E5CF1C3716F351163F /* BarcodeScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BarcodeScannerView.swift; sourceTree = "<group>"; };
 		2A2CA6A7F15841781FBFBD85 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		3C5B9966B774AF6B75A6242E /* WeReadSkillProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeReadSkillProvider.swift; sourceTree = "<group>"; };
 		4D2E3C7560B14260793E3C54 /* ExcelImportExportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExcelImportExportService.swift; sourceTree = "<group>"; };
 		4E3F97857DF70CD057FA821D /* FileLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileLogger.swift; sourceTree = "<group>"; };
+		5139540D5CB335C7D3C65206 /* WeReadSkillSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeReadSkillSetupView.swift; sourceTree = "<group>"; };
 		527950641E4AC110D1BE65C5 /* BookDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookDetailView.swift; sourceTree = "<group>"; };
 		5F0A0333C6DF63A521270EF4 /* AppLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLogger.swift; sourceTree = "<group>"; };
 		5F1F4735287F12B60CE6CEE6 /* ReadingRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingRecord.swift; sourceTree = "<group>"; };
@@ -94,6 +99,7 @@
 		807723C2BC4CC83D642DB631 /* BookshelfListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookshelfListView.swift; sourceTree = "<group>"; };
 		80C26F79C497CEB88D3F5327 /* ImportRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportRecord.swift; sourceTree = "<group>"; };
 		843A18820B905386EE81983F /* WeReadImportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeReadImportView.swift; sourceTree = "<group>"; };
+		8668B75C4E8BD6F9F1B013B6 /* WeReadDataSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeReadDataSource.swift; sourceTree = "<group>"; };
 		869DB44DE0B3D6513FD372D4 /* PersonalLibraryTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PersonalLibraryTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		88640782F12C94E8F4CD7B87 /* WeReadLoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeReadLoginView.swift; sourceTree = "<group>"; };
 		89CB1AAC1ECF1D2707E175DA /* BackupService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupService.swift; sourceTree = "<group>"; };
@@ -242,7 +248,9 @@
 				7D3F152D29BC867FAF1D8381 /* KeychainService.swift */,
 				CDB95BE34A79F5D4E93F7D3C /* StorageManager.swift */,
 				0C2E9C48A0B7910575824F3F /* WeChatAuthManager.swift */,
+				8668B75C4E8BD6F9F1B013B6 /* WeReadDataSource.swift */,
 				077352B9E63F07D5B9FF2AE3 /* WeReadService.swift */,
+				3C5B9966B774AF6B75A6242E /* WeReadSkillProvider.swift */,
 				C03C6E6FCF4B713FB853A884 /* WeReadSyncService.swift */,
 			);
 			path = Services;
@@ -290,6 +298,7 @@
 			children = (
 				843A18820B905386EE81983F /* WeReadImportView.swift */,
 				88640782F12C94E8F4CD7B87 /* WeReadLoginView.swift */,
+				5139540D5CB335C7D3C65206 /* WeReadSkillSetupView.swift */,
 				705F4B59E1366B9C933D78BE /* WeReadSyncView.swift */,
 			);
 			path = WeRead;
@@ -487,9 +496,12 @@
 				C2BF102B722D1457EC5F5DFF /* StorageManager.swift in Sources */,
 				639BD6ABBB4EDDF3E70D5132 /* Tag.swift in Sources */,
 				10B780DEF9C5DBB65903FA05 /* WeChatAuthManager.swift in Sources */,
+				9DE7988AE83CABE3BD043A13 /* WeReadDataSource.swift in Sources */,
 				765B208CE0801D80C7E654C9 /* WeReadImportView.swift in Sources */,
 				3BFDD4CE26D896FBF8A4BEAC /* WeReadLoginView.swift in Sources */,
 				1770006A3A1C772420E36766 /* WeReadService.swift in Sources */,
+				1BA7CD18E5B03E1D1D79BC00 /* WeReadSkillProvider.swift in Sources */,
+				0C48FCD9F03D0B3AF0242062 /* WeReadSkillSetupView.swift in Sources */,
 				5D9553EED3A2B7257B71148B /* WeReadSyncService.swift in Sources */,
 				E8C05F80D343BE7A188CB096 /* WeReadSyncView.swift in Sources */,
 			);

@@ -72,6 +72,9 @@ struct KeychainService {
     /// 微信登录 Token
     static let wechatTokenKey = "com.personallibrary.wechat.token"
 
+    /// 微信读书 Skill API Key
+    static let wereadApiKey = "com.personallibrary.weread.apikey"
+
     // MARK: - Private
 
     private static var bundleIdentifier: String {
