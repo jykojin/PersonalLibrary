@@ -403,6 +403,17 @@ struct WeReadSyncView: View {
                     .font(.subheadline)
                 }
 
+                if result.booksEnriched > 0 {
+                    HStack {
+                        Label("信息补全", systemImage: "text.badge.checkmark")
+                            .foregroundStyle(.purple)
+                        Spacer()
+                        Text("\(result.booksEnriched) 本")
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.subheadline)
+                }
+
                 if result.progressUpdated > 0 {
                     HStack {
                         Label("进度更新", systemImage: "chart.line.uptrend.xyaxis")

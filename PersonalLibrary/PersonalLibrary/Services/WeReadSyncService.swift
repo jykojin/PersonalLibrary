@@ -131,11 +131,12 @@ actor WeReadSyncService {
         var progressUpdated: Int = 0
         var statusUpdated: Int = 0
         var booksArchived: Int = 0
+        var booksEnriched: Int = 0
         var totalRemote: Int = 0
         var error: String?
 
         var hasChanges: Bool {
-            newBooksImported > 0 || progressUpdated > 0 || statusUpdated > 0 || booksArchived > 0
+            newBooksImported > 0 || progressUpdated > 0 || statusUpdated > 0 || booksArchived > 0 || booksEnriched > 0
         }
 
         var summary: String {
@@ -143,6 +144,7 @@ actor WeReadSyncService {
             if !hasChanges { return "已是最新，无需更新" }
             var parts: [String] = []
             if newBooksImported > 0 { parts.append("新增 \(newBooksImported) 本") }
+            if booksEnriched > 0 { parts.append("补全 \(booksEnriched) 本") }
             if progressUpdated > 0 { parts.append("进度更新 \(progressUpdated) 本") }
             if statusUpdated > 0 { parts.append("状态更新 \(statusUpdated) 本") }
             if booksArchived > 0 { parts.append("移除 \(booksArchived) 本") }
@@ -191,10 +193,7 @@ actor WeReadSyncService {
         let eventType = triggeredBy == SyncHistoryRecord.Trigger.system
             ? SyncHistoryRecord.EventType.autoSync
             : SyncHistoryRecord.EventType.manualSync
-        let historyRecord = SyncHistoryRecord(eventType: eventType, triggeredBy: triggeredBy)
-        let historyContext = ModelContext(container)
-        historyContext.insert(historyRecord)
-        try? historyContext.save()
+        let syncStartTime = Date.now
 
         defer {
             if !skipLockCheck {
@@ -202,13 +201,17 @@ actor WeReadSyncService {
                 Self.setSyncing(false)
                 AppLogger.warning("[SYNC-LOCK] 释放锁，同步结束", category: "WeReadSync")
             }
-            historyRecord.endTime = .now
-            historyRecord.totalRemote = result.totalRemote
-            historyRecord.newImported = result.newBooksImported
-            historyRecord.progressUpdated = result.progressUpdated
-            historyRecord.statusUpdated = result.statusUpdated
-            historyRecord.booksArchived = result.booksArchived
-            historyRecord.errorMessage = result.error
+            let historyContext = ModelContext(container)
+            let record = SyncHistoryRecord(eventType: eventType, triggeredBy: triggeredBy, startTime: syncStartTime)
+            record.endTime = .now
+            record.totalRemote = result.totalRemote
+            record.newImported = result.newBooksImported
+            record.progressUpdated = result.progressUpdated
+            record.statusUpdated = result.statusUpdated
+            record.booksArchived = result.booksArchived
+            record.booksEnriched = result.booksEnriched
+            record.errorMessage = result.error
+            historyContext.insert(record)
             try? historyContext.save()
         }
 
@@ -559,6 +562,7 @@ actor WeReadSyncService {
                     // (3) 仅当补全成功时标记已完成（失败的书下次 sync 会重试）
                     if enrichSucceeded {
                         book.wereadEnrichedDate = Date()
+                        result.booksEnriched += 1
                     }
 
                     // 每 10 本保存一次，减少 UI 刷新频率
