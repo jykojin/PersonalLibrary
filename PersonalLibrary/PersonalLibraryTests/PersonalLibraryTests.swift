@@ -1235,6 +1235,7 @@ struct WeReadSyncSettingsTests {
 
     @Test("开启自动同步且超过1小时返回true")
     func enabledOldSync() {
+        WeReadSyncService.resetSyncLockForTesting()
         WeReadSyncService.autoSyncEnabled = true
         WeReadSyncService.lastSyncDate = Date().addingTimeInterval(-7200)
         defer {
@@ -1242,6 +1243,7 @@ struct WeReadSyncSettingsTests {
             WeReadSyncService.lastSyncDate = nil
         }
 
+        #expect(WeReadSyncService.autoSyncEnabled == true, "precondition: autoSyncEnabled was overwritten by parallel test")
         #expect(WeReadSyncService.shouldAutoSync() == true)
     }
 
