@@ -21,9 +21,9 @@ struct WeReadSyncView: View {
     @State private var showingSkillSetup = false
     @State private var showingResetAlert = false
     @State private var resetResultMessage: String?
-    @State private var backgroundProgress: WeReadSyncService.SyncProgress?
+    @State private var showingCancelSyncAlert = false
 
-    /// 0.5 秒轮询后台同步进度
+    /// 0.5 秒轮询全局同步进度（接管模式）
     private let progressTimer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
 
     private let webService = WeReadService()
@@ -103,15 +103,27 @@ struct WeReadSyncView: View {
                         Label("自动同步", systemImage: "arrow.triangle.2.circlepath")
                     }
                     .onChange(of: autoSyncEnabled) { _, newValue in
-                        WeReadSyncService.autoSyncEnabled = newValue
+                        if !newValue && WeReadSyncService.isSyncing {
+                            showingCancelSyncAlert = true
+                        } else {
+                            WeReadSyncService.autoSyncEnabled = newValue
+                        }
                     }
 
                     Button {
                         if isSyncing {
                             syncCancelled = true
                             syncTask?.cancel()
+                            WeReadSyncService.cancelCurrentSync()
+                        } else if WeReadSyncService.isSyncing {
+                            // 接管后台同步：显示进度 + 提供停止按钮
+                            isSyncing = true
+                            syncProgress = WeReadSyncService.currentProgress
                         } else {
                             syncCancelled = false
+                            isSyncing = true
+                            syncProgress = nil
+                            syncResult = nil
                             syncTask = Task { await performSync() }
                         }
                     } label: {
@@ -132,41 +144,7 @@ struct WeReadSyncView: View {
                             }
                         }
                     }
-                    .disabled(syncCancelled || WeReadSyncService.isSyncing)
-
-                    // 后台同步实时进度（与手动同步使用相同 UI 样式）
-                    if !isSyncing && WeReadSyncService.isSyncing {
-                        if let progress = backgroundProgress {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Image(systemName: "arrow.triangle.2.circlepath")
-                                        .foregroundStyle(.orange)
-                                    Text(progress.phase)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    if progress.total > 0 {
-                                        Spacer()
-                                        Text("\(progress.current)/\(progress.total)")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                if progress.total > 0 {
-                                    ProgressView(value: Double(progress.current), total: Double(progress.total))
-                                }
-                                if let detail = progress.detail {
-                                    Text(detail)
-                                        .font(.caption2)
-                                        .foregroundStyle(.tertiary)
-                                        .lineLimit(1)
-                                }
-                            }
-                        } else {
-                            Label("后台正在同步中…", systemImage: "info.circle")
-                                .font(.caption)
-                                .foregroundStyle(.orange)
-                        }
-                    }
+                    .disabled(syncCancelled)
 
                     if isSyncing, let progress = syncProgress {
                         VStack(alignment: .leading, spacing: 4) {
@@ -237,12 +215,27 @@ struct WeReadSyncView: View {
         }
         .navigationTitle("微信读书同步")
         .navigationBarTitleDisplayMode(.inline)
-        .task { await checkConnection() }
+        .task {
+            await checkConnection()
+            // 进入页面时如果后台正在同步，自动接管显示
+            if WeReadSyncService.isSyncing {
+                isSyncing = true
+                syncProgress = WeReadSyncService.currentProgress
+            }
+            // 刷新自动同步开关状态
+            autoSyncEnabled = WeReadSyncService.autoSyncEnabled
+        }
         .onReceive(progressTimer) { _ in
-            if !isSyncing && WeReadSyncService.isSyncing {
-                backgroundProgress = WeReadSyncService.currentProgress
-            } else if !WeReadSyncService.isSyncing {
-                backgroundProgress = nil
+            // 接管模式（isSyncing=true 但 syncTask=nil）：从全局进度轮询
+            if isSyncing && syncTask == nil {
+                if WeReadSyncService.isSyncing {
+                    syncProgress = WeReadSyncService.currentProgress
+                } else {
+                    // 后台同步已结束
+                    isSyncing = false
+                    syncCancelled = false
+                    syncProgress = nil
+                }
             }
         }
         .sheet(isPresented: $showingLogin) {
@@ -295,6 +288,22 @@ struct WeReadSyncView: View {
             if let msg = resetResultMessage {
                 Text(msg)
             }
+        }
+        .alert("取消同步", isPresented: $showingCancelSyncAlert) {
+            Button("继续同步", role: .cancel) {
+                autoSyncEnabled = true
+            }
+            Button("确认取消", role: .destructive) {
+                WeReadSyncService.cancelCurrentSync()
+                syncTask?.cancel()
+                WeReadSyncService.autoSyncEnabled = false
+                autoSyncEnabled = false
+                isSyncing = false
+                syncCancelled = false
+                syncProgress = nil
+            }
+        } message: {
+            Text("目前正在同步中，确定要取消吗？")
         }
     }
 
@@ -420,9 +429,6 @@ struct WeReadSyncView: View {
     }
 
     private func performSync() async {
-        isSyncing = true
-        syncProgress = nil
-        syncResult = nil
         defer {
             isSyncing = false
             syncCancelled = false
