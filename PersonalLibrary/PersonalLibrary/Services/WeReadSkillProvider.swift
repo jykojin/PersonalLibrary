@@ -226,6 +226,14 @@ actor WeReadSkillProvider: WeReadDataSource {
                 if let startTime = book["startReadingTime"] as? Int, startTime > 0 {
                     result.startedReadingTime = Date(timeIntervalSince1970: TimeInterval(startTime))
                     result.addedTime = Date(timeIntervalSince1970: TimeInterval(startTime))
+                    result.isStartedReadingTimeEstimated = false
+                } else if totalSeconds > 0, let updateTime = book["updateTime"] as? Int, updateTime > 0 {
+                    // 回退策略：API 未返回 startReadingTime 但有阅读记录时，
+                    // 用 updateTime - totalSeconds 估算首次阅读时间
+                    let estimatedStart = updateTime - totalSeconds
+                    result.startedReadingTime = Date(timeIntervalSince1970: TimeInterval(estimatedStart))
+                    result.addedTime = Date(timeIntervalSince1970: TimeInterval(estimatedStart))
+                    result.isStartedReadingTimeEstimated = true
                 }
                 // finishTime 仅 progress=100 时存在
                 if let finishTime = book["finishTime"] as? Int, finishTime > 0 {

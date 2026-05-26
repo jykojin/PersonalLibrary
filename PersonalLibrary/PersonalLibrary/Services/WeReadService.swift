@@ -726,6 +726,7 @@ struct WeReadEnrichResult {
     var readingHours: Double = 0
     var progress: Int = 0
     var startedReadingTime: Date?
+    var isStartedReadingTimeEstimated: Bool = false
     var finishedTime: Date?
     var addedTime: Date?  // 加入书架时间（取自 startReadingTime）
 
@@ -761,8 +762,14 @@ struct WeReadEnrichResult {
         if let imported = isUserImported, imported {
             book.isWereadUserImported = true
         }
-        if let st = startedReadingTime, book.startedReadingDate == nil {
-            book.startedReadingDate = st
+        if let st = startedReadingTime {
+            if !isStartedReadingTimeEstimated {
+                // 真实值：始终覆盖（无论之前是估算还是空）
+                book.startedReadingDate = st
+            } else if book.startedReadingDate == nil {
+                // 估算值：仅填空
+                book.startedReadingDate = st
+            }
         }
         // addedTime 填空：仅首次enrichment（wereadEnrichedDate为nil）时设置
         if let at = addedTime, book.wereadEnrichedDate == nil {
