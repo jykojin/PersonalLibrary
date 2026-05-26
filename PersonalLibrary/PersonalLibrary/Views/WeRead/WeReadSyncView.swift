@@ -189,6 +189,12 @@ struct WeReadSyncView: View {
                         }
                     }
 
+                    NavigationLink {
+                        SyncHistoryView()
+                    } label: {
+                        Label("同步历史", systemImage: "clock.arrow.circlepath")
+                    }
+
                     Button(role: .destructive) {
                         showingResetAlert = true
                     } label: {

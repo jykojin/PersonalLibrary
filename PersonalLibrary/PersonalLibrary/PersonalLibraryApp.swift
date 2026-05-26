@@ -129,7 +129,7 @@ struct PersonalLibraryApp: App {
         let syncService = WeReadSyncService(provider: provider)
 
         Task {
-            let result = await syncService.sync(modelContext: context)
+            let result = await syncService.sync(modelContext: context, triggeredBy: SyncHistoryRecord.Trigger.system)
             if result.hasChanges {
                 AppLogger.info("自动同步完成: \(result.summary)", category: "WeReadSync")
             }

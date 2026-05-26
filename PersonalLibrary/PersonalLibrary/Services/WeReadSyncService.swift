@@ -104,6 +104,13 @@ actor WeReadSyncService {
             }
         }
         if count > 0 { try context.save() }
+
+        let record = SyncHistoryRecord(eventType: SyncHistoryRecord.EventType.resetState, triggeredBy: SyncHistoryRecord.Trigger.user)
+        record.endTime = .now
+        record.newImported = count
+        context.insert(record)
+        try context.save()
+
         return count
     }
 
@@ -162,12 +169,12 @@ actor WeReadSyncService {
 
     /// 执行增量同步（带进度回调）
     /// 使用 background ModelContext 避免频繁 save 触发主线程 @Query 刷新
-    func sync(modelContext: ModelContext, skipLockCheck: Bool = false, onProgress: (@Sendable (SyncProgress) -> Void)? = nil) async -> SyncResult {
-        return await sync(container: modelContext.container, skipLockCheck: skipLockCheck, onProgress: onProgress)
+    func sync(modelContext: ModelContext, skipLockCheck: Bool = false, triggeredBy: String = SyncHistoryRecord.Trigger.user, onProgress: (@Sendable (SyncProgress) -> Void)? = nil) async -> SyncResult {
+        return await sync(container: modelContext.container, skipLockCheck: skipLockCheck, triggeredBy: triggeredBy, onProgress: onProgress)
     }
 
     /// 执行增量同步（container 版本，内部创建 background context）
-    func sync(container: ModelContainer, skipLockCheck: Bool = false, onProgress: (@Sendable (SyncProgress) -> Void)? = nil) async -> SyncResult {
+    func sync(container: ModelContainer, skipLockCheck: Bool = false, triggeredBy: String = SyncHistoryRecord.Trigger.user, onProgress: (@Sendable (SyncProgress) -> Void)? = nil) async -> SyncResult {
         var result = SyncResult()
 
         // 0. 防止重复触发：如果已有同步在运行，直接返回
@@ -180,12 +187,29 @@ actor WeReadSyncService {
             Self.setSyncing(true)
             AppLogger.warning("[SYNC-LOCK] 获得锁，开始同步", category: "WeReadSync")
         }
+
+        let eventType = triggeredBy == SyncHistoryRecord.Trigger.system
+            ? SyncHistoryRecord.EventType.autoSync
+            : SyncHistoryRecord.EventType.manualSync
+        let historyRecord = SyncHistoryRecord(eventType: eventType, triggeredBy: triggeredBy)
+        let historyContext = ModelContext(container)
+        historyContext.insert(historyRecord)
+        try? historyContext.save()
+
         defer {
             if !skipLockCheck {
                 Self.setProgress(nil)
                 Self.setSyncing(false)
                 AppLogger.warning("[SYNC-LOCK] 释放锁，同步结束", category: "WeReadSync")
             }
+            historyRecord.endTime = .now
+            historyRecord.totalRemote = result.totalRemote
+            historyRecord.newImported = result.newBooksImported
+            historyRecord.progressUpdated = result.progressUpdated
+            historyRecord.statusUpdated = result.statusUpdated
+            historyRecord.booksArchived = result.booksArchived
+            historyRecord.errorMessage = result.error
+            try? historyContext.save()
         }
 
         // 使用 background context，减少对主线程 UI 的影响

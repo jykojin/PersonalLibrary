@@ -19,6 +19,7 @@
 		4C465925427AA6A4D744FA06 /* BookDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 527950641E4AC110D1BE65C5 /* BookDetailView.swift */; };
 		4DC5326C64DD0B9213C839E9 /* SelectableBookRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76F823AFBF5BF4E3B9F1EA2B /* SelectableBookRow.swift */; };
 		52D01BBD46ACCD3E5E5ABEAA /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A2CA6A7F15841781FBFBD85 /* ContentView.swift */; };
+		53048E69DE8C97C6E3A72518 /* SyncHistoryRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFF12A4A4F305B8D6989A395 /* SyncHistoryRecord.swift */; };
 		5817492A88473ABA6FB56F9B /* BookshelfListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 807723C2BC4CC83D642DB631 /* BookshelfListView.swift */; };
 		5C9F6BE6FDA2C3F5F75966E3 /* PersonalLibraryApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC6E3F88232F6FEEB38E04AF /* PersonalLibraryApp.swift */; };
 		5D9553EED3A2B7257B71148B /* WeReadSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03C6E6FCF4B713FB853A884 /* WeReadSyncService.swift */; };
@@ -56,6 +57,7 @@
 		E8C05F80D343BE7A188CB096 /* WeReadSyncView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 705F4B59E1366B9C933D78BE /* WeReadSyncView.swift */; };
 		EF65473F98061A197DD20854 /* CoverFetchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F77EAA99251DD746575AEE56 /* CoverFetchService.swift */; };
 		F2D0043EC390F4E3FDB2BE1B /* BookListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD0C4ECB47E8B8E9F4E601D5 /* BookListView.swift */; };
+		F3294CF64C8AB644DC705E96 /* SyncHistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4154A118E7808CF207AC6A96 /* SyncHistoryView.swift */; };
 		FAA593F2C044E6AB05A7B73D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B72B0F0BC9341F3A436CE078 /* Assets.xcassets */; };
 		FACCCCF83FB9B9525F6D5FE0 /* StatisticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C43F52DBD969223FECACE25 /* StatisticsView.swift */; };
 /* End PBXBuildFile section */
@@ -88,6 +90,7 @@
 		29B551E5CF1C3716F351163F /* BarcodeScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BarcodeScannerView.swift; sourceTree = "<group>"; };
 		2A2CA6A7F15841781FBFBD85 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		3C5B9966B774AF6B75A6242E /* WeReadSkillProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeReadSkillProvider.swift; sourceTree = "<group>"; };
+		4154A118E7808CF207AC6A96 /* SyncHistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncHistoryView.swift; sourceTree = "<group>"; };
 		4D2E3C7560B14260793E3C54 /* ExcelImportExportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExcelImportExportService.swift; sourceTree = "<group>"; };
 		4E3F97857DF70CD057FA821D /* FileLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileLogger.swift; sourceTree = "<group>"; };
 		5139540D5CB335C7D3C65206 /* WeReadSkillSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeReadSkillSetupView.swift; sourceTree = "<group>"; };
@@ -129,6 +132,7 @@
 		DD64B2DD2CB3C57DFE3DE2FB /* BookService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookService.swift; sourceTree = "<group>"; };
 		E8094BF7B50E8C310346BD62 /* EditBookView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditBookView.swift; sourceTree = "<group>"; };
 		E8D4589CBB7976795276F23D /* ReadingProgressView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingProgressView.swift; sourceTree = "<group>"; };
+		EFF12A4A4F305B8D6989A395 /* SyncHistoryRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncHistoryRecord.swift; sourceTree = "<group>"; };
 		F3E7F069DC0B427109F37150 /* LogViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogViewerView.swift; sourceTree = "<group>"; };
 		F77EAA99251DD746575AEE56 /* CoverFetchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoverFetchService.swift; sourceTree = "<group>"; };
 		F9FC0BCC1F18C4E124299ADE /* ProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileView.swift; sourceTree = "<group>"; };
@@ -154,6 +158,7 @@
 				BC5361797A17134EBBC3B518 /* Bookshelf.swift */,
 				80C26F79C497CEB88D3F5327 /* ImportRecord.swift */,
 				5F1F4735287F12B60CE6CEE6 /* ReadingRecord.swift */,
+				EFF12A4A4F305B8D6989A395 /* SyncHistoryRecord.swift */,
 				B0D15753503BAB153F60B9B6 /* Tag.swift */,
 			);
 			path = Models;
@@ -298,6 +303,7 @@
 		B9D68EBF8BFF8120AC00945E /* WeRead */ = {
 			isa = PBXGroup;
 			children = (
+				4154A118E7808CF207AC6A96 /* SyncHistoryView.swift */,
 				843A18820B905386EE81983F /* WeReadImportView.swift */,
 				88640782F12C94E8F4CD7B87 /* WeReadLoginView.swift */,
 				5139540D5CB335C7D3C65206 /* WeReadSkillSetupView.swift */,
@@ -498,6 +504,8 @@
 				4DC5326C64DD0B9213C839E9 /* SelectableBookRow.swift in Sources */,
 				FACCCCF83FB9B9525F6D5FE0 /* StatisticsView.swift in Sources */,
 				C2BF102B722D1457EC5F5DFF /* StorageManager.swift in Sources */,
+				53048E69DE8C97C6E3A72518 /* SyncHistoryRecord.swift in Sources */,
+				F3294CF64C8AB644DC705E96 /* SyncHistoryView.swift in Sources */,
 				639BD6ABBB4EDDF3E70D5132 /* Tag.swift in Sources */,
 				10B780DEF9C5DBB65903FA05 /* WeChatAuthManager.swift in Sources */,
 				9DE7988AE83CABE3BD043A13 /* WeReadDataSource.swift in Sources */,
@@ -656,7 +664,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.51;
+				MARKETING_VERSION = 0.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.PersonalLibrary;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -678,7 +686,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.51;
+				MARKETING_VERSION = 0.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.PersonalLibrary;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";

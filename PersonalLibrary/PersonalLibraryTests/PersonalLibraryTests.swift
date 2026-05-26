@@ -1220,7 +1220,7 @@ struct WeReadSyncSettingsTests {
         #expect(WeReadSyncService.shouldAutoSync() == true)
     }
 
-    @Test("开启自动同步但距上次不足1小时返回false")
+    @Test("开启自动同步但距上次不足12小时返回false")
     func enabledRecentSync() {
         // 显式设置两个 key 确保状态正确（测试执行顺序不确定）
         WeReadSyncService.autoSyncEnabled = true
@@ -1233,11 +1233,11 @@ struct WeReadSyncSettingsTests {
         #expect(WeReadSyncService.shouldAutoSync() == false)
     }
 
-    @Test("开启自动同步且超过1小时返回true")
+    @Test("开启自动同步且超过12小时返回true")
     func enabledOldSync() {
         WeReadSyncService.resetSyncLockForTesting()
         WeReadSyncService.autoSyncEnabled = true
-        WeReadSyncService.lastSyncDate = Date().addingTimeInterval(-7200)
+        WeReadSyncService.lastSyncDate = Date().addingTimeInterval(-43201)
         defer {
             WeReadSyncService.autoSyncEnabled = false
             WeReadSyncService.lastSyncDate = nil

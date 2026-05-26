@@ -45,7 +45,7 @@ final class StorageManager {
     /// 创建对应存储位置的 ModelContainer
     /// 如果 iCloud 模式失败（如模拟器无 iCloud 账号），自动降级为本地存储
     func createModelContainer() throws -> ModelContainer {
-        let schema = Schema([Book.self, ReadingRecord.self, Bookshelf.self, Tag.self, ImportRecord.self])
+        let schema = Schema([Book.self, ReadingRecord.self, Bookshelf.self, Tag.self, ImportRecord.self, SyncHistoryRecord.self])
 
         if currentLocation == .icloud {
             // 尝试 iCloud 模式
