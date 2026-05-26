@@ -657,12 +657,14 @@ struct EditBookView: View {
             if result.progress != book.wereadProgress && result.progress > 0 {
                 book.wereadProgress = result.progress
             }
-            // 开始阅读时间（真实值覆盖，估算值仅填空）
+            // 开始阅读时间（真实值覆盖，估算值填空或更新已有估算）
             if let st = result.startedReadingTime {
                 if !result.isStartedReadingTimeEstimated {
                     book.startedReadingDate = st
-                } else if book.startedReadingDate == nil {
+                    book.isStartedReadingDateEstimated = false
+                } else if book.startedReadingDate == nil || book.isStartedReadingDateEstimated {
                     book.startedReadingDate = st
+                    book.isStartedReadingDateEstimated = true
                 }
             }
             // 完成时间（有不同就覆盖）

@@ -81,6 +81,7 @@ final class Book {
     var wereadReadingHours: Double = 0  // 微信读书阅读时长（小时）
     var wereadEnrichedDate: Date?  // 上次通过微信读书 API 补全的时间，nil 表示从未补全
     var isWereadUserImported: Bool = false  // true = 用户导入到微信读书的书(epub/pdf), false = 微信读书平台书
+    var isStartedReadingDateEstimated: Bool = false  // true = startedReadingDate 是估算值(updateTime-totalSeconds)，下次同步获取到真实值时应覆盖
 
     // 批量补全标记
     var lastEnrichmentDate: Date?  // 上次批量补全的时间，nil 表示从未处理

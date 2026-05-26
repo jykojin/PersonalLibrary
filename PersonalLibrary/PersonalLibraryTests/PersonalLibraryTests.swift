@@ -1874,34 +1874,55 @@ struct SmartFillPlatformBookTests {
         #expect(book.startedReadingDate == Date(timeIntervalSince1970: 1700000000))
     }
 
-    @Test("WeReadEnrichResult.applyToBook 估算值不覆盖已有的 startedReadingDate")
+    @Test("WeReadEnrichResult.applyToBook 估算值不覆盖用户手动设置的 startedReadingDate")
     func applyToBookDoesNotOverwriteStartedReadingDate() {
         let book = Book(title: "Test", author: "Author", bookType: .ebook)
         let existing = Date(timeIntervalSince1970: 1600000000)
         book.startedReadingDate = existing
+        book.isStartedReadingDateEstimated = false  // 用户手动设置/真实API值
 
         var result = WeReadEnrichResult()
         result.startedReadingTime = Date(timeIntervalSince1970: 1700000000)
         result.isStartedReadingTimeEstimated = true  // 标记为估算值
         result.applyToBook(book)
 
-        // 估算值不应该覆盖
+        // 估算值不应该覆盖用户手动设置的值
         #expect(book.startedReadingDate == existing)
+        #expect(book.isStartedReadingDateEstimated == false)
     }
 
-    @Test("WeReadEnrichResult.applyToBook 真实值覆盖已有的 startedReadingDate")
+    @Test("WeReadEnrichResult.applyToBook 真实值覆盖已有的 startedReadingDate 并重置 flag")
     func applyToBookRealValueOverridesStartedReadingDate() {
         let book = Book(title: "Test", author: "Author", bookType: .ebook)
         let existing = Date(timeIntervalSince1970: 1600000000)
         book.startedReadingDate = existing
+        book.isStartedReadingDateEstimated = true  // 之前是估算值
 
         var result = WeReadEnrichResult()
         result.startedReadingTime = Date(timeIntervalSince1970: 1700000000)
         result.isStartedReadingTimeEstimated = false  // 真实API值（默认）
         result.applyToBook(book)
 
-        // 真实值应该覆盖
+        // 真实值应该覆盖并重置 flag
         #expect(book.startedReadingDate == Date(timeIntervalSince1970: 1700000000))
+        #expect(book.isStartedReadingDateEstimated == false)
+    }
+
+    @Test("WeReadEnrichResult.applyToBook 估算值可以更新已有的估算值")
+    func applyToBookEstimatedUpdatesExistingEstimated() {
+        let book = Book(title: "Test", author: "Author", bookType: .ebook)
+        let oldEstimated = Date(timeIntervalSince1970: 1600000000)
+        book.startedReadingDate = oldEstimated
+        book.isStartedReadingDateEstimated = true  // 之前也是估算值
+
+        var result = WeReadEnrichResult()
+        result.startedReadingTime = Date(timeIntervalSince1970: 1700000000)  // 新的估算值
+        result.isStartedReadingTimeEstimated = true
+        result.applyToBook(book)
+
+        // 估算值可以更新已有的估算值
+        #expect(book.startedReadingDate == Date(timeIntervalSince1970: 1700000000))
+        #expect(book.isStartedReadingDateEstimated == true)
     }
 
     @Test("微信读书平台书智能补全不应搜索外部源（仅缺作者简介时）")
@@ -3422,23 +3443,26 @@ struct BookNewFieldsTests {
         #expect(book.wereadEnrichedDate == now)
     }
 
-    @Test("applyToBook 填充 startedReadingDate（本地无记录时）")
+    @Test("applyToBook 填充 startedReadingDate（本地无记录时）并设置 flag")
     func applyToBookSetsStartedDate() {
         let book = Book(title: "测试", author: "作者", bookType: .ebook)
         let startDate = Date(timeIntervalSince1970: 1700000000)
 
         var result = WeReadEnrichResult()
         result.startedReadingTime = startDate
+        result.isStartedReadingTimeEstimated = false  // 真实值
         result.applyToBook(book)
 
         #expect(book.startedReadingDate == startDate)
+        #expect(book.isStartedReadingDateEstimated == false)
     }
 
-    @Test("applyToBook 估算值不覆盖已有 startedReadingDate")
+    @Test("applyToBook 估算值不覆盖用户手动设置的 startedReadingDate")
     func applyToBookDoesNotOverwriteStartedDate() {
         let book = Book(title: "测试", author: "作者", bookType: .ebook)
         let existingDate = Date(timeIntervalSince1970: 1600000000)
         book.startedReadingDate = existingDate
+        book.isStartedReadingDateEstimated = false  // 用户手动设置/真实API值
 
         var result = WeReadEnrichResult()
         result.startedReadingTime = Date(timeIntervalSince1970: 1700000000)
@@ -3446,13 +3470,15 @@ struct BookNewFieldsTests {
         result.applyToBook(book)
 
         #expect(book.startedReadingDate == existingDate)
+        #expect(book.isStartedReadingDateEstimated == false)
     }
 
-    @Test("applyToBook 真实值覆盖已有 startedReadingDate")
+    @Test("applyToBook 真实值覆盖已有 startedReadingDate 并重置 flag")
     func applyToBookRealValueOverridesEstimatedDate() {
         let book = Book(title: "测试", author: "作者", bookType: .ebook)
         let existingDate = Date(timeIntervalSince1970: 1600000000)
         book.startedReadingDate = existingDate
+        book.isStartedReadingDateEstimated = true  // 之前是估算值
 
         var result = WeReadEnrichResult()
         result.startedReadingTime = Date(timeIntervalSince1970: 1700000000)
@@ -3460,6 +3486,7 @@ struct BookNewFieldsTests {
         result.applyToBook(book)
 
         #expect(book.startedReadingDate == Date(timeIntervalSince1970: 1700000000))
+        #expect(book.isStartedReadingDateEstimated == false)
     }
 
     @Test("applyToBook 填充 finishedDate（本地无记录时）")

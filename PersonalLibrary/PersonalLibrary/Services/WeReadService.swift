@@ -766,9 +766,11 @@ struct WeReadEnrichResult {
             if !isStartedReadingTimeEstimated {
                 // 真实值：始终覆盖（无论之前是估算还是空）
                 book.startedReadingDate = st
-            } else if book.startedReadingDate == nil {
-                // 估算值：仅填空
+                book.isStartedReadingDateEstimated = false
+            } else if book.startedReadingDate == nil || book.isStartedReadingDateEstimated {
+                // 估算值：填空 或 更新已有的估算值（估算值之间允许更新）
                 book.startedReadingDate = st
+                book.isStartedReadingDateEstimated = true
             }
         }
         // addedTime 填空：仅首次enrichment（wereadEnrichedDate为nil）时设置
