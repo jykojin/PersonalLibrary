@@ -107,8 +107,8 @@ actor WeReadSyncService {
         return count
     }
 
-    /// 同步间隔（秒），默认 1 小时
-    static let syncInterval: TimeInterval = 3600
+    /// 同步间隔（秒），默认 12 小时
+    static let syncInterval: TimeInterval = 43200
 
     /// 是否应该触发自动同步（已开启 + 距上次同步超过 1 小时 + 已登录）
     static func shouldAutoSync() -> Bool {

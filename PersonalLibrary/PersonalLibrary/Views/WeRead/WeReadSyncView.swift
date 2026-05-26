@@ -107,6 +107,14 @@ struct WeReadSyncView: View {
                             showingCancelSyncAlert = true
                         } else {
                             WeReadSyncService.autoSyncEnabled = newValue
+                            if newValue && !isSyncing && !WeReadSyncService.isSyncing {
+                                if WeReadSyncService.shouldAutoSync() {
+                                    isSyncing = true
+                                    syncProgress = nil
+                                    syncResult = nil
+                                    syncTask = Task { await performSync() }
+                                }
+                            }
                         }
                     }
 
@@ -190,7 +198,7 @@ struct WeReadSyncView: View {
                 } header: {
                     Text("同步")
                 } footer: {
-                    Text("开启自动同步后，每次打开 App 会自动检查微信读书更新（间隔不少于 1 小时）")
+                    Text("开启自动同步后，每次打开 App 会自动检查微信读书更新（间隔不少于 12 小时）")
                 }
 
                 // MARK: - 同步结果
