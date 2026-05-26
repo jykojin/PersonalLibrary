@@ -41,6 +41,33 @@ actor WeReadSyncService {
     static func resetSyncLockForTesting() {
         setSyncing(false)
         setProgress(nil)
+        clearSyncTask()
+    }
+
+    // MARK: - Global Sync Task (for external cancellation)
+
+    private static var _syncTask: Task<Void, Never>?
+    private static let taskLock = NSLock()
+
+    /// Register the current sync task so external code can cancel it
+    static func registerSyncTask(_ task: Task<Void, Never>) {
+        taskLock.lock()
+        _syncTask = task
+        taskLock.unlock()
+    }
+
+    /// Clear the registered sync task reference
+    static func clearSyncTask() {
+        taskLock.lock()
+        _syncTask = nil
+        taskLock.unlock()
+    }
+
+    /// Cancel the currently running sync task (if any)
+    static func cancelCurrentSync() {
+        taskLock.lock()
+        _syncTask?.cancel()
+        taskLock.unlock()
     }
 
     init(provider: any WeReadDataSource = WeReadService()) {
