@@ -575,7 +575,7 @@ struct DataMaintenanceView: View {
 
         let container = modelContext.container
         let totalCount = bookIDs.count
-        let batchSaveInterval = 50
+        let batchSaveInterval = 10
 
         let (successCount, processedCount, wasCancelled) = await Task.detached(priority: .utility) {
             let bgContext = ModelContext(container)
@@ -585,7 +585,7 @@ struct DataMaintenanceView: View {
             var processed = 0
 
             for (index, bookID) in bookIDs.enumerated() {
-                if await MainActor.run(body: { self.batchCancelled }) { break }
+                guard !Task.isCancelled else { break }
 
                 guard let book = bgContext.model(for: bookID) as? Book else { continue }
                 let title = book.title
@@ -624,8 +624,7 @@ struct DataMaintenanceView: View {
                 let tFill1 = CFAbsoluteTimeGetCurrent()
                 AppLogger.perf("\(label)[\(index+1)/\(totalCount)] \(book.title) | smartFill:\(Int((tFill1-tFill0)*1000))ms filled:\(result.hasAnyFill)", category: "BatchEnrich")
 
-                if Task.isCancelled { break }
-                if await MainActor.run(body: { self.batchCancelled }) { break }
+                guard !Task.isCancelled else { break }
 
                 // 应用结果
                 if let p = result.publisher { book.publisher = p }
@@ -644,7 +643,7 @@ struct DataMaintenanceView: View {
                 if result.hasAnyFill { success += 1 }
                 processed = index + 1
 
-                // 低频 save
+                // 低频 save（在后台线程执行，不阻塞主线程）
                 if (index + 1) % batchSaveInterval == 0 {
                     let tSave0 = CFAbsoluteTimeGetCurrent()
                     try? bgContext.save()
@@ -657,7 +656,7 @@ struct DataMaintenanceView: View {
             }
 
             try? bgContext.save()
-            let cancelled = await MainActor.run(body: { self.batchCancelled })
+            let cancelled = Task.isCancelled
             return (success, processed, cancelled)
         }.value
 

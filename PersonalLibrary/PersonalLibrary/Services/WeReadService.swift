@@ -81,9 +81,10 @@ struct WeReadImportItem: Identifiable {
     let isUserImported: Bool  // true = 用户导入(type==1), false = 平台书(type==0)
     let addedTime: Date?  // 加入书架时间
     let finishedTime: Date?  // 读完时间
+    let price: Double?  // 书价（元）
+    let publishTime: String?  // 出版时间（字符串，如 "2020-01"）
     var isSelected: Bool = true
 
-    /// 便捷初始化（addedTime/finishedTime 默认为 nil）
     init(id: String, title: String, author: String, cover: String? = nil,
          publisher: String? = nil, isbn: String? = nil, intro: String? = nil,
          translator: String? = nil, category: String? = nil,
@@ -91,6 +92,7 @@ struct WeReadImportItem: Identifiable {
          isFinished: Bool = false, bookType: BookType = .ebook,
          isUserImported: Bool = false,
          addedTime: Date? = nil, finishedTime: Date? = nil,
+         price: Double? = nil, publishTime: String? = nil,
          isSelected: Bool = true) {
         self.id = id
         self.title = title
@@ -109,6 +111,8 @@ struct WeReadImportItem: Identifiable {
         self.isUserImported = isUserImported
         self.addedTime = addedTime
         self.finishedTime = finishedTime
+        self.price = price
+        self.publishTime = publishTime
         self.isSelected = isSelected
     }
 }
@@ -322,6 +326,11 @@ actor WeReadService: WeReadDataSource {
         // 2. 获取书籍详情
         do {
             let info = try await fetchBookInfo(bookId: bookId)
+            result.title = info.title
+            result.author = info.author
+            result.cover = info.cover
+            result.translator = info.translator
+            result.category = info.category
             result.publisher = info.publisher
             result.isbn = info.isbn
             result.intro = info.intro
@@ -339,11 +348,14 @@ actor WeReadService: WeReadDataSource {
             AppLogger.warning("enrichBook[\(bookId)] fetchBookInfo failed: \(error)", category: "WeRead")
         }
 
-        // 3. 获取阅读时长（优先用缓存，否则拉书架）
+        // 3. 获取阅读时长和进度（优先用缓存，否则拉书架）
         if let progressMap = cachedProgress {
             if let progress = progressMap[bookId] {
                 let totalSeconds = (progress.readingTime ?? 0) + (progress.ttsTime ?? 0)
                 result.readingHours = Double(totalSeconds) / 3600.0
+                if let prog = progress.progress, prog > 0 {
+                    result.progress = prog
+                }
             }
         } else {
             do {
@@ -352,6 +364,9 @@ actor WeReadService: WeReadDataSource {
                    let progress = progressList.first(where: { $0.bookId == bookId }) {
                     let totalSeconds = (progress.readingTime ?? 0) + (progress.ttsTime ?? 0)
                     result.readingHours = Double(totalSeconds) / 3600.0
+                    if let prog = progress.progress, prog > 0 {
+                        result.progress = prog
+                    }
                 }
             } catch {
                 AppLogger.warning("enrichBook[\(bookId)] fetchShelf failed: \(error)", category: "WeRead")
@@ -363,6 +378,7 @@ actor WeReadService: WeReadDataSource {
             let detail = try await fetchReadDetail(bookId: bookId)
             if let startTime = detail.startReadingTime, startTime > 0 {
                 result.startedReadingTime = Date(timeIntervalSince1970: TimeInterval(startTime))
+                result.addedTime = Date(timeIntervalSince1970: TimeInterval(startTime))
             }
             if let finishTime = detail.finishReadingTime, finishTime > 0 {
                 result.finishedTime = Date(timeIntervalSince1970: TimeInterval(finishTime))
@@ -462,7 +478,9 @@ actor WeReadService: WeReadDataSource {
                 bookType: bookType,
                 isUserImported: isUserImported,
                 addedTime: addedTime,
-                finishedTime: finishedTime
+                finishedTime: finishedTime,
+                price: book.price,
+                publishTime: book.publishTime
             )
             items.append(item)
         }
@@ -517,6 +535,24 @@ actor WeReadService: WeReadDataSource {
                 book.wereadBookId = item.id
                 book.addSource = .wereadImported
                 book.isWereadUserImported = item.isUserImported
+
+                // 价格
+                if let price = item.price, price > 0, price.isFinite {
+                    book.price = "¥\(String(format: "%.2f", price))"
+                }
+                // 出版日期
+                if let pt = item.publishTime, !pt.isEmpty {
+                    book.publishDate = WeReadSyncService.parsePublishDate(pt)
+                }
+                // 阅读时长
+                let totalSeconds = item.readingTime + item.ttsTime
+                if totalSeconds > 0 {
+                    book.wereadReadingHours = Double(totalSeconds) / 3600.0
+                }
+                // 阅读进度
+                if item.progress > 0 {
+                    book.wereadProgress = item.progress
+                }
 
                 // 加入时间：优先微信读书的加入书架时间
                 if let addedTime = item.addedTime {
@@ -669,6 +705,11 @@ actor WeReadService: WeReadDataSource {
 
 /// 微信读书图书信息补全结果（统一数据结构）
 struct WeReadEnrichResult {
+    var title: String?
+    var author: String?
+    var cover: String?
+    var translator: String?
+    var category: String?
     var publisher: String?
     var isbn: String?
     var intro: String?
@@ -677,11 +718,25 @@ struct WeReadEnrichResult {
     var bookType: BookType?
     var isUserImported: Bool?  // type==1 为用户导入
     var readingHours: Double = 0
+    var progress: Int = 0
     var startedReadingTime: Date?
     var finishedTime: Date?
+    var addedTime: Date?  // 加入书架时间（取自 startReadingTime）
 
-    /// 将补全结果应用到 Book（只填充空字段，阅读时长只增不减）
     func applyToBook(_ book: Book) {
+        // --- 填空策略：本地为空才写入 ---
+        if book.title.isEmpty, let t = title, !t.isEmpty {
+            book.title = t
+        }
+        if book.author.isEmpty, let a = author, !a.isEmpty {
+            book.author = a
+        }
+        if (book.coverImageURL == nil || book.coverImageURL!.isEmpty), let c = cover, !c.isEmpty {
+            book.coverImageURL = c
+        }
+        if (book.translator == nil || book.translator!.isEmpty), let t = translator, !t.isEmpty {
+            book.translator = t
+        }
         if (book.publisher == nil || book.publisher!.isEmpty), let p = publisher, !p.isEmpty {
             book.publisher = p
         }
@@ -694,25 +749,30 @@ struct WeReadEnrichResult {
         if (book.price == nil || book.price!.isEmpty), let p = price, p > 0, p.isFinite {
             book.price = "¥\(String(format: "%.2f", p))"
         }
-        // publishTime 由调用方自行解析为 Date（格式因来源不同而异）
-        // bookType: 只往有声书方向修正，不降级
         if let type = bookType, type == .audiobook, book.bookType != .audiobook {
             book.bookType = .audiobook
         }
-        // 阅读时长只增不减
-        if readingHours > book.wereadReadingHours {
-            book.wereadReadingHours = readingHours
-        }
-        // 用户导入标识
         if let imported = isUserImported, imported {
             book.isWereadUserImported = true
         }
-        // 开始阅读时间：只在本地无记录时填充
         if let st = startedReadingTime, book.startedReadingDate == nil {
             book.startedReadingDate = st
         }
-        // 完成时间：只在本地无记录时填充
-        if let ft = finishedTime, book.finishedDate == nil {
+        // addedTime 填空：仅首次enrichment（wereadEnrichedDate为nil）时设置
+        if let at = addedTime, book.wereadEnrichedDate == nil {
+            book.addedDate = at
+        }
+
+        // --- 有不同就更新策略（防止 0 值覆盖，使用容差避免浮点精度问题）---
+        if abs(readingHours - book.wereadReadingHours) > 0.001 && readingHours > 0 {
+            book.wereadReadingHours = readingHours
+        }
+        if progress != book.wereadProgress && progress > 0 {
+            book.wereadProgress = progress
+        }
+
+        // --- 有不同就覆盖策略 ---
+        if let ft = finishedTime, book.finishedDate != ft {
             book.finishedDate = ft
         }
     }

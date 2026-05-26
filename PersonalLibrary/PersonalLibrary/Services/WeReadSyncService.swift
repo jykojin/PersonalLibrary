@@ -21,6 +21,11 @@ actor WeReadSyncService {
         syncLock.unlock()
     }
 
+    /// 仅供测试使用：重置同步锁状态
+    static func resetSyncLockForTesting() {
+        setSyncing(false)
+    }
+
     init(provider: any WeReadDataSource = WeReadService()) {
         self.weReadService = provider
     }
@@ -113,21 +118,23 @@ actor WeReadSyncService {
 
     /// 执行增量同步（带进度回调）
     /// 使用 background ModelContext 避免频繁 save 触发主线程 @Query 刷新
-    func sync(modelContext: ModelContext, onProgress: (@Sendable (SyncProgress) -> Void)? = nil) async -> SyncResult {
-        return await sync(container: modelContext.container, onProgress: onProgress)
+    func sync(modelContext: ModelContext, skipLockCheck: Bool = false, onProgress: (@Sendable (SyncProgress) -> Void)? = nil) async -> SyncResult {
+        return await sync(container: modelContext.container, skipLockCheck: skipLockCheck, onProgress: onProgress)
     }
 
     /// 执行增量同步（container 版本，内部创建 background context）
-    func sync(container: ModelContainer, onProgress: (@Sendable (SyncProgress) -> Void)? = nil) async -> SyncResult {
+    func sync(container: ModelContainer, skipLockCheck: Bool = false, onProgress: (@Sendable (SyncProgress) -> Void)? = nil) async -> SyncResult {
         var result = SyncResult()
 
         // 0. 防止重复触发：如果已有同步在运行，直接返回
-        guard !Self.isSyncing else {
-            result.error = "同步正在进行中，请稍候"
-            return result
+        if !skipLockCheck {
+            guard !Self.isSyncing else {
+                result.error = "同步正在进行中，请稍候"
+                return result
+            }
+            Self.setSyncing(true)
         }
-        Self.setSyncing(true)
-        defer { Self.setSyncing(false) }
+        defer { if !skipLockCheck { Self.setSyncing(false) } }
 
         // 使用 background context，减少对主线程 UI 的影响
         let modelContext = ModelContext(container)
@@ -235,15 +242,23 @@ actor WeReadSyncService {
                 tags.append(wereadTag)
                 book.tags = tags
             }
-            // 更新进度
-            if item.progress > book.wereadProgress {
+            // 更新进度（有不同就更新，防止0值覆盖）
+            if item.progress != book.wereadProgress && item.progress > 0 {
                 book.wereadProgress = item.progress
                 progressCount += 1
             }
-            // 更新阅读时长
+            // 更新阅读时长（有不同就更新，防止0值覆盖，使用容差避免浮点精度问题）
             let newHours = Double(item.readingTime + item.ttsTime) / 3600.0
-            if newHours > book.wereadReadingHours {
+            if abs(newHours - book.wereadReadingHours) > 0.001 && newHours > 0 {
                 book.wereadReadingHours = newHours
+            }
+            // 补充价格（仅空时填充）
+            if (book.price == nil || book.price!.isEmpty), let p = item.price, p > 0, p.isFinite {
+                book.price = "¥\(String(format: "%.2f", p))"
+            }
+            // 补充出版时间（仅空时填充）
+            if book.publishDate == nil, let pt = item.publishTime, !pt.isEmpty {
+                book.publishDate = Self.parsePublishDate(pt)
             }
             // 补充加入时间
             if let addedTime = item.addedTime, book.addedDate > addedTime {
@@ -349,17 +364,20 @@ actor WeReadSyncService {
             try? modelContext.save()
         }
 
-        // 9b. 微信读书 API 补全（预拉取书架进度，避免每本书重复请求）
+        // 9b. 逐本处理：补全 + 划线（在当前 Task 上下文执行，支持取消传播）
         if !Task.isCancelled {
+            let bgContext = ModelContext(container)
+            bgContext.autosaveEnabled = false
+
             let enrichDescriptor = FetchDescriptor<Book>(
                 predicate: #Predicate<Book> { $0.wereadBookId != nil && $0.wereadEnrichedDate == nil }
             )
-            let booksNeedEnrich = (try? modelContext.fetch(enrichDescriptor)) ?? []
+            let booksNeedEnrich = (try? bgContext.fetch(enrichDescriptor)) ?? []
 
             if !booksNeedEnrich.isEmpty {
-                // 一次性拉取书架进度数据（缓存，不再每本书重复拉）
+                // 一次性拉取书架进度数据（缓存，仅 Web 模式需要）
                 var progressMap: [String: WeReadBookProgress]?
-                if let webService = self.weReadService as? WeReadService {
+                if let webService = weReadService as? WeReadService {
                     do {
                         let shelfData = try await webService.fetchShelf()
                         var map: [String: WeReadBookProgress] = [:]
@@ -374,53 +392,83 @@ actor WeReadSyncService {
 
                 for (index, book) in booksNeedEnrich.enumerated() {
                     guard !Task.isCancelled else { break }
-                    onProgress?(SyncProgress(current: index + 1, total: booksNeedEnrich.count, phase: "补全信息", detail: book.title))
+                    onProgress?(SyncProgress(current: index + 1, total: booksNeedEnrich.count, phase: "补全同步", detail: book.title))
                     guard let bookId = book.wereadBookId else { continue }
-                    if index > 0 && index % 5 == 0 {
-                        try? await Task.sleep(for: .seconds(1))
+                    // 限速：每本间隔 2 秒（避免密集网络请求导致手机发烫）
+                    if index > 0 {
+                        try? await Task.sleep(for: .seconds(2))
                     }
+
+                    // (1) 补全书籍信息
+                    var enrichSucceeded = false
                     do {
                         let enrichResult: WeReadEnrichResult
-                        if let webService = self.weReadService as? WeReadService, let map = progressMap {
+                        if let webService = weReadService as? WeReadService, let map = progressMap {
                             enrichResult = try await webService.enrichBook(bookId: bookId, cachedProgress: map)
                         } else {
-                            enrichResult = try await self.weReadService.enrichBook(bookId: bookId)
+                            enrichResult = try await weReadService.enrichBook(bookId: bookId)
                         }
                         enrichResult.applyToBook(book)
-                        book.wereadEnrichedDate = Date()
+                        enrichSucceeded = true
                     } catch {
                         AppLogger.warning("微信读书补全失败 (\(book.title)): \(error)", category: "WeReadSync")
                     }
-                }
-                // 补全阶段统一保存一次
-                try? modelContext.save()
-            }
-        }
 
-        // 9c. 划线拉取（所有缺划线的书，每 3 个请求暂停 1 秒）
-        if !Task.isCancelled {
-            let bookmarkDescriptor = FetchDescriptor<Book>(
-                predicate: #Predicate { $0.wereadBookId != nil && $0.notes == nil }
-            )
-            let booksNeedBookmarks = (try? modelContext.fetch(bookmarkDescriptor)) ?? []
-            for (index, book) in booksNeedBookmarks.enumerated() {
-                guard !Task.isCancelled else { break }
-                onProgress?(SyncProgress(current: index + 1, total: booksNeedBookmarks.count, phase: "拉取划线", detail: book.title))
-                guard let bookId = book.wereadBookId else { continue }
-                if index > 0 && index % 3 == 0 {
-                    try? await Task.sleep(for: .seconds(1))
-                }
-                do {
-                    let bookmarks = try await self.weReadService.fetchBookmarks(bookId: bookId)
-                    if !bookmarks.isEmpty {
-                        let notesText = self.formatBookmarks(bookmarks)
-                        book.notes = notesText
+                    // (1b) CB_ 用户导入书：WeRead 补全后若简介仍为空，查询外部源（豆瓣/Goodreads）
+                    if bookId.hasPrefix("CB_") {
+                        let needsBookDesc = (book.bookDescription ?? "").isEmpty
+                        let needsAuthorDesc = (book.authorDescription ?? "").isEmpty
+                        if needsBookDesc || needsAuthorDesc {
+                            let lookupService = ISBNLookupService()
+                            let extResult = await lookupService.smartFill(
+                                isbn: book.isbn ?? "",
+                                title: book.title,
+                                author: book.author,
+                                needsTitle: false,
+                                needsPublisher: false,
+                                needsPages: false,
+                                needsPrice: false,
+                                needsPublishDate: false,
+                                needsTranslator: false,
+                                needsAuthor: false,
+                                needsBookDesc: needsBookDesc,
+                                needsAuthorDesc: needsAuthorDesc
+                            )
+                            if let desc = extResult.bookDescription {
+                                book.bookDescription = desc
+                            }
+                            if let desc = extResult.authorDescription {
+                                book.authorDescription = desc
+                            }
+                        }
                     }
-                } catch {
-                    AppLogger.warning("拉取划线失败 (\(book.title)): \(error)", category: "WeReadSync")
+
+                    // (2) 拉取划线（有不同就覆盖）
+                    do {
+                        let bookmarks = try await weReadService.fetchBookmarks(bookId: bookId)
+                        if !bookmarks.isEmpty {
+                            let formatted = WeReadSyncService.formatBookmarksStatic(bookmarks)
+                            if book.notes != formatted {
+                                book.notes = formatted
+                            }
+                        }
+                    } catch {
+                        AppLogger.warning("拉取划线失败 (\(book.title)): \(error)", category: "WeReadSync")
+                    }
+
+                    // (3) 仅当补全成功时标记已完成（失败的书下次 sync 会重试）
+                    if enrichSucceeded {
+                        book.wereadEnrichedDate = Date()
+                    }
+
+                    // 每 10 本保存一次，减少 UI 刷新频率
+                    if (index + 1) % 10 == 0 {
+                        try? bgContext.save()
+                    }
                 }
+                // 最终保存剩余
+                try? bgContext.save()
             }
-            try? modelContext.save()
         }
 
         // 12. 记录同步时间
@@ -446,15 +494,24 @@ actor WeReadSyncService {
             }
         }
 
-        // 更新进度（只往前推进，不后退）
-        if item.progress > book.wereadProgress {
+        // 更新进度（有不同就更新，防止0值覆盖）
+        if item.progress != book.wereadProgress && item.progress > 0 {
             book.wereadProgress = item.progress
             result.progressChanged = true
         }
-        // 更新阅读时长
+        // 更新阅读时长（有不同就更新，防止0值覆盖，使用容差避免浮点精度问题）
         let newHours = Double(item.readingTime + item.ttsTime) / 3600.0
-        if newHours > book.wereadReadingHours {
+        if abs(newHours - book.wereadReadingHours) > 0.001 && newHours > 0 {
             book.wereadReadingHours = newHours
+        }
+
+        // 补充价格（仅空时填充）
+        if (book.price == nil || book.price!.isEmpty), let p = item.price, p > 0, p.isFinite {
+            book.price = "¥\(String(format: "%.2f", p))"
+        }
+        // 补充出版时间（仅空时填充）
+        if book.publishDate == nil, let pt = item.publishTime, !pt.isEmpty {
+            book.publishDate = Self.parsePublishDate(pt)
         }
 
         // 补充加入时间（如果本地是默认的当前时间、远端有真实时间）
@@ -506,6 +563,15 @@ actor WeReadSyncService {
         book.wereadReadingHours = Double(item.readingTime + item.ttsTime) / 3600.0
         book.addSource = .wereadImported
         book.isWereadUserImported = item.isUserImported || item.id.hasPrefix("CB_")
+
+        // 价格
+        if let p = item.price, p > 0, p.isFinite {
+            book.price = "¥\(String(format: "%.2f", p))"
+        }
+        // 出版时间
+        if let pt = item.publishTime, !pt.isEmpty {
+            book.publishDate = Self.parsePublishDate(pt)
+        }
 
         // 加入时间：优先微信读书的加入书架时间
         if let addedTime = item.addedTime {
@@ -572,7 +638,7 @@ actor WeReadSyncService {
     }
 
     /// 解析出版日期字符串（微信读书格式如 "2020-01" 或 "2020-01-15" 或 "2020"）
-    nonisolated private func parsePublishDate(_ dateString: String) -> Date? {
+    static func parsePublishDate(_ dateString: String) -> Date? {
         let formatters: [String] = ["yyyy-MM-dd", "yyyy-MM", "yyyy"]
         for format in formatters {
             let formatter = DateFormatter()
@@ -585,9 +651,9 @@ actor WeReadSyncService {
         return nil
     }
 
-    /// 将划线列表格式化为可读文本
-    nonisolated private func formatBookmarks(_ bookmarks: [WeReadBookmark]) -> String {
-        var sections: [String: [String]] = [:]  // chapterName → [markText]
+    /// 将划线列表格式化为可读文本（static 版本，供 Task.detached 调用）
+    static func formatBookmarksStatic(_ bookmarks: [WeReadBookmark]) -> String {
+        var sections: [String: [String]] = [:]
         var noChapter: [String] = []
 
         for bm in bookmarks {
@@ -603,7 +669,6 @@ actor WeReadSyncService {
         lines.append("【微信读书划线】")
         lines.append("")
 
-        // 按章节分组输出
         for (chapter, texts) in sections.sorted(by: { $0.key < $1.key }) {
             lines.append("## \(chapter)")
             for text in texts {
@@ -612,7 +677,6 @@ actor WeReadSyncService {
             lines.append("")
         }
 
-        // 无章节的划线
         if !noChapter.isEmpty {
             for text in noChapter {
                 lines.append("· \(text)")
@@ -621,6 +685,11 @@ actor WeReadSyncService {
         }
 
         return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 将划线列表格式化为可读文本（实例方法，委托给 static 版本）
+    nonisolated private func formatBookmarks(_ bookmarks: [WeReadBookmark]) -> String {
+        Self.formatBookmarksStatic(bookmarks)
     }
 
     private func downloadImage(from urlString: String) async -> Data? {

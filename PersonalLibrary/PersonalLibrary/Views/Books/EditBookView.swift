@@ -519,10 +519,13 @@ struct EditBookView: View {
                 }
             }
 
-            // 微信读书缺描述时，再查外部源补全（用户导入书和平台书都可能缺描述）
+            // 微信读书缺描述时，是否查外部源：
+            // - 用户导入书（isWereadUserImported=true）：可以搜外部源补全
+            // - 平台书（isWereadUserImported=false）：不搜外部源，只用微信读书+本地
             var externalFilled = false
-            AppLogger.warning("performSmartFill: bookDesc.isEmpty=\(bookDescription.isEmpty), authorDesc.isEmpty=\(authorDescription.isEmpty), isbn=\(isbn), title=\(title), author=\(author)", category: "EditBook")
-            if bookDescription.isEmpty || authorDescription.isEmpty {
+            AppLogger.warning("performSmartFill: bookDesc.isEmpty=\(bookDescription.isEmpty), authorDesc.isEmpty=\(authorDescription.isEmpty), isbn=\(isbn), title=\(title), author=\(author), isUserImported=\(book.isWereadUserImported)", category: "EditBook")
+            let shouldSearchExternal = book.isWereadUserImported && (bookDescription.isEmpty || authorDescription.isEmpty)
+            if shouldSearchExternal {
                 autoFillMessage = "正在从外部数据源补全描述..."
                 AppLogger.warning("performSmartFill: calling ISBNLookupService.smartFill for external sources...", category: "EditBook")
                 let service = ISBNLookupService()
@@ -543,7 +546,7 @@ struct EditBookView: View {
                 if let d = extResult.bookDescription { bookDescription = d; externalFilled = true }
                 if let d = extResult.authorDescription { authorDescription = d; externalFilled = true }
             } else {
-                AppLogger.warning("performSmartFill: skipped external sources (both descriptions non-empty)", category: "EditBook")
+                AppLogger.warning("performSmartFill: skipped external sources (platform book or both descriptions non-empty)", category: "EditBook")
             }
 
             // 构建结果
@@ -646,16 +649,16 @@ struct EditBookView: View {
                 book.isWereadUserImported = true
                 AppLogger.warning("fillFromWeRead: set isWereadUserImported=true from enrichBook", category: "EditBook")
             }
-            // 阅读时长只增不减
-            if result.readingHours > book.wereadReadingHours {
+            // 阅读时长（有不同就更新，防止0值覆盖）
+            if abs(result.readingHours - book.wereadReadingHours) > 0.001 && result.readingHours > 0 {
                 book.wereadReadingHours = result.readingHours
             }
             // 开始阅读时间
             if let st = result.startedReadingTime, book.startedReadingDate == nil {
                 book.startedReadingDate = st
             }
-            // 完成时间
-            if let ft = result.finishedTime, book.finishedDate == nil {
+            // 完成时间（有不同就覆盖）
+            if let ft = result.finishedTime, book.finishedDate != ft {
                 book.finishedDate = ft
             }
             // 标记已补全

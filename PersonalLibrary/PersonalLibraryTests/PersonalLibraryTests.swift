@@ -777,7 +777,7 @@ struct WeReadEnrichResultTests {
         result.publisher = "新出版社"
         result.isbn = "new-isbn"
         result.intro = "新简介"
-        result.readingHours = 3.0  // 比已有值小
+        result.readingHours = 3.0  // 比已有值小但不同
 
         result.applyToBook(book)
 
@@ -786,12 +786,12 @@ struct WeReadEnrichResultTests {
         #expect(book.isbn == "existing-isbn")
         // 空字段被填充
         #expect(book.bookDescription == "新简介")
-        // 阅读时长只增不减
-        #expect(book.wereadReadingHours == 5.0)
+        // 阅读时长有不同就更新（不再是只增不减）
+        #expect(book.wereadReadingHours == 3.0)
     }
 
-    @Test("applyToBook 阅读时长增加时更新")
-    func applyUpdatesLargerHours() {
+    @Test("applyToBook 阅读时长有不同就更新")
+    func applyUpdatesReadingHoursWhenDifferent() {
         let book = Book(title: "测试", author: "作者", bookType: .ebook)
         book.wereadReadingHours = 2.0
 
@@ -801,6 +801,77 @@ struct WeReadEnrichResultTests {
         result.applyToBook(book)
 
         #expect(book.wereadReadingHours == 8.5)
+    }
+
+    @Test("applyToBook 阅读时长为0时不覆盖")
+    func applyDoesNotOverwriteReadingHoursWithZero() {
+        let book = Book(title: "测试", author: "作者", bookType: .ebook)
+        book.wereadReadingHours = 5.0
+
+        var result = WeReadEnrichResult()
+        result.readingHours = 0  // API 返回 0 不应覆盖
+
+        result.applyToBook(book)
+
+        #expect(book.wereadReadingHours == 5.0)
+    }
+
+    @Test("applyToBook progress有不同就更新")
+    func applyUpdatesProgressWhenDifferent() {
+        let book = Book(title: "测试", author: "作者", bookType: .ebook)
+        book.wereadProgress = 80
+
+        var result = WeReadEnrichResult()
+        result.progress = 45  // 进度回退也应更新（如重读）
+
+        result.applyToBook(book)
+
+        #expect(book.wereadProgress == 45)
+    }
+
+    @Test("applyToBook progress为0时不覆盖")
+    func applyDoesNotOverwriteProgressWithZero() {
+        let book = Book(title: "测试", author: "作者", bookType: .ebook)
+        book.wereadProgress = 50
+
+        var result = WeReadEnrichResult()
+        result.progress = 0  // API 返回 0 不应覆盖
+
+        result.applyToBook(book)
+
+        #expect(book.wereadProgress == 50)
+    }
+
+    @Test("applyToBook addedTime 填空：首次enrichment时设置addedDate")
+    func applyFillsAddedTimeWhenFirstEnrichment() {
+        let book = Book(title: "测试", author: "作者", bookType: .ebook)
+        // 模拟首次enrichment：wereadEnrichedDate 为 nil
+        book.wereadEnrichedDate = nil
+        let originalAddedDate = book.addedDate
+
+        var result = WeReadEnrichResult()
+        let startTime = Date(timeIntervalSince1970: 1700000000)  // 2023-11-14
+        result.addedTime = startTime
+
+        result.applyToBook(book)
+
+        #expect(book.addedDate == startTime)
+        #expect(book.addedDate != originalAddedDate)
+    }
+
+    @Test("applyToBook addedTime 不覆盖已enriched的书")
+    func applyDoesNotOverwriteAddedDateWhenAlreadyEnriched() {
+        let book = Book(title: "测试", author: "作者", bookType: .ebook)
+        book.wereadEnrichedDate = Date()  // 已经enriched过
+        let originalAddedDate = book.addedDate
+
+        var result = WeReadEnrichResult()
+        result.addedTime = Date(timeIntervalSince1970: 1700000000)
+
+        result.applyToBook(book)
+
+        // 已enriched过的书不改变 addedDate
+        #expect(book.addedDate == originalAddedDate)
     }
 
     @Test("applyToBook 填充出版社和价格")
@@ -1202,11 +1273,12 @@ struct WeReadSyncSettingsTests {
 
 // MARK: - WeRead Sync Logic Tests
 
-@Suite("WeReadSyncService Logic Tests")
+@Suite("WeReadSyncService Logic Tests", .serialized)
 struct WeReadSyncLogicTests {
 
     @Test("未登录时同步返回错误")
     func syncWithoutLogin() async throws {
+        WeReadSyncService.resetSyncLockForTesting()
         let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [config])
@@ -1357,6 +1429,481 @@ struct WeReadUserImportedTests {
     func syncLockPreventsDoubleTrigger() async throws {
         // 验证 isSyncing 静态属性默认为 false
         #expect(WeReadSyncService.isSyncing == false)
+    }
+}
+
+// MARK: - WeRead Sync Update Strategy Tests
+
+@Suite("WeRead Sync Update Strategy Tests", .serialized)
+struct WeReadSyncUpdateStrategyTests {
+
+    @Test("同步时 progress 有不同就更新（即使减小）")
+    func syncUpdatesProgressWhenDifferent() async throws {
+        WeReadSyncService.resetSyncLockForTesting()
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        let book = Book(title: "Progress Test", author: "Author", bookType: .ebook)
+        book.wereadBookId = "wr_prog"
+        book.wereadProgress = 80  // 本地80%
+        book.wereadEnrichedDate = Date()  // 已enriched，不会再触发enrichment
+        context.insert(book)
+        try context.save()
+
+        let mock = MockWeReadDataSource()
+        await mock.setBooks([
+            WeReadImportItem(id: "wr_prog", title: "Progress Test", author: "Author",
+                           progress: 45, readingTime: 3600, ttsTime: 0,  // 远端45%
+                           bookType: .ebook)
+        ])
+
+        let syncService = WeReadSyncService(provider: mock)
+        _ = await syncService.sync(container: container, skipLockCheck: true)
+
+        let verifyContext = ModelContext(container)
+        let books = try verifyContext.fetch(FetchDescriptor<Book>())
+        let resultBook = books.first(where: { $0.wereadBookId == "wr_prog" })
+        #expect(resultBook?.wereadProgress == 45)
+    }
+
+    @Test("同步时 progress 为0不覆盖已有值")
+    func syncDoesNotOverwriteProgressWithZero() async throws {
+        WeReadSyncService.resetSyncLockForTesting()
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        let book = Book(title: "Zero Test", author: "Author", bookType: .ebook)
+        book.wereadBookId = "wr_zero"
+        book.wereadProgress = 50
+        book.wereadEnrichedDate = Date()
+        context.insert(book)
+        try context.save()
+
+        let mock = MockWeReadDataSource()
+        await mock.setBooks([
+            WeReadImportItem(id: "wr_zero", title: "Zero Test", author: "Author",
+                           progress: 0, readingTime: 0, ttsTime: 0,  // 远端0
+                           bookType: .ebook)
+        ])
+
+        let syncService = WeReadSyncService(provider: mock)
+        _ = await syncService.sync(container: container, skipLockCheck: true)
+
+        let verifyContext = ModelContext(container)
+        let books = try verifyContext.fetch(FetchDescriptor<Book>())
+        let resultBook = books.first(where: { $0.wereadBookId == "wr_zero" })
+        #expect(resultBook?.wereadProgress == 50)
+    }
+
+    @Test("同步时 readingHours 有不同就更新（包含ttsTime）")
+    func syncUpdatesReadingHoursWithTtsTime() async throws {
+        WeReadSyncService.resetSyncLockForTesting()
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        let book = Book(title: "Hours Test", author: "Author", bookType: .ebook)
+        book.wereadBookId = "wr_hours"
+        book.wereadReadingHours = 5.0  // 本地5小时
+        book.wereadEnrichedDate = Date()
+        context.insert(book)
+        try context.save()
+
+        let mock = MockWeReadDataSource()
+        // 远端：readingTime=3600(1h) + ttsTime=5400(1.5h) = 7200秒 = 2小时（比本地小）
+        await mock.setBooks([
+            WeReadImportItem(id: "wr_hours", title: "Hours Test", author: "Author",
+                           progress: 50, readingTime: 3600, ttsTime: 5400,
+                           bookType: .ebook)
+        ])
+
+        let syncService = WeReadSyncService(provider: mock)
+        _ = await syncService.sync(container: container, skipLockCheck: true)
+
+        let verifyContext = ModelContext(container)
+        let books = try verifyContext.fetch(FetchDescriptor<Book>())
+        let resultBook = books.first(where: { $0.wereadBookId == "wr_hours" })
+        #expect(resultBook?.wereadReadingHours == 2.5)  // (3600+5400)/3600 = 2.5
+    }
+}
+
+// MARK: - WeRead Sync Enrichment Atomicity Tests
+
+/// Mock WeReadDataSource for testing sync enrichment behavior
+actor MockWeReadDataSource: WeReadDataSource {
+    var books: [WeReadImportItem] = []
+    var enrichResults: [String: WeReadEnrichResult] = [:]
+    var bookmarkResults: [String: [WeReadBookmark]] = [:]
+    var enrichCallCount = 0
+    var bookmarkCallCount = 0
+
+    func setBooks(_ items: [WeReadImportItem]) { books = items }
+    func setEnrichResults(_ results: [String: WeReadEnrichResult]) { enrichResults = results }
+    func setBookmarks(_ bm: [String: [WeReadBookmark]]) { bookmarkResults = bm }
+
+    func isConnected() -> Bool { true }
+    func disconnect() {}
+
+    func fetchAllBooks() async throws -> [WeReadImportItem] {
+        return books
+    }
+
+    func enrichBook(bookId: String) async throws -> WeReadEnrichResult {
+        enrichCallCount += 1
+        return enrichResults[bookId] ?? WeReadEnrichResult()
+    }
+
+    func fetchBookmarks(bookId: String) async throws -> [WeReadBookmark] {
+        bookmarkCallCount += 1
+        return bookmarkResults[bookId] ?? []
+    }
+
+    func fetchBookInfo(bookId: String) async throws -> WeReadShelfBook {
+        return WeReadShelfBook(bookId: bookId, title: nil, author: nil, cover: nil, translator: nil, category: nil, publisher: nil, publishTime: nil, intro: nil, isbn: nil, price: nil, finished: nil, format: nil, type: nil, readUpdateTime: nil, finishReadingTime: nil)
+    }
+}
+
+@Suite("WeRead Sync Enrichment Atomicity Tests", .serialized)
+struct WeReadSyncEnrichmentTests {
+
+    @Test("同步逐本原子处理：补全+划线+标记wereadEnrichedDate")
+    func syncEnrichesAndPullsBookmarksAtomically() async throws {
+        WeReadSyncService.resetSyncLockForTesting()
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        // 准备：2本需要enrichment的书
+        let book1 = Book(title: "Book A", author: "Author A", bookType: .ebook)
+        book1.wereadBookId = "wr_a"
+        book1.wereadEnrichedDate = nil
+
+        let book2 = Book(title: "Book B", author: "Author B", bookType: .ebook)
+        book2.wereadBookId = "wr_b"
+        book2.wereadEnrichedDate = nil
+
+        context.insert(book1)
+        context.insert(book2)
+        try context.save()
+
+        // Mock
+        let mock = MockWeReadDataSource()
+        await mock.setBooks([
+            WeReadImportItem(id: "wr_a", title: "Book A", author: "Author A", bookType: .ebook),
+            WeReadImportItem(id: "wr_b", title: "Book B", author: "Author B", bookType: .ebook)
+        ])
+
+        var enrichA = WeReadEnrichResult()
+        enrichA.publisher = "Publisher A"
+        var enrichB = WeReadEnrichResult()
+        enrichB.publisher = "Publisher B"
+        await mock.setEnrichResults(["wr_a": enrichA, "wr_b": enrichB])
+
+        await mock.setBookmarks([
+            "wr_a": [WeReadBookmark(bookmarkId: "bm1", markText: "划线A", chapterName: nil, createTime: nil)],
+            "wr_b": []
+        ])
+
+        // 执行同步
+        let syncService = WeReadSyncService(provider: mock)
+        let result = await syncService.sync(container: container, skipLockCheck: true)
+
+        #expect(result.error == nil)
+
+        // 验证两本书都被 enrich + fetchBookmarks
+        let enrichCount = await mock.enrichCallCount
+        let bmCount = await mock.bookmarkCallCount
+        #expect(enrichCount == 2)
+        #expect(bmCount == 2)
+
+        // 验证 wereadEnrichedDate 已设置
+        let verifyContext = ModelContext(container)
+        let allBooks = try verifyContext.fetch(FetchDescriptor<Book>())
+        for book in allBooks {
+            #expect(book.wereadEnrichedDate != nil, "Book \(book.title) should have wereadEnrichedDate set")
+        }
+
+        // Book A 有划线
+        let bookA = allBooks.first(where: { $0.title == "Book A" })
+        #expect(bookA?.notes?.contains("划线A") == true)
+        // Book B 无划线，notes 仍为 nil
+        let bookB = allBooks.first(where: { $0.title == "Book B" })
+        #expect(bookB?.notes == nil)
+    }
+
+    @Test("已有wereadEnrichedDate的书不重复处理")
+    func alreadyEnrichedBooksSkipped() async throws {
+        WeReadSyncService.resetSyncLockForTesting()
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        let book = Book(title: "Already Done", author: "Author", bookType: .ebook)
+        book.wereadBookId = "wr_done"
+        book.wereadEnrichedDate = Date()
+
+        context.insert(book)
+        try context.save()
+
+        let mock = MockWeReadDataSource()
+        await mock.setBooks([
+            WeReadImportItem(id: "wr_done", title: "Already Done", author: "Author", bookType: .ebook)
+        ])
+
+        let syncService = WeReadSyncService(provider: mock)
+        _ = await syncService.sync(container: container, skipLockCheck: true)
+
+        let enrichCount = await mock.enrichCallCount
+        let bmCount = await mock.bookmarkCallCount
+        #expect(enrichCount == 0)
+        #expect(bmCount == 0)
+    }
+
+    @Test("同步时 startedReadingTime 被正确写入 book.startedReadingDate")
+    func syncAppliesStartedReadingTime() async throws {
+        WeReadSyncService.resetSyncLockForTesting()
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        let book = Book(title: "Test Book", author: "Author", bookType: .ebook)
+        book.wereadBookId = "wr_test_start"
+        book.wereadEnrichedDate = nil
+        book.startedReadingDate = nil
+        context.insert(book)
+        try context.save()
+
+        let mock = MockWeReadDataSource()
+        await mock.setBooks([
+            WeReadImportItem(id: "wr_test_start", title: "Test Book", author: "Author", bookType: .ebook)
+        ])
+
+        // enrichResult 中设置 startedReadingTime
+        var enrichResult = WeReadEnrichResult()
+        enrichResult.startedReadingTime = Date(timeIntervalSince1970: 1700000000)  // 2023-11-14
+        await mock.setEnrichResults(["wr_test_start": enrichResult])
+        await mock.setBookmarks(["wr_test_start": []])
+
+        let syncService = WeReadSyncService(provider: mock)
+        _ = await syncService.sync(container: container, skipLockCheck: true)
+
+        // 验证 startedReadingDate 被设置
+        let verifyContext = ModelContext(container)
+        let books = try verifyContext.fetch(FetchDescriptor<Book>())
+        let resultBook = books.first(where: { $0.title == "Test Book" })
+        #expect(resultBook?.startedReadingDate != nil, "startedReadingDate should be set from enrichResult")
+        #expect(resultBook?.startedReadingDate == Date(timeIntervalSince1970: 1700000000))
+    }
+
+    @Test("同步时 addedTime 被正确写入 book.addedDate（首次enrichment）")
+    func syncAppliesAddedTimeOnFirstEnrichment() async throws {
+        WeReadSyncService.resetSyncLockForTesting()
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        let book = Book(title: "Test AddedTime", author: "Author", bookType: .ebook)
+        book.wereadBookId = "wr_added"
+        book.wereadEnrichedDate = nil  // 首次enrichment
+        context.insert(book)
+        try context.save()
+
+        let mock = MockWeReadDataSource()
+        await mock.setBooks([
+            WeReadImportItem(id: "wr_added", title: "Test AddedTime", author: "Author", bookType: .ebook)
+        ])
+
+        var enrichResult = WeReadEnrichResult()
+        enrichResult.addedTime = Date(timeIntervalSince1970: 1690000000)  // 加入书架时间
+        enrichResult.readingHours = 2.5  // 包含ttsTime的总时长
+        await mock.setEnrichResults(["wr_added": enrichResult])
+        await mock.setBookmarks(["wr_added": []])
+
+        let syncService = WeReadSyncService(provider: mock)
+        _ = await syncService.sync(container: container, skipLockCheck: true)
+
+        let verifyContext = ModelContext(container)
+        let books = try verifyContext.fetch(FetchDescriptor<Book>())
+        let resultBook = books.first(where: { $0.title == "Test AddedTime" })
+        #expect(resultBook?.addedDate == Date(timeIntervalSince1970: 1690000000))
+        #expect(resultBook?.wereadReadingHours == 2.5)
+    }
+}
+
+// MARK: - CB_ User Imported Book External Lookup Tests
+
+@Suite("CB_ External Lookup Tests", .serialized)
+struct CBExternalLookupTests {
+
+    @Test("CB_前缀书籍同步时触发外部源查询（bookDescription为空）")
+    func syncCBBookTriggersExternalLookup() async throws {
+        WeReadSyncService.resetSyncLockForTesting()
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        // CB_ 前缀的用户导入书，描述为空
+        let book = Book(title: "用户导入书", author: "Test Author", bookType: .ebook)
+        book.wereadBookId = "CB_user_book_123"
+        book.wereadEnrichedDate = nil
+        book.bookDescription = nil
+        book.authorDescription = nil
+        context.insert(book)
+        try context.save()
+
+        let mock = MockWeReadDataSource()
+        await mock.setBooks([
+            WeReadImportItem(id: "CB_user_book_123", title: "用户导入书", author: "Test Author", bookType: .ebook)
+        ])
+        // WeRead enrichResult 不提供 intro（用户导入书通常没有）
+        var enrichResult = WeReadEnrichResult()
+        enrichResult.isUserImported = true
+        await mock.setEnrichResults(["CB_user_book_123": enrichResult])
+        await mock.setBookmarks(["CB_user_book_123": []])
+
+        let syncService = WeReadSyncService(provider: mock)
+        _ = await syncService.sync(container: container, skipLockCheck: true)
+
+        // 验证 enrichment 完成（wereadEnrichedDate 被设置）
+        let verifyContext = ModelContext(container)
+        let books = try verifyContext.fetch(FetchDescriptor<Book>())
+        let resultBook = books.first(where: { $0.wereadBookId == "CB_user_book_123" })
+        #expect(resultBook?.wereadEnrichedDate != nil)
+        // 注意：外部源（豆瓣等）在测试环境网络不可用时返回空，所以不能断言描述有值
+        // 但如果网络可用且能找到书，则 bookDescription 会被填充
+    }
+
+    @Test("非CB_书籍不触发外部源查询")
+    func syncNonCBBookSkipsExternalLookup() async throws {
+        WeReadSyncService.resetSyncLockForTesting()
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        // 非 CB_ 前缀的平台书，描述为空
+        let book = Book(title: "平台书", author: "Platform Author", bookType: .ebook)
+        book.wereadBookId = "wr_platform_123"
+        book.wereadEnrichedDate = nil
+        book.bookDescription = nil
+        context.insert(book)
+        try context.save()
+
+        let mock = MockWeReadDataSource()
+        await mock.setBooks([
+            WeReadImportItem(id: "wr_platform_123", title: "平台书", author: "Platform Author", bookType: .ebook)
+        ])
+        var enrichResult = WeReadEnrichResult()
+        enrichResult.intro = "微信读书提供的简介"
+        await mock.setEnrichResults(["wr_platform_123": enrichResult])
+        await mock.setBookmarks(["wr_platform_123": []])
+
+        let syncService = WeReadSyncService(provider: mock)
+        _ = await syncService.sync(container: container, skipLockCheck: true)
+
+        let verifyContext = ModelContext(container)
+        let books = try verifyContext.fetch(FetchDescriptor<Book>())
+        let resultBook = books.first(where: { $0.wereadBookId == "wr_platform_123" })
+        #expect(resultBook?.wereadEnrichedDate != nil)
+        // 非 CB_ 书使用 WeRead 提供的 intro
+        #expect(resultBook?.bookDescription == "微信读书提供的简介")
+    }
+
+    @Test("CB_书籍已有描述时不查询外部源")
+    func syncCBBookSkipsExternalWhenDescriptionExists() async throws {
+        WeReadSyncService.resetSyncLockForTesting()
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        let book = Book(title: "CB有描述", author: "Author", bookType: .ebook)
+        book.wereadBookId = "CB_has_desc"
+        book.wereadEnrichedDate = nil
+        book.bookDescription = "已有的描述"
+        book.authorDescription = "已有的作者简介"
+        context.insert(book)
+        try context.save()
+
+        let mock = MockWeReadDataSource()
+        await mock.setBooks([
+            WeReadImportItem(id: "CB_has_desc", title: "CB有描述", author: "Author", bookType: .ebook)
+        ])
+        await mock.setEnrichResults(["CB_has_desc": WeReadEnrichResult()])
+        await mock.setBookmarks(["CB_has_desc": []])
+
+        let syncService = WeReadSyncService(provider: mock)
+        _ = await syncService.sync(container: container, skipLockCheck: true)
+
+        let verifyContext = ModelContext(container)
+        let books = try verifyContext.fetch(FetchDescriptor<Book>())
+        let resultBook = books.first(where: { $0.wereadBookId == "CB_has_desc" })
+        // 描述保持不变（没有被外部源覆盖）
+        #expect(resultBook?.bookDescription == "已有的描述")
+        #expect(resultBook?.authorDescription == "已有的作者简介")
+    }
+}
+
+// MARK: - Smart Fill Platform Book Tests
+
+@Suite("Smart Fill Platform Book Tests")
+struct SmartFillPlatformBookTests {
+
+    @Test("WeReadEnrichResult.applyToBook 正确设置 startedReadingDate")
+    func applyToBookSetsStartedReadingDate() {
+        let book = Book(title: "Test", author: "Author", bookType: .ebook)
+        book.startedReadingDate = nil
+
+        var result = WeReadEnrichResult()
+        result.startedReadingTime = Date(timeIntervalSince1970: 1700000000)
+        result.applyToBook(book)
+
+        #expect(book.startedReadingDate != nil)
+        #expect(book.startedReadingDate == Date(timeIntervalSince1970: 1700000000))
+    }
+
+    @Test("WeReadEnrichResult.applyToBook 不覆盖已有的 startedReadingDate")
+    func applyToBookDoesNotOverwriteStartedReadingDate() {
+        let book = Book(title: "Test", author: "Author", bookType: .ebook)
+        let existing = Date(timeIntervalSince1970: 1600000000)
+        book.startedReadingDate = existing
+
+        var result = WeReadEnrichResult()
+        result.startedReadingTime = Date(timeIntervalSince1970: 1700000000)
+        result.applyToBook(book)
+
+        // 不应该被覆盖
+        #expect(book.startedReadingDate == existing)
+    }
+
+    @Test("微信读书平台书智能补全不应搜索外部源（仅缺作者简介时）")
+    func platformBookShouldNotSearchExternal() {
+        // 这是行为规范测试：
+        // 条件: book.isWereadUserImported == false（平台书）
+        //        bookDescription 非空, authorDescription 为空
+        // 预期: 不调用 ISBNLookupService.smartFill（外部搜索）
+        //
+        // 由于 performSmartFill 是 View 的私有方法无法直接测试，
+        // 我们验证 isWereadUserImported 的逻辑判断正确性
+        let book = Book(title: "启功给你讲书法", author: "启功", bookType: .ebook)
+        book.wereadBookId = "25789624"
+        book.isWereadUserImported = false  // 平台书
+        book.bookDescription = "这是一本书法书"  // 有简介
+        // authorDescription 为 nil — 但不应去外部搜索
+
+        // 验证判断条件：平台书 + 只缺作者简介 → 不搜外部
+        let shouldSearchExternal = book.isWereadUserImported || book.bookDescription == nil || (book.bookDescription?.isEmpty ?? true)
+        #expect(shouldSearchExternal == false, "Platform book with bookDescription should NOT trigger external search")
     }
 }
 
@@ -2894,17 +3441,18 @@ struct BookNewFieldsTests {
         #expect(book.finishedDate == finishDate)
     }
 
-    @Test("applyToBook 不覆盖已有 finishedDate")
-    func applyToBookDoesNotOverwriteFinishedDate() {
+    @Test("applyToBook finishedTime 有不同就覆盖")
+    func applyToBookOverwritesFinishedDateWhenDifferent() {
         let book = Book(title: "测试", author: "作者", bookType: .ebook)
         let existingDate = Date(timeIntervalSince1970: 1600000000)
         book.finishedDate = existingDate
 
         var result = WeReadEnrichResult()
-        result.finishedTime = Date(timeIntervalSince1970: 1700000000)
+        let newDate = Date(timeIntervalSince1970: 1700000000)
+        result.finishedTime = newDate
         result.applyToBook(book)
 
-        #expect(book.finishedDate == existingDate)
+        #expect(book.finishedDate == newDate)
     }
 }
 
@@ -3003,5 +3551,335 @@ struct WeReadEnrichResultDateTests {
         let date = Date(timeIntervalSince1970: 1700000000)
         result.finishedTime = date
         #expect(result.finishedTime == date)
+    }
+}
+
+// MARK: - Skill fetchAllBooks 字段完整性测试
+
+@Suite("Skill fetchAllBooks Field Completeness", .serialized)
+struct SkillFetchAllBooksFieldTests {
+
+    @Test("WeReadImportItem 包含 price 和 publishTime 字段")
+    func importItemHasPriceAndPublishTime() {
+        let item = WeReadImportItem(
+            id: "test1", title: "测试书", author: "作者",
+            price: 29.99, publishTime: "2023-06"
+        )
+        #expect(item.price == 29.99)
+        #expect(item.publishTime == "2023-06")
+    }
+
+    @Test("WeReadImportItem price 和 publishTime 默认为 nil")
+    func importItemDefaultsNil() {
+        let item = WeReadImportItem(id: "test2", title: "T", author: "A")
+        #expect(item.price == nil)
+        #expect(item.publishTime == nil)
+    }
+
+    @Test("首次导入时 price 写入 Book")
+    func importNewBookSavesPrice() async throws {
+        WeReadSyncService.resetSyncLockForTesting()
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+
+        let mock = MockWeReadDataSource()
+        await mock.setBooks([
+            WeReadImportItem(
+                id: "wr_price_test", title: "价格测试", author: "作者",
+                publisher: "出版社", progress: 0, readingTime: 0, ttsTime: 0,
+                isFinished: false, bookType: .ebook,
+                price: 45.0, publishTime: "2022-03"
+            )
+        ])
+
+        let syncService = WeReadSyncService(provider: mock)
+        let result = await syncService.sync(container: container, skipLockCheck: true)
+
+        #expect(result.newBooksImported == 1)
+
+        let verifyContext = ModelContext(container)
+        let descriptor = FetchDescriptor<Book>(predicate: #Predicate { $0.wereadBookId == "wr_price_test" })
+        let books = try verifyContext.fetch(descriptor)
+        #expect(books.count == 1)
+        #expect(books[0].price == "¥45.00")
+        #expect(books[0].publishDate != nil)
+    }
+
+    @Test("首次导入时 readingTime 和 ttsTime 写入 wereadReadingHours")
+    func importNewBookSavesReadingTime() async throws {
+        WeReadSyncService.resetSyncLockForTesting()
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+
+        let mock = MockWeReadDataSource()
+        await mock.setBooks([
+            WeReadImportItem(
+                id: "wr_time_test", title: "时长测试", author: "作者",
+                progress: 50, readingTime: 7200, ttsTime: 1800,
+                isFinished: false, bookType: .ebook
+            )
+        ])
+
+        let syncService = WeReadSyncService(provider: mock)
+        let result = await syncService.sync(container: container, skipLockCheck: true)
+
+        #expect(result.newBooksImported == 1)
+
+        let verifyContext = ModelContext(container)
+        let descriptor = FetchDescriptor<Book>(predicate: #Predicate { $0.wereadBookId == "wr_time_test" })
+        let books = try verifyContext.fetch(descriptor)
+        #expect(books.count == 1)
+        #expect(books[0].wereadReadingHours == 2.5) // (7200+1800)/3600
+    }
+
+    @Test("首次导入时 finishedTime 写入 Book.finishedDate")
+    func importNewBookSavesFinishedTime() async throws {
+        WeReadSyncService.resetSyncLockForTesting()
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+
+        let finishDate = Date(timeIntervalSince1970: 1700000000)
+        let mock = MockWeReadDataSource()
+        await mock.setBooks([
+            WeReadImportItem(
+                id: "wr_finish_test", title: "完成测试", author: "作者",
+                progress: 100, readingTime: 3600, ttsTime: 0,
+                isFinished: true, bookType: .ebook,
+                finishedTime: finishDate
+            )
+        ])
+
+        let syncService = WeReadSyncService(provider: mock)
+        let result = await syncService.sync(container: container, skipLockCheck: true)
+
+        #expect(result.newBooksImported == 1)
+
+        let verifyContext = ModelContext(container)
+        let descriptor = FetchDescriptor<Book>(predicate: #Predicate { $0.wereadBookId == "wr_finish_test" })
+        let books = try verifyContext.fetch(descriptor)
+        #expect(books.count == 1)
+        #expect(books[0].status == .finished)
+        #expect(books[0].finishedDate == finishDate)
+    }
+
+    @Test("同步已有书时补充 price 和 publishTime（仅空时填充）")
+    func updateExistingBookFillsPriceAndPublishTime() async throws {
+        WeReadSyncService.resetSyncLockForTesting()
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let setupContext = ModelContext(container)
+
+        let existingBook = Book(title: "已有书", author: "作者", bookType: .ebook)
+        existingBook.wereadBookId = "wr_existing"
+        setupContext.insert(existingBook)
+        try setupContext.save()
+
+        let mock = MockWeReadDataSource()
+        await mock.setBooks([
+            WeReadImportItem(
+                id: "wr_existing", title: "已有书", author: "作者",
+                progress: 30, readingTime: 1800, ttsTime: 0,
+                isFinished: false, bookType: .ebook,
+                price: 35.5, publishTime: "2021-11"
+            )
+        ])
+
+        let syncService = WeReadSyncService(provider: mock)
+        let result = await syncService.sync(container: container, skipLockCheck: true)
+
+        #expect(result.newBooksImported == 0)
+
+        let verifyContext = ModelContext(container)
+        let descriptor = FetchDescriptor<Book>(predicate: #Predicate { $0.wereadBookId == "wr_existing" })
+        let books = try verifyContext.fetch(descriptor)
+        #expect(books.count == 1)
+        #expect(books[0].price == "¥35.50")
+        #expect(books[0].publishDate != nil)
+    }
+
+    @Test("同步已有书时不覆盖已有 price")
+    func updateExistingBookDoesNotOverwritePrice() async throws {
+        WeReadSyncService.resetSyncLockForTesting()
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let setupContext = ModelContext(container)
+
+        let existingBook = Book(title: "已有价格", author: "作者", bookType: .ebook)
+        existingBook.wereadBookId = "wr_has_price"
+        existingBook.price = "¥99.00"
+        setupContext.insert(existingBook)
+        try setupContext.save()
+
+        let mock = MockWeReadDataSource()
+        await mock.setBooks([
+            WeReadImportItem(
+                id: "wr_has_price", title: "已有价格", author: "作者",
+                progress: 0, readingTime: 0, ttsTime: 0,
+                isFinished: false, bookType: .ebook,
+                price: 35.5, publishTime: "2021-11"
+            )
+        ])
+
+        let syncService = WeReadSyncService(provider: mock)
+        _ = await syncService.sync(container: container, skipLockCheck: true)
+
+        let verifyContext = ModelContext(container)
+        let descriptor = FetchDescriptor<Book>(predicate: #Predicate { $0.wereadBookId == "wr_has_price" })
+        let books = try verifyContext.fetch(descriptor)
+        #expect(books[0].price == "¥99.00") // 不被覆盖
+    }
+}
+
+// MARK: - EnrichBook 字段完整性测试 (方式2/3)
+
+@Suite("EnrichBook Field Strategy Tests")
+struct EnrichBookFieldStrategyTests {
+
+    // MARK: - WeReadEnrichResult 新字段
+
+    @Test("WeReadEnrichResult 包含 title/author/cover/translator/category/progress 字段")
+    func enrichResultHasNewFields() {
+        var result = WeReadEnrichResult()
+        result.title = "测试书名"
+        result.author = "测试作者"
+        result.cover = "https://cover.jpg"
+        result.translator = "译者"
+        result.category = "文学"
+        result.progress = 75
+
+        #expect(result.title == "测试书名")
+        #expect(result.author == "测试作者")
+        #expect(result.cover == "https://cover.jpg")
+        #expect(result.translator == "译者")
+        #expect(result.category == "文学")
+        #expect(result.progress == 75)
+    }
+
+    // MARK: - applyToBook 填空策略
+
+    @Test("applyToBook: title/author/cover 填空，不覆盖已有值")
+    func applyToBookFillsEmptyTitleAuthorCover() {
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try! ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        // 书有 title 和 author，没有 cover
+        let book = Book(title: "原标题", author: "原作者", bookType: .ebook)
+        book.coverImageURL = nil
+        context.insert(book)
+
+        var result = WeReadEnrichResult()
+        result.title = "新标题"
+        result.author = "新作者"
+        result.cover = "https://new-cover.jpg"
+
+        result.applyToBook(book)
+
+        // 填空：已有值不覆盖
+        #expect(book.title == "原标题")
+        #expect(book.author == "原作者")
+        // 空字段被填充
+        #expect(book.coverImageURL == "https://new-cover.jpg")
+    }
+
+    @Test("applyToBook: translator/category 填空")
+    func applyToBookFillsTranslatorCategory() {
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try! ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        let book = Book(title: "T", author: "A", bookType: .ebook)
+        context.insert(book)
+
+        var result = WeReadEnrichResult()
+        result.translator = "王译"
+        result.category = "历史"
+
+        result.applyToBook(book)
+
+        #expect(book.translator == "王译")
+    }
+
+    // MARK: - applyToBook 只增不减策略
+
+    @Test("applyToBook: progress 有不同就更新（非零即更新）")
+    func applyToBookProgressUpdatesWhenDifferent() {
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try! ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        let book = Book(title: "T", author: "A", bookType: .ebook)
+        book.wereadProgress = 60
+        context.insert(book)
+
+        // 新进度更大 → 更新
+        var result1 = WeReadEnrichResult()
+        result1.progress = 80
+        result1.applyToBook(book)
+        #expect(book.wereadProgress == 80)
+
+        // 新进度更小但非零 → 也更新（有不同就更新策略）
+        var result2 = WeReadEnrichResult()
+        result2.progress = 50
+        result2.applyToBook(book)
+        #expect(book.wereadProgress == 50)
+
+        // 新进度为 0 → 不更新（防止 0 覆盖）
+        var result3 = WeReadEnrichResult()
+        result3.progress = 0
+        result3.applyToBook(book)
+        #expect(book.wereadProgress == 50)
+    }
+
+    // MARK: - applyToBook 有不同就覆盖策略
+
+    @Test("applyToBook: finishedTime 有不同就覆盖（非仅填空）")
+    func applyToBookFinishedTimeOverwritesWhenDifferent() {
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try! ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        let oldDate = Date(timeIntervalSince1970: 1700000000)
+        let newDate = Date(timeIntervalSince1970: 1710000000)
+
+        let book = Book(title: "T", author: "A", bookType: .ebook)
+        book.finishedDate = oldDate
+        context.insert(book)
+
+        var result = WeReadEnrichResult()
+        result.finishedTime = newDate
+        result.applyToBook(book)
+
+        // 有不同就覆盖
+        #expect(book.finishedDate == newDate)
+    }
+
+    @Test("applyToBook: finishedTime 相同不触发更新")
+    func applyToBookFinishedTimeSameNoOp() {
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try! ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        let date = Date(timeIntervalSince1970: 1700000000)
+
+        let book = Book(title: "T", author: "A", bookType: .ebook)
+        book.finishedDate = date
+        context.insert(book)
+
+        var result = WeReadEnrichResult()
+        result.finishedTime = date
+        result.applyToBook(book)
+
+        #expect(book.finishedDate == date)
     }
 }

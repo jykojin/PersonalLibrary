@@ -18,7 +18,10 @@ struct WeReadImportView: View {
     @State private var showingResult = false
     @State private var filterType: BookTypeFilter = .all
 
-    private let service = WeReadService()
+    private let webService = WeReadService()
+    private let skillService = WeReadSkillProvider()
+    private var isSkillMode: Bool { WeReadConnectionMode.current == .skill }
+    private var activeProvider: any WeReadDataSource { isSkillMode ? skillService : webService }
 
     enum BookTypeFilter: String, CaseIterable {
         case all = "全部"
@@ -49,14 +52,20 @@ struct WeReadImportView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if !isLoggedIn {
+                if !isLoggedIn && !isSkillMode {
                     loginPromptView
                 } else if isLoading {
                     loadingView
-                } else if items.isEmpty {
+                } else if items.isEmpty && !isLoading {
                     emptyView
                 } else {
                     bookListView
+                }
+            }
+            .task {
+                if isSkillMode {
+                    isLoggedIn = true
+                    await loadBooks()
                 }
             }
             .navigationTitle("微信读书导入")
@@ -77,7 +86,7 @@ struct WeReadImportView: View {
             .sheet(isPresented: $showingLogin) {
                 WeReadLoginView { cookies in
                     Task {
-                        await service.setCookies(cookies)
+                        await webService.setCookies(cookies)
                         isLoggedIn = true
                         await loadBooks()
                     }
@@ -230,7 +239,7 @@ struct WeReadImportView: View {
         defer { isLoading = false }
 
         do {
-            items = try await service.fetchAllBooks()
+            items = try await activeProvider.fetchAllBooks()
         } catch {
             errorMessage = error.localizedDescription
             showingError = true
@@ -242,9 +251,19 @@ struct WeReadImportView: View {
         defer { isImporting = false }
 
         do {
-            let result = try await service.importBooks(items, modelContext: modelContext)
+            let result = try await webService.importBooks(items, modelContext: modelContext)
             importResult = result
             showingResult = true
+
+            // 导入成功后，后台触发 sync 进行 enrichment（补全详情+划线）
+            if result.imported > 0 {
+                let container = modelContext.container
+                let provider = activeProvider
+                Task.detached {
+                    let syncService = WeReadSyncService(provider: provider)
+                    _ = await syncService.sync(container: container)
+                }
+            }
         } catch {
             errorMessage = "导入失败: \(error.localizedDescription)"
             showingError = true

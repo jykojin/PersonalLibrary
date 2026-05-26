@@ -47,7 +47,17 @@ actor WeReadSkillProvider: WeReadDataSource {
             return []
         }
 
-        // 2. 转换为 WeReadImportItem（先解析基本信息）
+        // 2. 构建进度映射（bookProgress 包含 readingTime、ttsTime、progress、finishedDate）
+        var progressMap: [String: [String: Any]] = [:]
+        if let progressArray = shelfData["bookProgress"] as? [[String: Any]] {
+            for p in progressArray {
+                if let bid = p["bookId"] as? String {
+                    progressMap[bid] = p
+                }
+            }
+        }
+
+        // 3. 转换为 WeReadImportItem
         var items: [WeReadImportItem] = []
 
         for bookDict in booksArray {
@@ -63,14 +73,40 @@ actor WeReadSkillProvider: WeReadDataSource {
             let category = bookDict["category"] as? String
             let finishReading = bookDict["finishReading"] as? Int ?? 0
             let readUpdateTime = bookDict["readUpdateTime"] as? Int
+            let price = bookDict["price"] as? Double
+            let publishTime = bookDict["publishTime"] as? String
+            let finishReadingTime = bookDict["finishReadingTime"] as? Int
 
-            let isFinished = finishReading == 1
+            // 进度数据
+            let progress = progressMap[bookId]
+            let readingTime = progress?["readingTime"] as? Int ?? 0
+            let ttsTime = progress?["ttsTime"] as? Int ?? 0
+            let progressPercent = progress?["progress"] as? Int ?? 0
+
+            let isFinished = progressPercent >= 100
+                || (finishReading == 1 && (finishReadingTime != nil || progress?["finishedDate"] != nil))
 
             let addedTime: Date?
             if let ts = readUpdateTime, ts > 0 {
                 addedTime = Date(timeIntervalSince1970: TimeInterval(ts))
             } else {
                 addedTime = nil
+            }
+
+            // 读完时间
+            let finishedTime: Date?
+            if isFinished {
+                if let ts = finishReadingTime, ts > 0 {
+                    finishedTime = Date(timeIntervalSince1970: TimeInterval(ts))
+                } else if let ts = progress?["finishedDate"] as? Int, ts > 0 {
+                    finishedTime = Date(timeIntervalSince1970: TimeInterval(ts))
+                } else if let ts = progress?["updateTime"] as? Int, ts > 0 {
+                    finishedTime = Date(timeIntervalSince1970: TimeInterval(ts))
+                } else {
+                    finishedTime = nil
+                }
+            } else {
+                finishedTime = nil
             }
 
             let typeInt = bookDict["type"] as? Int ?? 0
@@ -87,14 +123,16 @@ actor WeReadSkillProvider: WeReadDataSource {
                 intro: intro,
                 translator: translator,
                 category: category,
-                progress: isFinished ? 100 : 0,
-                readingTime: 0,
-                ttsTime: 0,
+                progress: progressPercent,
+                readingTime: readingTime,
+                ttsTime: ttsTime,
                 isFinished: isFinished,
                 bookType: bookType,
                 isUserImported: isUserImported,
                 addedTime: addedTime,
-                finishedTime: nil
+                finishedTime: finishedTime,
+                price: price,
+                publishTime: publishTime
             )
             items.append(item)
         }
@@ -135,7 +173,6 @@ actor WeReadSkillProvider: WeReadDataSource {
     }
 
     func enrichBook(bookId: String) async throws -> WeReadEnrichResult {
-        AppLogger.warning("Skill enrichBook START: bookId=\(bookId)", category: "WeRead")
         var result = WeReadEnrichResult()
 
         // CB_ 前缀是用户导入书的固定标识，最可靠
@@ -145,9 +182,12 @@ actor WeReadSkillProvider: WeReadDataSource {
 
         // 1. 获取书籍详情
         do {
-            AppLogger.warning("Skill enrichBook: calling fetchBookInfo...", category: "WeRead")
             let info = try await fetchBookInfo(bookId: bookId)
-            AppLogger.warning("Skill enrichBook: fetchBookInfo OK, type=\(String(describing: info.type))", category: "WeRead")
+            result.title = info.title
+            result.author = info.author
+            result.cover = info.cover
+            result.translator = info.translator
+            result.category = info.category
             result.publisher = info.publisher
             result.isbn = info.isbn
             result.intro = info.intro
@@ -157,7 +197,6 @@ actor WeReadSkillProvider: WeReadDataSource {
                 if type == 2 || type == 3 {
                     result.bookType = .audiobook
                 }
-                // 仅当 type==1 时额外确认（CB_ 已经设置过了）
                 if type == 1 {
                     result.isUserImported = true
                 }
@@ -168,17 +207,25 @@ actor WeReadSkillProvider: WeReadDataSource {
 
         // 2. 获取阅读进度（含时长 + 开始阅读时间 + 完成时间）
         do {
-            AppLogger.warning("Skill enrichBook: calling getprogress...", category: "WeRead")
             let progressData = try await callAPI(apiName: "/book/getprogress", params: ["bookId": bookId])
-            AppLogger.warning("Skill enrichBook: getprogress OK", category: "WeRead")
             if let book = progressData["book"] as? [String: Any] {
-                let recordReadingTime = book["recordReadingTime"] as? Int ?? 0
-                if recordReadingTime > 0 {
-                    result.readingHours = Double(recordReadingTime) / 3600.0
+                // readingTime / recordReadingTime：累积阅读秒数（尝试两种字段名）
+                let readingTime = book["readingTime"] as? Int
+                    ?? book["recordReadingTime"] as? Int ?? 0
+                // ttsTime：听书/TTS时长（秒）
+                let ttsTime = book["ttsTime"] as? Int ?? 0
+                let totalSeconds = readingTime + ttsTime
+                if totalSeconds > 0 {
+                    result.readingHours = Double(totalSeconds) / 3600.0
                 }
-                // startReadingTime: 开始阅读时间
+                // progress: 阅读进度百分比
+                if let prog = book["progress"] as? Int {
+                    result.progress = prog
+                }
+                // startReadingTime: 开始阅读时间（也作为加入书架时间）
                 if let startTime = book["startReadingTime"] as? Int, startTime > 0 {
                     result.startedReadingTime = Date(timeIntervalSince1970: TimeInterval(startTime))
+                    result.addedTime = Date(timeIntervalSince1970: TimeInterval(startTime))
                 }
                 // finishTime 仅 progress=100 时存在
                 if let finishTime = book["finishTime"] as? Int, finishTime > 0 {
@@ -188,8 +235,6 @@ actor WeReadSkillProvider: WeReadDataSource {
         } catch {
             AppLogger.warning("Skill enrichBook[\(bookId)] getprogress failed: \(error)", category: "WeRead")
         }
-
-        AppLogger.warning("Skill enrichBook END: isUserImported=\(String(describing: result.isUserImported))", category: "WeRead")
         return result
     }
 
