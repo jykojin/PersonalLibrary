@@ -255,6 +255,15 @@ struct WeReadSyncView: View {
         .sheet(isPresented: $showingWeReadImport) {
             WeReadImportView()
         }
+        .onChange(of: showingWeReadImport) { _, isShowing in
+            if !isShowing {
+                autoSyncEnabled = WeReadSyncService.autoSyncEnabled
+                if WeReadSyncService.isSyncing {
+                    isSyncing = true
+                    syncProgress = WeReadSyncService.currentProgress
+                }
+            }
+        }
         .alert("断开连接", isPresented: $showingLogoutAlert) {
             Button("取消", role: .cancel) {}
             Button("确认断开", role: .destructive) {
