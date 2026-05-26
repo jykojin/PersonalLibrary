@@ -653,6 +653,10 @@ struct EditBookView: View {
             if abs(result.readingHours - book.wereadReadingHours) > 0.001 && result.readingHours > 0 {
                 book.wereadReadingHours = result.readingHours
             }
+            // 阅读进度（有不同就更新，防止0值覆盖）
+            if result.progress != book.wereadProgress && result.progress > 0 {
+                book.wereadProgress = result.progress
+            }
             // 开始阅读时间
             if let st = result.startedReadingTime, book.startedReadingDate == nil {
                 book.startedReadingDate = st

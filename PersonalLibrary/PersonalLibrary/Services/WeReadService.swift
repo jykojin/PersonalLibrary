@@ -415,10 +415,10 @@ actor WeReadService: WeReadDataSource {
             let readingTime = progress?.readingTime ?? 0
             let progressPercent = progress?.progress ?? 0
 
-            // 判断书籍类型：type==2/3 或有 ttsTime 为有声书，其余为电子书
-            // 微信读书导入的书不会是纸质书
+            // 判断书籍类型：type==2/3 为有声书，其余为电子书
+            // ttsTime > 0 不能作为有声书判据（普通电子书也可使用TTS朗读功能）
             let bookType: BookType
-            if book.type == 2 || book.type == 3 || ttsTime > 0 {
+            if book.type == 2 || book.type == 3 {
                 bookType = .audiobook
             } else {
                 bookType = .ebook
