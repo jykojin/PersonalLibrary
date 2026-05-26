@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import Combine
 
 /// 微信读书同步管理视图
 /// 显示连接方式选择、同步状态、开关自动同步、手动触发同步、登录/登出
@@ -20,6 +21,10 @@ struct WeReadSyncView: View {
     @State private var showingSkillSetup = false
     @State private var showingResetAlert = false
     @State private var resetResultMessage: String?
+    @State private var backgroundProgress: WeReadSyncService.SyncProgress?
+
+    /// 0.5 秒轮询后台同步进度
+    private let progressTimer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
 
     private let webService = WeReadService()
     private let skillService = WeReadSkillProvider()
@@ -127,7 +132,41 @@ struct WeReadSyncView: View {
                             }
                         }
                     }
-                    .disabled(syncCancelled)
+                    .disabled(syncCancelled || WeReadSyncService.isSyncing)
+
+                    // 后台同步实时进度（与手动同步使用相同 UI 样式）
+                    if !isSyncing && WeReadSyncService.isSyncing {
+                        if let progress = backgroundProgress {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Image(systemName: "arrow.triangle.2.circlepath")
+                                        .foregroundStyle(.orange)
+                                    Text(progress.phase)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    if progress.total > 0 {
+                                        Spacer()
+                                        Text("\(progress.current)/\(progress.total)")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                if progress.total > 0 {
+                                    ProgressView(value: Double(progress.current), total: Double(progress.total))
+                                }
+                                if let detail = progress.detail {
+                                    Text(detail)
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                        .lineLimit(1)
+                                }
+                            }
+                        } else {
+                            Label("后台正在同步中…", systemImage: "info.circle")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                    }
 
                     if isSyncing, let progress = syncProgress {
                         VStack(alignment: .leading, spacing: 4) {
@@ -169,7 +208,7 @@ struct WeReadSyncView: View {
                     } label: {
                         Label("重置同步状态", systemImage: "arrow.counterclockwise")
                     }
-                    .disabled(isSyncing)
+                    .disabled(isSyncing || WeReadSyncService.isSyncing)
                 } header: {
                     Text("同步")
                 } footer: {
@@ -199,6 +238,13 @@ struct WeReadSyncView: View {
         .navigationTitle("微信读书同步")
         .navigationBarTitleDisplayMode(.inline)
         .task { await checkConnection() }
+        .onReceive(progressTimer) { _ in
+            if !isSyncing && WeReadSyncService.isSyncing {
+                backgroundProgress = WeReadSyncService.currentProgress
+            } else if !WeReadSyncService.isSyncing {
+                backgroundProgress = nil
+            }
+        }
         .sheet(isPresented: $showingLogin) {
             WeReadLoginView { cookies in
                 Task {
@@ -384,11 +430,13 @@ struct WeReadSyncView: View {
             syncTask = nil
         }
 
+        AppLogger.warning("[SYNC-VIEW] 用户点击立即同步，调用 sync", category: "WeReadSync")
         let result = await syncService.sync(modelContext: modelContext) { progress in
             Task { @MainActor in
                 syncProgress = progress
             }
         }
+        AppLogger.warning("[SYNC-VIEW] sync 返回: error=\(result.error ?? "nil"), new=\(result.newBooksImported), progress=\(result.progressUpdated)", category: "WeReadSync")
         syncResult = result
 
         if result.error?.contains("过期") == true || result.error?.contains("登录") == true {

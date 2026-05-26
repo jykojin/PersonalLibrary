@@ -603,8 +603,9 @@ actor WeReadService: WeReadDataSource {
         // 后台下载封面（不阻塞导入结果返回）
         let booksToFetchCovers = items.filter { $0.isSelected && $0.cover != nil }
         let container = modelContext.container
+        AppLogger.warning("[IMPORT-COVER] 开始后台封面下载，共 \(booksToFetchCovers.count) 本", category: "WeReadSync")
         Task {
-            for item in booksToFetchCovers {
+            for (idx, item) in booksToFetchCovers.enumerated() {
                 guard let coverURL = item.cover else { continue }
                 let coverData = await downloadImage(from: coverURL)
                 if let coverData {
@@ -618,11 +619,16 @@ actor WeReadService: WeReadDataSource {
                         descriptor.fetchLimit = 1
                         if let book = try? bgContext.fetch(descriptor).first {
                             book.coverImageData = coverData
-                            try? bgContext.save()
+                            do {
+                                try bgContext.save()
+                            } catch {
+                                AppLogger.warning("[IMPORT-COVER] save 失败 #\(idx) \(title): \(error)", category: "WeReadSync")
+                            }
                         }
                     }
                 }
             }
+            AppLogger.warning("[IMPORT-COVER] 封面下载全部完成", category: "WeReadSync")
         }
 
         return ImportSummary(imported: imported, skipped: skipped)

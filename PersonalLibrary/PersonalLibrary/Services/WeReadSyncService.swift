@@ -21,9 +21,26 @@ actor WeReadSyncService {
         syncLock.unlock()
     }
 
+    /// 当前同步进度（供 UI 轮询读取，无论是否传了 onProgress 回调）
+    private static var _currentProgress: SyncProgress?
+    private static let progressLock = NSLock()
+
+    static var currentProgress: SyncProgress? {
+        progressLock.lock()
+        defer { progressLock.unlock() }
+        return _currentProgress
+    }
+
+    private static func setProgress(_ progress: SyncProgress?) {
+        progressLock.lock()
+        _currentProgress = progress
+        progressLock.unlock()
+    }
+
     /// 仅供测试使用：重置同步锁状态
     static func resetSyncLockForTesting() {
         setSyncing(false)
+        setProgress(nil)
     }
 
     init(provider: any WeReadDataSource = WeReadService()) {
@@ -129,19 +146,29 @@ actor WeReadSyncService {
         // 0. 防止重复触发：如果已有同步在运行，直接返回
         if !skipLockCheck {
             guard !Self.isSyncing else {
+                AppLogger.warning("[SYNC-LOCK] 被锁拦住，当前已有 sync 在运行", category: "WeReadSync")
                 result.error = "同步正在进行中，请稍候"
                 return result
             }
             Self.setSyncing(true)
+            AppLogger.warning("[SYNC-LOCK] 获得锁，开始同步", category: "WeReadSync")
         }
-        defer { if !skipLockCheck { Self.setSyncing(false) } }
+        defer {
+            if !skipLockCheck {
+                Self.setProgress(nil)
+                Self.setSyncing(false)
+                AppLogger.warning("[SYNC-LOCK] 释放锁，同步结束", category: "WeReadSync")
+            }
+        }
 
         // 使用 background context，减少对主线程 UI 的影响
         let modelContext = ModelContext(container)
         modelContext.autosaveEnabled = false
 
         // 1. 检查连接状态
-        onProgress?(SyncProgress(current: 0, total: 0, phase: "检查登录"))
+        let p1 = SyncProgress(current: 0, total: 0, phase: "检查登录")
+        onProgress?(p1)
+        Self.setProgress(p1)
         guard await weReadService.isConnected() else {
             result.error = "未连接微信读书"
             return result
@@ -157,7 +184,9 @@ actor WeReadSyncService {
         }
 
         // 3. 拉取微信读书书架
-        onProgress?(SyncProgress(current: 0, total: 0, phase: "拉取书架"))
+        let p3 = SyncProgress(current: 0, total: 0, phase: "拉取书架")
+        onProgress?(p3)
+        Self.setProgress(p3)
         let remoteBooks: [WeReadImportItem]
         do {
             remoteBooks = try await weReadService.fetchAllBooks()
@@ -209,7 +238,9 @@ actor WeReadSyncService {
 
         // 6. 批量处理（减少 MainActor 切换次数，避免卡顿）
         let totalRemoteCount = remoteBooks.count
-        onProgress?(SyncProgress(current: 0, total: totalRemoteCount, phase: "处理书籍"))
+        let p6 = SyncProgress(current: 0, total: totalRemoteCount, phase: "处理书籍")
+        onProgress?(p6)
+        Self.setProgress(p6)
 
         // 分离已存在和需要匹配的书
         var existingItems: [(Book, WeReadImportItem)] = []
@@ -283,13 +314,17 @@ actor WeReadSyncService {
         result.progressUpdated = existingResults.0
         result.statusUpdated = existingResults.1
 
-        onProgress?(SyncProgress(current: existingItems.count, total: totalRemoteCount, phase: "处理书籍"))
+        let p6a = SyncProgress(current: existingItems.count, total: totalRemoteCount, phase: "处理书籍")
+        onProgress?(p6a)
+        Self.setProgress(p6a)
 
         // 6b. 处理未匹配的书（需要逐本查数据库，但数量通常很少）
         for (index, item) in unmatchedItems.enumerated() {
             guard !Task.isCancelled else { break }
             if index % 20 == 0 {
-                onProgress?(SyncProgress(current: existingItems.count + index, total: totalRemoteCount, phase: "处理书籍"))
+                let p6b = SyncProgress(current: existingItems.count + index, total: totalRemoteCount, phase: "处理书籍")
+                onProgress?(p6b)
+                Self.setProgress(p6b)
             }
             let matched = findExistingBook(item: item, modelContext: modelContext)
             if let existingBook = matched {
@@ -352,7 +387,9 @@ actor WeReadSyncService {
             let booksNeedCover = (try? modelContext.fetch(coverDescriptor)) ?? []
             for (index, book) in booksNeedCover.enumerated() {
                 guard !Task.isCancelled else { break }
-                onProgress?(SyncProgress(current: index + 1, total: booksNeedCover.count, phase: "下载封面", detail: book.title))
+                let p9a = SyncProgress(current: index + 1, total: booksNeedCover.count, phase: "下载封面", detail: book.title)
+                onProgress?(p9a)
+                Self.setProgress(p9a)
                 guard let urlStr = book.coverImageURL, !urlStr.isEmpty else { continue }
                 if index > 0 && index % 3 == 0 {
                     try? await Task.sleep(for: .seconds(1))
@@ -392,8 +429,20 @@ actor WeReadSyncService {
 
                 for (index, book) in booksNeedEnrich.enumerated() {
                     guard !Task.isCancelled else { break }
-                    onProgress?(SyncProgress(current: index + 1, total: booksNeedEnrich.count, phase: "补全同步", detail: book.title))
+                    let p9b = SyncProgress(current: index + 1, total: booksNeedEnrich.count, phase: "补全同步", detail: book.title)
+                    onProgress?(p9b)
+                    Self.setProgress(p9b)
                     guard let bookId = book.wereadBookId else { continue }
+
+                    // 防止与智能补全并发冲突：用独立 context 检查是否已被其他 context 补全
+                    // bgContext 已缓存 book 对象，re-fetch 可能返回旧快照；新 context 无缓存，必定读 store
+                    let checkContext = ModelContext(container)
+                    if let freshBook = try? checkContext.fetch(FetchDescriptor<Book>(
+                        predicate: #Predicate { $0.wereadBookId == bookId }
+                    )).first, freshBook.wereadEnrichedDate != nil {
+                        continue
+                    }
+
                     // 限速：每本间隔 2 秒（避免密集网络请求导致手机发烫）
                     if index > 0 {
                         try? await Task.sleep(for: .seconds(2))
