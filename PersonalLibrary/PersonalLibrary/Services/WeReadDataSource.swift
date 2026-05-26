@@ -29,7 +29,7 @@ enum WeReadConnectionMode: String, CaseIterable {
         get {
             guard let raw = UserDefaults.standard.string(forKey: key),
                   let mode = WeReadConnectionMode(rawValue: raw) else {
-                return .web  // 默认 Web 模式（向后兼容）
+                return .skill
             }
             return mode
         }
