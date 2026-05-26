@@ -97,7 +97,8 @@ struct WeReadImportView: View {
             } message: {
                 if let result = importResult {
                     Text("成功导入 \(result.imported) 本书" +
-                         (result.skipped > 0 ? "\n跳过 \(result.skipped) 本（已存在）" : ""))
+                         (result.skipped > 0 ? "\n跳过 \(result.skipped) 本（已存在）" : "") +
+                         "\n详细信息将在后台自动同步")
                 }
             }
             .alert("错误", isPresented: $showingError) {
@@ -255,8 +256,9 @@ struct WeReadImportView: View {
             importResult = result
             showingResult = true
 
-            // 导入成功后，后台触发 sync 进行 enrichment（补全详情+划线）
+            // 导入成功后，自动开启同步并触发后台 enrichment
             if result.imported > 0 {
+                WeReadSyncService.autoSyncEnabled = true
                 let container = modelContext.container
                 let provider = activeProvider
                 AppLogger.warning("[IMPORT] 导入完成，准备触发后台 sync enrichment", category: "WeReadSync")
