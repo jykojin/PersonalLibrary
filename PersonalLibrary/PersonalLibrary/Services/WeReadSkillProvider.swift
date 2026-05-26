@@ -230,7 +230,7 @@ actor WeReadSkillProvider: WeReadDataSource {
                 } else if totalSeconds > 0, let updateTime = book["updateTime"] as? Int, updateTime > 0 {
                     // 回退策略：API 未返回 startReadingTime 但有阅读记录时，
                     // 用 updateTime - totalSeconds 估算首次阅读时间
-                    let estimatedStart = updateTime - totalSeconds
+                    let estimatedStart = max(0, updateTime - totalSeconds)
                     result.startedReadingTime = Date(timeIntervalSince1970: TimeInterval(estimatedStart))
                     result.addedTime = Date(timeIntervalSince1970: TimeInterval(estimatedStart))
                     result.isStartedReadingTimeEstimated = true

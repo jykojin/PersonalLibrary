@@ -657,9 +657,13 @@ struct EditBookView: View {
             if result.progress != book.wereadProgress && result.progress > 0 {
                 book.wereadProgress = result.progress
             }
-            // 开始阅读时间
-            if let st = result.startedReadingTime, book.startedReadingDate == nil {
-                book.startedReadingDate = st
+            // 开始阅读时间（真实值覆盖，估算值仅填空）
+            if let st = result.startedReadingTime {
+                if !result.isStartedReadingTimeEstimated {
+                    book.startedReadingDate = st
+                } else if book.startedReadingDate == nil {
+                    book.startedReadingDate = st
+                }
             }
             // 完成时间（有不同就覆盖）
             if let ft = result.finishedTime, book.finishedDate != ft {
