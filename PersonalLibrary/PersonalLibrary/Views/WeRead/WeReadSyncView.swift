@@ -112,7 +112,9 @@ struct WeReadSyncView: View {
                                     isSyncing = true
                                     syncProgress = nil
                                     syncResult = nil
-                                    syncTask = Task { await performSync() }
+                                    let task = Task { await performSync() }
+                                    syncTask = task
+                                    WeReadSyncService.registerSyncTask(task)
                                 }
                             }
                         }
@@ -132,7 +134,9 @@ struct WeReadSyncView: View {
                             isSyncing = true
                             syncProgress = nil
                             syncResult = nil
-                            syncTask = Task { await performSync() }
+                            let task = Task { await performSync() }
+                            syncTask = task
+                            WeReadSyncService.registerSyncTask(task)
                         }
                     } label: {
                         HStack {
@@ -468,6 +472,7 @@ struct WeReadSyncView: View {
             syncCancelled = false
             syncProgress = nil
             syncTask = nil
+            WeReadSyncService.clearSyncTask()
         }
 
         AppLogger.warning("[SYNC-VIEW] 用户点击立即同步，调用 sync", category: "WeReadSync")

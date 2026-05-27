@@ -438,9 +438,9 @@ struct ExcelExportTests {
         #expect(dataLine.contains("标题 含Tab"))
     }
 
-    @Test("columnHeaders 包含29列")
+    @Test("columnHeaders 包含31列")
     func columnHeadersCount() {
-        #expect(ExcelImportExportService.columnHeaders.count == 29)
+        #expect(ExcelImportExportService.columnHeaders.count == 31)
         #expect(ExcelImportExportService.columnHeaders[0] == "序号")
         #expect(ExcelImportExportService.columnHeaders[1] == "书名")
         #expect(ExcelImportExportService.columnHeaders[17] == "豆瓣链接")

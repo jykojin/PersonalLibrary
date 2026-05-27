@@ -500,6 +500,7 @@ actor WeReadSyncService {
                     // 限速：每本间隔 2 秒（避免密集网络请求导致手机发烫）
                     if index > 0 {
                         try? await Task.sleep(for: .seconds(2))
+                        guard !Task.isCancelled else { break }
                     }
 
                     // (1) 补全书籍信息
@@ -516,6 +517,7 @@ actor WeReadSyncService {
                     } catch {
                         AppLogger.warning("微信读书补全失败 (\(book.title)): \(error)", category: "WeReadSync")
                     }
+                    guard !Task.isCancelled else { break }
 
                     // (1b) CB_ 用户导入书：WeRead 补全后若简介仍为空，查询外部源（豆瓣/Goodreads）
                     if bookId.hasPrefix("CB_") {
@@ -547,6 +549,7 @@ actor WeReadSyncService {
                     }
 
                     // (2) 拉取划线（有不同就覆盖）
+                    guard !Task.isCancelled else { break }
                     do {
                         let bookmarks = try await weReadService.fetchBookmarks(bookId: bookId)
                         if !bookmarks.isEmpty {
