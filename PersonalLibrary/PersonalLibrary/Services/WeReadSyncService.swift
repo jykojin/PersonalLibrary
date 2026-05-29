@@ -89,6 +89,7 @@ actor WeReadSyncService {
     }
 
     /// 重置同步状态：清除所有微信读书的 wereadEnrichedDate，使下次同步重新补全
+    /// 返回值：下次同步时将重新补全的书数（即所有有 wereadBookId 的书）
     static func resetEnrichmentState(container: ModelContainer) throws -> Int {
         let context = ModelContext(container)
         context.autosaveEnabled = false
@@ -96,22 +97,25 @@ actor WeReadSyncService {
             predicate: #Predicate { $0.wereadBookId != nil }
         )
         let books = try context.fetch(descriptor)
-        var count = 0
+        var clearedCount = 0
         for book in books {
             if book.wereadEnrichedDate != nil {
                 book.wereadEnrichedDate = nil
-                count += 1
+                clearedCount += 1
             }
         }
-        if count > 0 { try context.save() }
+        if clearedCount > 0 { try context.save() }
+
+        // 总数 = 下次同步将处理的书数（包括之前从未补全过的，它们也在重新补全范围内）
+        let totalCount = books.count
 
         let record = SyncHistoryRecord(eventType: SyncHistoryRecord.EventType.resetState, triggeredBy: SyncHistoryRecord.Trigger.user)
         record.endTime = .now
-        record.newImported = count
+        record.newImported = totalCount
         context.insert(record)
         try context.save()
 
-        return count
+        return totalCount
     }
 
     /// 同步间隔（秒），默认 12 小时
