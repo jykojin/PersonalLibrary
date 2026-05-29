@@ -577,7 +577,7 @@ struct DataMaintenanceView: View {
         let totalCount = bookIDs.count
         let batchSaveInterval = 10
 
-        let (successCount, processedCount, wasCancelled) = await Task.detached(priority: .utility) {
+        let detachedTask = Task.detached(priority: .utility) {
             let bgContext = ModelContext(container)
             bgContext.autosaveEnabled = false
             let lookupService = ISBNLookupService()
@@ -653,12 +653,20 @@ struct DataMaintenanceView: View {
 
                 // 限速：5 秒
                 try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { break }
             }
 
             try? bgContext.save()
             let cancelled = Task.isCancelled
             return (success, processed, cancelled)
-        }.value
+        }
+
+        // 当外层 task 被取消（用户点停止）时，把取消传播到 detached task
+        let (successCount, processedCount, wasCancelled) = await withTaskCancellationHandler {
+            await detachedTask.value
+        } onCancel: {
+            detachedTask.cancel()
+        }
 
         isBatchRunning = false
         batchTask = nil
