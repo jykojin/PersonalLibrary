@@ -1,55 +1,94 @@
 # PersonalLibrary (私人图书馆)
 
-iOS 个人图书管理应用，帮助你追踪纸质书、电子书和有声书的阅读进度。
+> iOS 个人图书管理应用，帮助你追踪纸质书、电子书和有声书的阅读进度。
+> 当前版本: **v0.7**
 
 ## 功能特性
 
-- **多类型书籍管理** — 纸质书 / 电子书 / 有声书分类管理
-- **扫码录入** — 扫描 ISBN 条形码自动获取书籍信息（Open Library / Google Books / 豆瓣）
-- **微信读书同步** — 一键导入微信读书书架，自动同步阅读进度和书籍详情
-- **阅读记录** — 按日记录阅读页数、时长，生成统计图表
-- **阅读统计** — 年度/月度入库与读完趋势图，点击柱状图可查看对应书籍列表
-- **书架与标签** — 自定义书架分组 + 多标签管理
-- **批量操作** — 多选后批量打标签、移动书架、修改状态、评分
-- **Excel 导入导出** — XLSX 格式批量导入/导出书单
-- **高级搜索** — 按书名、作者、出版社、标签等多维度筛选
-- **数据维护** — 封面修复、重复检测、孤立数据清理
+### 图书管理
+- **多类型** — 纸质书 / 电子书 / 有声书
+- **多入口添加** — 手动 / 扫码 / Excel 导入 / 微信读书同步
+- **扫码录入** — 扫描 ISBN 条形码自动获取书籍信息
+- **多源智能补全** — 豆瓣 → Open Library → Google Books → Goodreads 串联查询
+
+### 微信读书集成
+- **两种连接方式** — Web 扫码登录 / Skill API Key
+- **批量导入** — 一键导入微信读书全部书架
+- **增量同步** — 自动检查更新，只补全缺失字段
+- **进度同步** — 阅读时长、TTS 时长、完成日期、开始日期
+- **划线笔记** — 自动同步划线到本地备注
+- **同步历史** — 查看每次同步的统计与结果
+- **限速保护** — 全局豆瓣 5 秒间隔避免 IP 封禁
+- **后台并发** — 批量补全 3 路并发，stop 按钮可即时取消
+
+### 阅读追踪
+- **状态机** — 想读 / 闲置 / 正在读 / 已读 / 弃读
+- **阅读记录** — 按日记录页数、时长，自动更新当前页和状态
+- **统计图表** — 年度/月度入库与读完趋势，柱状图可点击查看对应书籍
+
+### 组织与搜索
+- **书架与标签** — 自定义书架 + 多标签
+- **批量操作** — 多选后批量打标签 / 移动书架 / 改状态 / 评分
+- **高级搜索** — 多维度筛选（书名、作者、出版社、标签、ISBN）
+- **数据维护** — 作者/出版社/标签清单 + 繁转简 + 分隔符规范化 + 批量补全
+
+### 数据安全
+- **数据库备份/恢复** — 一键备份 SwiftData 存储 + WAL 文件
+- **Excel 导入导出** — XLSX 格式，含微信读书元数据字段
+- **iCloud 同步** — SwiftData CloudKit 集成（可选）
+- **应用日志** — 三档日志模式，可导出排查问题
 
 ## 技术栈
 
 | 层级 | 技术 |
 |------|------|
 | UI | SwiftUI (iOS 17+) |
-| 数据持久化 | SwiftData |
+| 数据持久化 | SwiftData (SQLite) |
+| 云同步 | CloudKit (可选) |
 | 项目管理 | XcodeGen (`project.yml`) |
 | 依赖 | CoreXLSX (SPM) |
 | 安全存储 | Keychain Services |
 | 网络 | URLSession (async/await) |
-| 测试 | Swift Testing framework |
+| 并发 | Swift Concurrency (actors, TaskGroup) |
+| 测试 | Swift Testing framework (233+ tests) |
 
 ## 项目结构
 
 ```
 PersonalLibrary/
-├── Models/          # SwiftData 数据模型 (Book, Tag, Bookshelf, ReadingRecord)
-├── Services/        # 业务逻辑
-│   ├── BookService.swift          # 共享数据操作（标签/书架查找创建、图片下载）
-│   ├── WeReadService.swift        # 微信读书 API
-│   ├── WeReadSyncService.swift    # 微信读书同步引擎
-│   ├── ISBNLookupService.swift    # ISBN 查询（多源）
+├── Models/                  # SwiftData @Model
+│   ├── Book.swift                  # 主体模型
+│   ├── Bookshelf.swift             # 书架
+│   ├── Tag.swift                   # 标签
+│   ├── ReadingRecord.swift         # 阅读记录
+│   ├── ImportRecord.swift          # 导入历史
+│   └── SyncHistoryRecord.swift     # 同步历史
+├── Services/                # 业务逻辑
+│   ├── ISBNLookupService.swift     # 多源 ISBN 查询 + DoubanRateLimiter
+│   ├── DoubanDescriptionFetcher.swift  # 豆瓣 HTML 解析
+│   ├── CoverFetchService.swift     # 封面下载与缓存
+│   ├── WeReadService.swift         # 微信读书 Web API
+│   ├── WeReadSkillProvider.swift   # 微信读书 Skill API
+│   ├── WeReadDataSource.swift      # Web/Skill 抽象协议
+│   ├── WeReadSyncService.swift     # 同步引擎（含取消支持）
 │   ├── ExcelImportExportService.swift  # XLSX 导入导出
-│   ├── BackupService.swift        # 数据备份与恢复
-│   ├── KeychainService.swift      # 安全凭证存储
-│   └── StorageManager.swift       # SwiftData 容器管理
-├── Views/           # SwiftUI 视图
-│   ├── Books/       # 书籍列表、详情、编辑
-│   ├── Bookshelf/   # 书架管理
-│   ├── Reading/     # 阅读记录与统计
-│   ├── Components/  # 共享 UI 组件 (SelectableBookRow, BatchActionBar)
-│   ├── WeRead/      # 微信读书登录/导入/同步
-│   ├── Scanner/     # 条码扫描
-│   └── Settings/    # 设置、导入导出、数据维护
-└── PersonalLibraryApp.swift  # 应用入口 + 数据迁移
+│   ├── BackupService.swift         # 数据库备份恢复
+│   ├── BookService.swift           # 共享操作（标签查找、图片下载）
+│   ├── StorageManager.swift        # SwiftData 容器
+│   ├── AuthService.swift           # 微信登录 OAuth
+│   ├── WeChatAuthManager.swift     # 微信 SDK 封装
+│   ├── KeychainService.swift       # 安全凭证存储
+│   ├── AppLogger.swift             # 三档日志接口
+│   └── FileLogger.swift            # 文件日志（rotation）
+├── Views/
+│   ├── Books/                      # 列表/详情/编辑/添加/筛选/高级搜索
+│   ├── Bookshelf/                  # 书架管理
+│   ├── Reading/                    # 阅读记录/统计
+│   ├── WeRead/                     # 同步页/导入页/登录/Skill 配置/同步历史
+│   ├── Scanner/                    # 条码扫描
+│   ├── Settings/                   # 设置/数据维护/备份/导入导出/日志查看
+│   └── Components/                 # 共享 UI 组件
+└── PersonalLibraryApp.swift        # App 入口 + 数据迁移 + 自动同步触发
 ```
 
 ## 构建与运行
@@ -67,9 +106,9 @@ git clone https://github.com/jykojin/PersonalLibrary.git
 cd PersonalLibrary
 
 # 2. 生成 Xcode 项目
-xcodegen generate
+cd PersonalLibrary && xcodegen generate
 
-# 3. 构建
+# 3. 构建（模拟器）
 xcodebuild -scheme PersonalLibrary \
   -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
   -derivedDataPath /tmp/PersonalLibrary-DerivedData build
@@ -80,33 +119,43 @@ xcodebuild -scheme PersonalLibrary \
   -derivedDataPath /tmp/PersonalLibrary-DerivedData test
 ```
 
-也可以直接用 Xcode 打开 `PersonalLibrary.xcodeproj` 运行。
+或直接用 Xcode 打开 `PersonalLibrary.xcodeproj`。
+
+## 版本管理
+
+- 版本号在 `project.yml` 的 `MARKETING_VERSION`
+- `Info.plist` 用 `$(MARKETING_VERSION)` 占位，xcodegen 自动注入
+- App 设置页底部 "关于" 显示当前版本号
+- 每次 push tag 前需保持三处一致（详见 `CLAUDE.md`）
 
 ## 测试
 
-项目使用 Swift Testing 框架，覆盖：
+Swift Testing 框架，233+ 测试覆盖：
 
-- 数据模型 (Book, Tag, Bookshelf, ReadingRecord)
-- 枚举逻辑 (ReadingStatus, BookType, AddSource)
-- 微信读书同步逻辑
-- 微信读书导入去重
-- Excel 导入导出
-- ISBN 查询结果解析
-- 评分功能
-
-运行：`xcodebuild test -scheme PersonalLibrary -destination 'platform=iOS Simulator,name=iPhone 16 Pro'`
+- 数据模型与枚举逻辑
+- 微信读书 Web/Skill 双源同步
+- 增量同步去重与字段保护
+- 取消传播与并发控制
+- ISBN 多源查询解析
+- 豆瓣限速器（DoubanRateLimiter）
+- Excel XLSX 导入导出（含字段往返）
+- 数据维护工具（繁转简、分隔符规范化）
+- 安全测试（路径遍历、SSRF、注入）
 
 ## 安全设计
 
-- Cookie 存储在 iOS Keychain（`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`）
-- WeRead API 请求参数经过格式校验，防止注入
-- XLSX 导入限制 50MB 文件大小
-- WKWebView 使用非持久化 DataStore，防止 session 泄露
-- 无硬编码密钥（微信 AppID 需自行配置）
+- Cookie / API Key 存于 iOS Keychain (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`)
+- WeRead API 请求参数格式校验
+- XLSX 导入限 10MB
+- WKWebView 用非持久化 DataStore
+- 无硬编码密钥
+- 全局豆瓣速率限制器防 IP 封禁
 
 ## 配置
 
-微信读书功能需要在 `WeChatAuthManager.swift` 中配置有效的微信 AppID/AppSecret（建议通过后端代理 token 交换）。
+微信读书功能可二选一：
+- **Web 扫码登录**：直接使用，需配置 `WeChatAuthManager.swift` 微信 AppID
+- **Skill API**：在 app 内输入 Skill API Key
 
 ## License
 
