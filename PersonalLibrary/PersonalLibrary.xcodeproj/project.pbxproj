@@ -664,7 +664,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.6;
+				MARKETING_VERSION = 0.351;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.PersonalLibrary;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -686,7 +686,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.6;
+				MARKETING_VERSION = 0.351;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.PersonalLibrary;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";

@@ -15,6 +15,13 @@ struct ImportExportView: View {
         return f
     }()
 
+    /// 应用版本号 — 由 project.yml 的 MARKETING_VERSION 写入 Info.plist
+    /// 与 git push tag 保持一致（push 前先更新 MARKETING_VERSION）
+    private static let appVersion: String = {
+        let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "未知"
+        return "v\(v)"
+    }()
+
     var body: some View {
         List {
             // MARK: - 账户
@@ -94,6 +101,18 @@ struct ImportExportView: View {
                 Text("数据存储位置")
             } footer: {
                 Text("切换存储位置需要重启 App 后生效。iCloud 存储可在多台设备间自动同步数据。")
+            }
+
+            // MARK: - 关于
+            Section {
+                HStack {
+                    Label("版本", systemImage: "info.circle")
+                    Spacer()
+                    Text(Self.appVersion)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("关于")
             }
         }
         .navigationTitle("设置")
