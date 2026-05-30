@@ -578,8 +578,15 @@ struct DataMaintenanceView: View {
 
         let container = modelContext.container
         let totalCount = bookIDs.count
+        let burstThreshold = 50  // 每 50 本一组
+        let burstPauseSeconds = 30  // 组间暂停 30 秒（散热）
 
         let detachedTask = Task.detached(priority: .utility) {
+            await BatchEnrichmentState.shared.start()
+            defer {
+                Task { await BatchEnrichmentState.shared.stop() }
+            }
+
             let lookupService = ISBNLookupService()
             let maxConcurrent = 3
             var successCount = 0
@@ -665,7 +672,8 @@ struct DataMaintenanceView: View {
                     inFlight += 1
                 }
 
-                // 滚动 drain & refill
+                // 滚动 drain & refill（含 burst 暂停）
+                var inPause = false
                 while let result = await group.next() {
                     inFlight -= 1
                     if let r = result, !r.skipped {
@@ -682,11 +690,39 @@ struct DataMaintenanceView: View {
 
                     if Task.isCancelled { break }
 
-                    if let item = iter.next() {
-                        let index = item.offset
-                        let bookID = item.element
-                        group.addTask { await processBook(index: index, bookID: bookID) }
-                        inFlight += 1
+                    // 检测 burst pause 起点：每 burstThreshold 本完成且未到末尾
+                    if !inPause && completedCount > 0
+                        && completedCount % burstThreshold == 0
+                        && completedCount < totalCount {
+                        inPause = true
+                        await MainActor.run {
+                            self.batchStatusText = "休闲中，避免被封"
+                        }
+                    }
+
+                    if inPause {
+                        // 暂停期间不补 task；等已 in-flight 全部 drain
+                        if inFlight == 0 {
+                            try? await Task.sleep(for: .seconds(burstPauseSeconds))
+                            if Task.isCancelled { break }
+                            inPause = false
+                            // 恢复后填满并发槽
+                            while inFlight < maxConcurrent, let item = iter.next() {
+                                let index = item.offset
+                                let bookID = item.element
+                                group.addTask { await processBook(index: index, bookID: bookID) }
+                                inFlight += 1
+                            }
+                        }
+                        // inFlight > 0 时不做事，继续 drain 下一个
+                    } else {
+                        // 正常补 task
+                        if let item = iter.next() {
+                            let index = item.offset
+                            let bookID = item.element
+                            group.addTask { await processBook(index: index, bookID: bookID) }
+                            inFlight += 1
+                        }
                     }
                 }
 

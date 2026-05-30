@@ -678,10 +678,11 @@ actor ISBNLookupService {
         let validISBN = hasISBN && (cleanISBN.count == 10 || cleanISBN.count == 13)
 
         // 定义要查询的源
+        // Note: Google Books removed from smartFill — empirically 0% hit rate on 800+ paper books,
+        // pure CPU/network waste. lookup(isbn:) below still uses it for single-book add flow.
         let sources: [(name: String, lookup: () async -> ISBNLookupResult?)] = [
             ("豆瓣", { [self] in validISBN ? (try? await self.lookupFromDouban(isbn: cleanISBN)) : nil }),
             ("Open Library", { [self] in validISBN ? (try? await self.lookupFromOpenLibrary(isbn: cleanISBN)) : nil }),
-            ("Google Books", { [self] in validISBN ? (try? await self.lookupFromGoogleBooks(isbn: cleanISBN)) : nil }),
             ("Goodreads", { [self] in validISBN ? (try? await self.lookupFromGoodreads(isbn: cleanISBN)) : nil })
         ]
 

@@ -183,6 +183,11 @@ struct PersonalLibraryApp: App {
             var fetched = 0
 
             for task in tasks {
+                // 批量补全进行中时退出，让出 CPU 和网络（下次启动会自动补全）
+                if await BatchEnrichmentState.shared.current() {
+                    AppLogger.info("批量补全进行中，BackgroundCover 退出", category: "BackgroundCover")
+                    break
+                }
                 try? await Task.sleep(for: .seconds(2))
 
                 let data = await CoverFetchService.shared.fetchCoverThrottled(
