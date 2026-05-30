@@ -556,16 +556,19 @@ struct DataMaintenanceView: View {
             return
         }
 
-        // 建立本地作者简介缓存（主线程读一次）
-        var localAuthorCache: [String: String] = [:]
-        for book in allBooks where !book.isArchived {
-            if let desc = book.authorDescription, !desc.isEmpty {
-                let trimmed = book.author.trimmingCharacters(in: .whitespaces)
-                if !trimmed.isEmpty && localAuthorCache[trimmed] == nil {
-                    localAuthorCache[trimmed] = desc
+        // 建立本地作者简介缓存（主线程读一次，并发任务中只读不写）
+        let localAuthorCache: [String: String] = {
+            var cache: [String: String] = [:]
+            for book in allBooks where !book.isArchived {
+                if let desc = book.authorDescription, !desc.isEmpty {
+                    let trimmed = book.author.trimmingCharacters(in: .whitespaces)
+                    if !trimmed.isEmpty && cache[trimmed] == nil {
+                        cache[trimmed] = desc
+                    }
                 }
             }
-        }
+            return cache
+        }()
 
         isBatchRunning = true
         batchTotal = bookIDs.count
@@ -575,94 +578,127 @@ struct DataMaintenanceView: View {
 
         let container = modelContext.container
         let totalCount = bookIDs.count
-        let batchSaveInterval = 10
 
         let detachedTask = Task.detached(priority: .utility) {
-            let bgContext = ModelContext(container)
-            bgContext.autosaveEnabled = false
             let lookupService = ISBNLookupService()
-            var success = 0
-            var processed = 0
+            let maxConcurrent = 3
+            var successCount = 0
+            var completedCount = 0
 
-            for (index, bookID) in bookIDs.enumerated() {
-                guard !Task.isCancelled else { break }
+            // 子任务结果
+            struct BookResult {
+                let index: Int
+                let hasAnyFill: Bool
+                let title: String
+                let skipped: Bool
+            }
 
-                guard let book = bgContext.model(for: bookID) as? Book else { continue }
-                let title = book.title
+            var iter = bookIDs.enumerated().makeIterator()
 
-                await MainActor.run {
-                    self.batchCurrent = index + 1
-                    self.batchProgress = Double(index + 1) / Double(totalCount)
-                    self.batchStatusText = "正在补全（\(title)）\(index + 1)/\(totalCount)"
+            await withTaskGroup(of: BookResult?.self) { group in
+                // 处理单本书的闭包
+                @Sendable func processBook(index: Int, bookID: SwiftData.PersistentIdentifier) async -> BookResult? {
+                    guard !Task.isCancelled else { return nil }
+
+                    let taskContext = ModelContext(container)
+                    taskContext.autosaveEnabled = false
+
+                    guard let book = taskContext.model(for: bookID) as? Book else {
+                        return BookResult(index: index, hasAnyFill: false, title: "", skipped: true)
+                    }
+                    let title = book.title
+
+                    // 本地作者简介缓存（只读）
+                    if (book.authorDescription ?? "").isEmpty {
+                        let primaryAuthor = book.author.trimmingCharacters(in: .whitespaces)
+                        if let localDesc = localAuthorCache[primaryAuthor] {
+                            book.authorDescription = localDesc
+                        }
+                    }
+
+                    guard !Task.isCancelled else { return nil }
+
+                    // smartFill — 网络 I/O（Douban 请求由全局 DoubanRateLimiter 串行化）
+                    let tFill0 = CFAbsoluteTimeGetCurrent()
+                    let result = await lookupService.smartFill(
+                        isbn: book.isbn ?? "",
+                        title: book.title,
+                        author: book.author,
+                        needsTitle: false,
+                        needsPublisher: (book.publisher ?? "").isEmpty,
+                        needsPages: book.totalPages == 0,
+                        needsPrice: (book.price ?? "").isEmpty,
+                        needsPublishDate: book.publishDate == nil,
+                        needsTranslator: (book.translator ?? "").isEmpty,
+                        needsAuthor: book.author.isEmpty || book.author == "未知作者",
+                        needsBookDesc: (book.bookDescription ?? "").isEmpty,
+                        needsAuthorDesc: (book.authorDescription ?? "").isEmpty
+                    )
+                    let tFill1 = CFAbsoluteTimeGetCurrent()
+                    AppLogger.perf("\(label)[\(index+1)/\(totalCount)] \(book.title) | smartFill:\(Int((tFill1-tFill0)*1000))ms filled:\(result.hasAnyFill)", category: "BatchEnrich")
+
+                    guard !Task.isCancelled else { return nil }
+
+                    // 应用结果
+                    if let p = result.publisher { book.publisher = p }
+                    if let p = result.totalPages { book.totalPages = p }
+                    if let p = result.price { book.price = p }
+                    if let d = result.publishDate { book.publishDate = self.parsePublishDate(d) }
+                    if let t = result.translator { book.translator = t }
+                    if let a = result.author { book.author = a }
+                    if let d = result.bookDescription { book.bookDescription = d }
+                    if let d = result.authorDescription { book.authorDescription = d }
+                    book.lastEnrichmentDate = Date()
+
+                    // 每个 task 用自己的 context 立即保存（每个 task 只写一本书）
+                    try? taskContext.save()
+
+                    return BookResult(index: index, hasAnyFill: result.hasAnyFill, title: title, skipped: false)
                 }
 
-                // 本地作者简介缓存
-                if (book.authorDescription ?? "").isEmpty {
-                    let primaryAuthor = book.author.trimmingCharacters(in: .whitespaces)
-                    if let localDesc = localAuthorCache[primaryAuthor] {
-                        book.authorDescription = localDesc
+                // 初始装载
+                var inFlight = 0
+                while inFlight < maxConcurrent, let item = iter.next() {
+                    let index = item.offset
+                    let bookID = item.element
+                    group.addTask { await processBook(index: index, bookID: bookID) }
+                    inFlight += 1
+                }
+
+                // 滚动 drain & refill
+                while let result = await group.next() {
+                    inFlight -= 1
+                    if let r = result, !r.skipped {
+                        completedCount += 1
+                        if r.hasAnyFill { successCount += 1 }
+                        let titleSnapshot = r.title
+                        let completedSnapshot = completedCount
+                        await MainActor.run {
+                            self.batchCurrent = completedSnapshot
+                            self.batchProgress = Double(completedSnapshot) / Double(totalCount)
+                            self.batchStatusText = "正在补全（\(titleSnapshot)）\(completedSnapshot)/\(totalCount)"
+                        }
+                    }
+
+                    if Task.isCancelled { break }
+
+                    if let item = iter.next() {
+                        let index = item.offset
+                        let bookID = item.element
+                        group.addTask { await processBook(index: index, bookID: bookID) }
+                        inFlight += 1
                     }
                 }
 
-                // smartFill — 网络 I/O
-                guard !Task.isCancelled else { break }
-                let tFill0 = CFAbsoluteTimeGetCurrent()
-                let result = await lookupService.smartFill(
-                    isbn: book.isbn ?? "",
-                    title: book.title,
-                    author: book.author,
-                    needsTitle: false,
-                    needsPublisher: (book.publisher ?? "").isEmpty,
-                    needsPages: book.totalPages == 0,
-                    needsPrice: (book.price ?? "").isEmpty,
-                    needsPublishDate: book.publishDate == nil,
-                    needsTranslator: (book.translator ?? "").isEmpty,
-                    needsAuthor: book.author.isEmpty || book.author == "未知作者",
-                    needsBookDesc: (book.bookDescription ?? "").isEmpty,
-                    needsAuthorDesc: (book.authorDescription ?? "").isEmpty
-                )
-                let tFill1 = CFAbsoluteTimeGetCurrent()
-                AppLogger.perf("\(label)[\(index+1)/\(totalCount)] \(book.title) | smartFill:\(Int((tFill1-tFill0)*1000))ms filled:\(result.hasAnyFill)", category: "BatchEnrich")
-
-                guard !Task.isCancelled else { break }
-
-                // 应用结果
-                if let p = result.publisher { book.publisher = p }
-                if let p = result.totalPages { book.totalPages = p }
-                if let p = result.price { book.price = p }
-                if let d = result.publishDate { book.publishDate = self.parsePublishDate(d) }
-                if let t = result.translator { book.translator = t }
-                if let a = result.author { book.author = a }
-                if let d = result.bookDescription { book.bookDescription = d }
-                if let d = result.authorDescription {
-                    book.authorDescription = d
-                    let primaryAuthor = book.author.trimmingCharacters(in: .whitespaces)
-                    if !primaryAuthor.isEmpty { localAuthorCache[primaryAuthor] = d }
-                }
-                book.lastEnrichmentDate = Date()
-                if result.hasAnyFill { success += 1 }
-                processed = index + 1
-
-                // 低频 save（在后台线程执行，不阻塞主线程）
-                if (index + 1) % batchSaveInterval == 0 {
-                    let tSave0 = CFAbsoluteTimeGetCurrent()
-                    try? bgContext.save()
-                    let tSave1 = CFAbsoluteTimeGetCurrent()
-                    AppLogger.perf("\(label) SAVE batch \(index+1) | \(Int((tSave1-tSave0)*1000))ms", category: "BatchEnrich")
-                }
-
-                // 限速：5 秒
-                try? await Task.sleep(for: .seconds(5))
-                guard !Task.isCancelled else { break }
+                if Task.isCancelled { group.cancelAll() }
             }
 
-            try? bgContext.save()
             let cancelled = Task.isCancelled
-            return (success, processed, cancelled)
+            return (successCount, completedCount, cancelled)
         }
 
         // 当外层 task 被取消（用户点停止）时，把取消传播到 detached task
-        let (successCount, processedCount, wasCancelled) = await withTaskCancellationHandler {
+        let (successCount, completedCount, wasCancelled) = await withTaskCancellationHandler {
             await detachedTask.value
         } onCancel: {
             detachedTask.cancel()
@@ -673,7 +709,7 @@ struct DataMaintenanceView: View {
         batchCancelled = false
 
         if wasCancelled {
-            cleanResultMessage = "已停止。已补全 \(successCount)/\(processedCount) 本（共 \(totalCount) 本待处理）"
+            cleanResultMessage = "已停止。已补全 \(successCount)/\(completedCount) 本（共 \(totalCount) 本待处理）"
         } else {
             cleanResultMessage = doneMessage(successCount, totalCount)
         }
