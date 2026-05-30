@@ -120,6 +120,7 @@ actor CoverFetchService {
             request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
             request.timeoutInterval = 15
 
+            await DoubanRateLimiter.shared.wait()
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else {
