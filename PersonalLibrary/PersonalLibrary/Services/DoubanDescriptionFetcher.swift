@@ -71,6 +71,9 @@ struct DoubanDescriptionFetcher {
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 10
 
+        // 全局豆瓣限速：保证至少 5 秒间隔
+        await DoubanRateLimiter.shared.wait()
+
         guard let (data, response) = try? await URLSession.shared.data(for: request),
               let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
@@ -110,6 +113,9 @@ struct DoubanDescriptionFetcher {
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 15
+
+        // 全局豆瓣限速：保证至少 5 秒间隔
+        await DoubanRateLimiter.shared.wait()
 
         guard let (data, response) = try? await URLSession.shared.data(for: request),
               let httpResponse = response as? HTTPURLResponse,

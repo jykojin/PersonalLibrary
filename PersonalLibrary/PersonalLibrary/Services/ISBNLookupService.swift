@@ -1,5 +1,25 @@
 import Foundation
 
+// MARK: - 豆瓣请求限速器
+
+/// 豆瓣请求限速器（全局共享）— 保证所有豆瓣请求间隔至少 5 秒
+/// 防止并发批量补全时被豆瓣封 IP
+actor DoubanRateLimiter {
+    static let shared = DoubanRateLimiter()
+    private var lastRequestTime: Date = .distantPast
+    private let minInterval: TimeInterval = 5.0
+
+    func wait() async {
+        let now = Date()
+        let elapsed = now.timeIntervalSince(lastRequestTime)
+        if elapsed < minInterval {
+            let delay = minInterval - elapsed
+            try? await Task.sleep(for: .seconds(delay))
+        }
+        lastRequestTime = Date()
+    }
+}
+
 // MARK: - 智能补全数据源状态
 
 /// 单个数据源的查询状态
@@ -107,6 +127,9 @@ actor ISBNLookupService {
         request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
         request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 15
+
+        // 全局豆瓣限速：保证至少 5 秒间隔，防止并发批量补全被封 IP
+        await DoubanRateLimiter.shared.wait()
 
         // 使用自动跟随重定向的 session
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -684,7 +707,10 @@ actor ISBNLookupService {
                 continue
             }
 
+            let t0 = CFAbsoluteTimeGetCurrent()
             let lookupResult = await source.lookup()
+            let elapsedMs = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            AppLogger.perf("smartFill source=\(source.name) elapsed=\(elapsedMs)ms hit=\(lookupResult != nil)", category: "ISBNLookup")
 
             if let lr = lookupResult {
                 var foundSomething = false
@@ -747,7 +773,10 @@ actor ISBNLookupService {
         if !validISBN && !title.isEmpty {
             // 1. Open Library 书名搜索（无反爬，可靠，含作者简介）
             if (needsBookDesc && result.bookDescription == nil) || (needsAuthorDesc && result.authorDescription == nil) {
+                let tOL0 = CFAbsoluteTimeGetCurrent()
                 let olResult = await searchOpenLibraryByTitle(title: title, author: author.isEmpty || author == "未知作者" ? nil : author)
+                let olElapsedMs = Int((CFAbsoluteTimeGetCurrent() - tOL0) * 1000)
+                AppLogger.perf("smartFill source=OL(title) elapsed=\(olElapsedMs)ms hit=\(olResult != nil)", category: "ISBNLookup")
                 var olFound = false
                 if needsBookDesc && result.bookDescription == nil,
                    let desc = olResult?.bookDescription, !desc.isEmpty {
@@ -767,7 +796,10 @@ actor ISBNLookupService {
 
             // 2. Goodreads 书名搜索（英文书覆盖率高，可能被 WAF 拦截）
             if (needsBookDesc && result.bookDescription == nil) {
+                let tGR0 = CFAbsoluteTimeGetCurrent()
                 let grResult = await searchGoodreadsByTitle(title: title, author: author)
+                let grElapsedMs = Int((CFAbsoluteTimeGetCurrent() - tGR0) * 1000)
+                AppLogger.perf("smartFill source=Goodreads(title) elapsed=\(grElapsedMs)ms hit=\(grResult != nil)", category: "ISBNLookup")
                 var grFound = false
                 if needsBookDesc && result.bookDescription == nil,
                    let desc = grResult?.bookDescription, !desc.isEmpty {
@@ -783,6 +815,7 @@ actor ISBNLookupService {
             // 3. 豆瓣书名搜索
             let fetcher = DoubanDescriptionFetcher()
             var foundSomething = false
+            let tDB0 = CFAbsoluteTimeGetCurrent()
 
             if needsBookDesc && result.bookDescription == nil {
                 let desc = await fetcher.fetchBookDescriptionByTitle(title: title, author: author)
@@ -798,6 +831,9 @@ actor ISBNLookupService {
                     foundSomething = true
                 }
             }
+
+            let dbElapsedMs = Int((CFAbsoluteTimeGetCurrent() - tDB0) * 1000)
+            AppLogger.perf("smartFill source=Douban(title) elapsed=\(dbElapsedMs)ms hit=\(foundSomething)", category: "ISBNLookup")
 
             result.sourceStatuses.append((
                 name: "豆瓣(书名搜索)",
