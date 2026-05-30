@@ -61,12 +61,13 @@ targets:
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         CFBundleDisplayName: "私人图书馆"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.PersonalLibrary
         DEVELOPMENT_TEAM: YOUR_TEAM_ID
         CURRENT_PROJECT_VERSION: 1
-        MARKETING_VERSION: "0.351"
+        MARKETING_VERSION: "0.7"
         CODE_SIGN_STYLE: Automatic
         ENABLE_PREVIEWS: YES
         DEVELOPMENT_ASSET_PATHS: "\"PersonalLibrary/Preview Content\""
