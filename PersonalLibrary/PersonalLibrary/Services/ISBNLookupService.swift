@@ -11,12 +11,12 @@ actor DoubanRateLimiter {
 
     func wait() async {
         let now = Date()
-        let elapsed = now.timeIntervalSince(lastRequestTime)
-        if elapsed < minInterval {
-            let delay = minInterval - elapsed
+        let nextAllowed = max(now, lastRequestTime.addingTimeInterval(minInterval))
+        lastRequestTime = nextAllowed     // reserve synchronously, before any await
+        let delay = nextAllowed.timeIntervalSince(now)
+        if delay > 0 {
             try? await Task.sleep(for: .seconds(delay))
         }
-        lastRequestTime = Date()
     }
 }
 
