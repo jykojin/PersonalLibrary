@@ -581,12 +581,9 @@ struct DataMaintenanceView: View {
         let burstThreshold = 50  // 每 50 本一组
         let burstPauseSeconds = 30  // 组间暂停 30 秒（散热）
 
-        let detachedTask = Task.detached(priority: .utility) {
-            await BatchEnrichmentState.shared.start()
-            defer {
-                Task { await BatchEnrichmentState.shared.stop() }
-            }
+        await BatchEnrichmentState.shared.start()
 
+        let detachedTask = Task.detached(priority: .utility) {
             let lookupService = ISBNLookupService()
             let maxConcurrent = 3
             var successCount = 0
@@ -739,6 +736,8 @@ struct DataMaintenanceView: View {
         } onCancel: {
             detachedTask.cancel()
         }
+
+        await BatchEnrichmentState.shared.stop()
 
         isBatchRunning = false
         batchTask = nil
