@@ -41,7 +41,7 @@ struct BookDetailView: View {
                 notesSection
 
                 // 加入日期
-                Text("加入：\(book.addedDate, format: .dateTime.year().month().day())")
+                Text("加入：\(Self.addedDateFormatter.string(from: book.addedDate))")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
@@ -352,6 +352,12 @@ struct BookDetailView: View {
     private static let publishDateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM"
+        return f
+    }()
+
+    private static let addedDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
         return f
     }()
 
