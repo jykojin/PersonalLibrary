@@ -266,14 +266,12 @@ struct BookDetailView: View {
                         notesInitialized = true
                     }
                 }
-                .onChange(of: notesText) { _, newValue in
+                .onChange(of: notesText) { _, _ in
                     saveTask?.cancel()
                     saveTask = Task {
                         try? await Task.sleep(for: .milliseconds(800))
                         if Task.isCancelled { return }
-                        await MainActor.run {
-                            performNotesSave(newValue)
-                        }
+                        performNotesSave(notesText)
                     }
                 }
                 .onDisappear {
