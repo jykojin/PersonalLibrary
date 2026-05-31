@@ -583,8 +583,11 @@ struct DataMaintenanceView: View {
 
         await BatchEnrichmentState.shared.start()
 
+        // 启用电池监听以便 SystemMetrics.snapshot() 读取电量
+        await MainActor.run { UIDevice.current.isBatteryMonitoringEnabled = true }
+
         // 启动定期 metrics 采样（每 15 秒）+ thermal state 变化监听（仅 verbose 模式记录）
-        let metricsTask = Task.detached(priority: .background) {
+        let metricsTask = Task.detached(priority: .utility) {
             while !Task.isCancelled {
                 let snapshot = await MainActor.run { SystemMetrics.snapshot() }
                 AppLogger.perf("batch metrics: \(snapshot)", category: "BatchEnrich")

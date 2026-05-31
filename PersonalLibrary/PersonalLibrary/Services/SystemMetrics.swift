@@ -50,7 +50,7 @@ enum SystemMetrics {
         return totalUsage
     }
 
-    /// 本进程内存占用（resident set size，字节）
+    /// 本进程内存占用（phys_footprint，字节 — 与 Xcode Memory gauge / Jetsam 一致）
     /// 失败返回 nil
     static func processMemoryBytes() -> UInt64? {
         var info = task_vm_info_data_t()
@@ -66,7 +66,7 @@ enum SystemMetrics {
     /// 系统空闲内存（字节）
     static func systemFreeMemoryBytes() -> UInt64? {
         var pageSize: vm_size_t = 0
-        host_page_size(mach_host_self(), &pageSize)
+        guard host_page_size(mach_host_self(), &pageSize) == KERN_SUCCESS else { return nil }
 
         var stats = vm_statistics64()
         var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size)
@@ -88,8 +88,6 @@ enum SystemMetrics {
         let mem = processMemoryBytes().map { String(format: "%.0fMB", Double($0) / 1024.0 / 1024.0) } ?? "?"
         let free = systemFreeMemoryBytes().map { String(format: "%.1fGB", Double($0) / 1024.0 / 1024.0 / 1024.0) } ?? "?"
 
-        // 电池信息需要先开启监听
-        UIDevice.current.isBatteryMonitoringEnabled = true
         let battery = UIDevice.current.batteryLevel
         let batteryStr = battery >= 0 ? String(format: "%.0f%%", battery * 100) : "?"
         let charging: String = {
