@@ -583,6 +583,24 @@ struct DataMaintenanceView: View {
 
         await BatchEnrichmentState.shared.start()
 
+        // 启动定期 metrics 采样（每 15 秒）+ thermal state 变化监听（仅 verbose 模式记录）
+        let metricsTask = Task.detached(priority: .background) {
+            while !Task.isCancelled {
+                let snapshot = await MainActor.run { SystemMetrics.snapshot() }
+                AppLogger.perf("batch metrics: \(snapshot)", category: "BatchEnrich")
+                try? await Task.sleep(for: .seconds(15))
+            }
+        }
+
+        // thermal state 变化时立即记录（即使两次采样间也不漏）
+        let thermalObserver = NotificationCenter.default.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            AppLogger.perf("thermal CHANGE: \(SystemMetrics.thermalStateString)", category: "BatchEnrich")
+        }
+
         let detachedTask = Task.detached(priority: .utility) {
             let lookupService = ISBNLookupService()
             let maxConcurrent = 3
@@ -736,6 +754,10 @@ struct DataMaintenanceView: View {
         } onCancel: {
             detachedTask.cancel()
         }
+
+        // 停止 metrics 采集
+        metricsTask.cancel()
+        NotificationCenter.default.removeObserver(thermalObserver)
 
         await BatchEnrichmentState.shared.stop()
 
