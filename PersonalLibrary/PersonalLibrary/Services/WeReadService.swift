@@ -171,27 +171,6 @@ actor WeReadService: WeReadDataSource {
     func fetchShelf() async throws -> WeReadShelfResponse {
         let url = URL(string: "\(baseURL)/web/shelf/sync")!
         let data = try await makeRequest(url: url)
-
-        // 诊断：dump 金刚经相关的原始 JSON
-        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            // 搜索 books 数组中包含金刚经的条目
-            if let books = json["books"] as? [[String: Any]] {
-                for book in books {
-                    if let title = book["title"] as? String, title.contains("金刚经") {
-                        AppLogger.warning("[DIAG-RAW-BOOK] \(title): \(book)", category: "WeRead")
-                    }
-                }
-            }
-            // 搜索 bookProgress 中对应的条目
-            if let progressList = json["bookProgress"] as? [[String: Any]] {
-                for p in progressList {
-                    if let bookId = p["bookId"] as? String, bookId == "3300198684" {
-                        AppLogger.warning("[DIAG-RAW-PROGRESS] bookId=3300198684: \(p)", category: "WeRead")
-                    }
-                }
-            }
-        }
-
         return try JSONDecoder().decode(WeReadShelfResponse.self, from: data)
     }
 
@@ -200,21 +179,6 @@ actor WeReadService: WeReadDataSource {
         let safeId = try validateBookId(bookId)
         let url = URL(string: "\(baseURL)/web/book/info?bookId=\(safeId)")!
         let data = try await makeRequest(url: url)
-
-        // 诊断：dump 金刚经的 bookInfo 时间相关字段
-        if bookId == "3300198684" {
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                let keys = json.keys.sorted()
-                AppLogger.warning("[DIAG-BOOKINFO-KEYS] \(keys)", category: "WeRead")
-                // 找所有包含 time/date/finish 的字段
-                let timeFields = json.filter { k, _ in
-                    let lk = k.lowercased()
-                    return lk.contains("time") || lk.contains("date") || lk.contains("finish") || lk.contains("update")
-                }
-                AppLogger.warning("[DIAG-BOOKINFO-TIME] \(timeFields)", category: "WeRead")
-            }
-        }
-
         return try JSONDecoder().decode(WeReadShelfBook.self, from: data)
     }
 
@@ -451,11 +415,6 @@ actor WeReadService: WeReadDataSource {
                 }
             } else {
                 finishedTime = nil
-            }
-
-            // 诊断日志：dump 已读完书的时间字段
-            if isFinished, let title = book.title, title.contains("金刚经") {
-                AppLogger.warning("[DIAG] \(title) bookId=\(book.bookId) finishReadingTime=\(book.finishReadingTime as Any) progress.finishedDate=\(progress?.finishedDate as Any) progress.updateTime=\(progress?.updateTime as Any) → finishedTime=\(finishedTime as Any)", category: "WeRead")
             }
 
             // type == 1 表示用户自己导入到微信读书的书，CB_ 前缀也是

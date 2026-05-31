@@ -106,7 +106,10 @@ actor CoverFetchService {
 
     /// 从豆瓣链接获取封面图片数据
     func fetchCoverFromDouban(doubanURL: String) async -> Data? {
-        guard let url = URL(string: doubanURL) else { return nil }
+        // SSRF guard: 仅允许白名单域名 + https
+        guard isAllowedDomain(doubanURL),
+              let url = URL(string: doubanURL),
+              url.scheme == "https" else { return nil }
 
         // 防止重复请求
         guard !inFlightRequests.contains(doubanURL) else { return nil }
@@ -368,7 +371,10 @@ actor CoverFetchService {
     private static let maxImageSize = 5 * 1024 * 1024
 
     private func downloadImage(from urlStr: String) async -> Data? {
-        guard let url = URL(string: urlStr) else { return nil }
+        // SSRF guard: 仅允许白名单域名 + https（覆盖从 og:image 抓到的 URL）
+        guard isAllowedDomain(urlStr),
+              let url = URL(string: urlStr),
+              url.scheme == "https" else { return nil }
         do {
             var request = URLRequest(url: url)
             request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
