@@ -9,6 +9,9 @@ struct BookDetailView: View {
     @State private var showingEditBook = false
     @State private var showArchiveAlert = false
     @State private var coverImage: UIImage?
+    @State private var notesText: String = ""
+    @State private var notesInitialized = false
+    @State private var saveTask: Task<Void, Never>?
 
     private var bookTypeIcon: String {
         switch book.bookType {
@@ -36,6 +39,11 @@ struct BookDetailView: View {
 
                 // 备注
                 notesSection
+
+                // 加入日期
+                Text("加入：\(book.addedDate, format: .dateTime.year().month().day())")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
 
                 // 阅读记录
                 readingRecordsSection
@@ -241,26 +249,39 @@ struct BookDetailView: View {
             Text("备注")
                 .font(.headline)
 
-            TextEditor(text: Binding(
-                get: { book.notes ?? "" },
-                set: { newValue in
-                    let trimmed = String(newValue.prefix(5000))
-                    book.notes = trimmed.isEmpty ? nil : trimmed
-                    try? modelContext.save()
+            TextEditor(text: $notesText)
+                .frame(minHeight: 80, maxHeight: 200)
+                .padding(8)
+                .background(Color(.systemGray6))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(alignment: .topTrailing) {
+                    Text("\(notesText.count)/5000")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(8)
                 }
-            ))
-            .frame(minHeight: 80, maxHeight: 200)
-            .padding(8)
-            .background(Color(.systemGray6))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(alignment: .topTrailing) {
-                Text("\(book.notes?.count ?? 0)/5000")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .padding(8)
-            }
+                .onAppear {
+                    if !notesInitialized {
+                        notesText = book.notes ?? ""
+                        notesInitialized = true
+                    }
+                }
+                .onChange(of: notesText) { _, newValue in
+                    saveTask?.cancel()
+                    saveTask = Task {
+                        try? await Task.sleep(for: .milliseconds(800))
+                        if Task.isCancelled { return }
+                        await MainActor.run {
+                            performNotesSave(newValue)
+                        }
+                    }
+                }
+                .onDisappear {
+                    saveTask?.cancel()
+                    performNotesSave(notesText)
+                }
 
-            if book.notes == nil || book.notes!.isEmpty {
+            if notesText.isEmpty {
                 Text("点击上方输入备注...")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
@@ -269,6 +290,12 @@ struct BookDetailView: View {
         .padding()
         .background(Color(.systemGray6).opacity(0.5))
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func performNotesSave(_ value: String) {
+        let trimmed = String(value.prefix(5000))
+        book.notes = trimmed.isEmpty ? nil : trimmed
+        try? modelContext.save()
     }
 
     private var readingRecordsSection: some View {
