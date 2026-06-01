@@ -206,13 +206,25 @@ struct StatisticsView: View {
 
     @ViewBuilder
     private var tabContent: some View {
-        switch selectedTab {
-        case .overview:
-            overviewTab
-        case .trends:
-            trendsTab
-        case .distribution:
-            distributionTab
+        if cachedStats == nil {
+            // 第一次进入：先显示骨架，避免 Chart 框架初始化阻塞 page transition
+            VStack(spacing: 12) {
+                ProgressView()
+                Text("加载中…")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, minHeight: 400)
+            .padding(.top, 60)
+        } else {
+            switch selectedTab {
+            case .overview:
+                overviewTab
+            case .trends:
+                trendsTab
+            case .distribution:
+                distributionTab
+            }
         }
     }
 
@@ -950,7 +962,6 @@ struct StatisticsView: View {
     @MainActor
     /// 在主线程提取纯值快照，再送入后台纯计算
     private func computeStatsAsync() async {
-        // 主线程提取所有需要的纯值（避免 @Model 跨线程访问 crash）
         let bookSnapshots: [BookSnapshot] = books.map { book in
             BookSnapshot(
                 isArchived: book.isArchived,

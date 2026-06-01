@@ -252,34 +252,50 @@ struct DataMaintenanceView: View {
     // MARK: - Data
 
     private func rebuildCaches() {
-        var authorDict: [String: Int] = [:]
-        var publisherDict: [String: Int] = [:]
-        for book in allBooks where !book.isArchived {
-            let authors = book.author.components(separatedBy: ", ")
-            for name in authors {
-                let trimmed = name.trimmingCharacters(in: .whitespaces)
-                if !trimmed.isEmpty && trimmed != "未知作者" {
-                    authorDict[trimmed, default: 0] += 1
-                }
-            }
-            if let p = book.publisher, !p.isEmpty {
-                let publishers = p.components(separatedBy: ", ")
-                for name in publishers {
+        let container = modelContext.container
+        Task.detached(priority: .userInitiated) {
+            let context = ModelContext(container)
+            let booksFetch = FetchDescriptor<Book>()
+            let tagsFetch = FetchDescriptor<Tag>()
+            guard let books = try? context.fetch(booksFetch),
+                  let tags = try? context.fetch(tagsFetch) else { return }
+
+            var authorDict: [String: Int] = [:]
+            var publisherDict: [String: Int] = [:]
+            for book in books where !book.isArchived {
+                let authors = book.author.components(separatedBy: ", ")
+                for name in authors {
                     let trimmed = name.trimmingCharacters(in: .whitespaces)
-                    if !trimmed.isEmpty {
-                        publisherDict[trimmed, default: 0] += 1
+                    if !trimmed.isEmpty && trimmed != "未知作者" {
+                        authorDict[trimmed, default: 0] += 1
+                    }
+                }
+                if let p = book.publisher, !p.isEmpty {
+                    let publishers = p.components(separatedBy: ", ")
+                    for name in publishers {
+                        let trimmed = name.trimmingCharacters(in: .whitespaces)
+                        if !trimmed.isEmpty {
+                            publisherDict[trimmed, default: 0] += 1
+                        }
                     }
                 }
             }
+
+            let authors = authorDict.map { NameCountItem(name: $0.key, count: $0.value) }
+                .sorted { $0.count > $1.count }
+            let publishers = publisherDict.map { NameCountItem(name: $0.key, count: $0.value) }
+                .sorted { $0.count > $1.count }
+            let tagCounts = tags.map { tag -> NameCountItem in
+                let count = (tag.books ?? []).filter { !$0.isArchived }.count
+                return NameCountItem(name: tag.name, count: count)
+            }.sorted { $0.count > $1.count }
+
+            await MainActor.run {
+                self.cachedAuthors = authors
+                self.cachedPublishers = publishers
+                self.cachedTags = tagCounts
+            }
         }
-        cachedAuthors = authorDict.map { NameCountItem(name: $0.key, count: $0.value) }
-            .sorted { $0.count > $1.count }
-        cachedPublishers = publisherDict.map { NameCountItem(name: $0.key, count: $0.value) }
-            .sorted { $0.count > $1.count }
-        cachedTags = allTags.map { tag in
-            let count = (tag.books ?? []).filter { !$0.isArchived }.count
-            return NameCountItem(name: tag.name, count: count)
-        }.sorted { $0.count > $1.count }
     }
 
     private var currentItems: [NameCountItem] {
