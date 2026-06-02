@@ -566,6 +566,7 @@ actor WeReadService: WeReadDataSource {
         Task { @MainActor in
             // 一次创建，整个循环复用——避免每次迭代 new ModelContext 导致 KVO/NotificationCenter 累积
             let bgContext = ModelContext(container)
+            bgContext.autosaveEnabled = false
             for (idx, item) in booksToFetchCovers.enumerated() {
                 guard let coverURL = item.cover else { continue }
                 let coverData = await downloadImage(from: coverURL)

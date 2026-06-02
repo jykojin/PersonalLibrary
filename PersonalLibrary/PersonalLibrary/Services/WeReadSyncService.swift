@@ -485,9 +485,8 @@ actor WeReadSyncService {
                     }
                 }
 
-                // 单独的 checkContext 跨循环复用，专门用于在每本前快速 fetch 检查是否已被并发补全
-                // （bgContext 自身缓存可能过期，需要无缓存的 context 直接查 store；
-                //  fetch 总是命中 store，所以此 context 只读复用是安全的）
+                // 此 context 仅做一次性 bookId 查询（每本只查一次），不会命中自身缓存
+                // （bgContext 自身缓存可能过期，单独的 read-only context 保证 fetch 直接读 store）
                 let checkContext = ModelContext(container)
 
                 for (index, book) in booksNeedEnrich.enumerated() {
