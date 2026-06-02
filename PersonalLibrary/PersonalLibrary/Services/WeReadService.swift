@@ -563,26 +563,25 @@ actor WeReadService: WeReadDataSource {
         let booksToFetchCovers = items.filter { $0.isSelected && $0.cover != nil }
         let container = modelContext.container
         AppLogger.warning("[IMPORT-COVER] 开始后台封面下载，共 \(booksToFetchCovers.count) 本", category: "WeReadSync")
-        Task {
+        Task { @MainActor in
+            // 一次创建，整个循环复用——避免每次迭代 new ModelContext 导致 KVO/NotificationCenter 累积
+            let bgContext = ModelContext(container)
             for (idx, item) in booksToFetchCovers.enumerated() {
                 guard let coverURL = item.cover else { continue }
                 let coverData = await downloadImage(from: coverURL)
                 if let coverData {
-                    await MainActor.run {
-                        let bgContext = ModelContext(container)
-                        let title = item.title
-                        let author = item.author
-                        var descriptor = FetchDescriptor<Book>(
-                            predicate: #Predicate { $0.title == title && $0.author == author }
-                        )
-                        descriptor.fetchLimit = 1
-                        if let book = try? bgContext.fetch(descriptor).first {
-                            book.coverImageData = coverData
-                            do {
-                                try bgContext.save()
-                            } catch {
-                                AppLogger.warning("[IMPORT-COVER] save 失败 #\(idx) \(title): \(error)", category: "WeReadSync")
-                            }
+                    let title = item.title
+                    let author = item.author
+                    var descriptor = FetchDescriptor<Book>(
+                        predicate: #Predicate { $0.title == title && $0.author == author }
+                    )
+                    descriptor.fetchLimit = 1
+                    if let book = try? bgContext.fetch(descriptor).first {
+                        book.coverImageData = coverData
+                        do {
+                            try bgContext.save()
+                        } catch {
+                            AppLogger.warning("[IMPORT-COVER] save 失败 #\(idx) \(title): \(error)", category: "WeReadSync")
                         }
                     }
                 }

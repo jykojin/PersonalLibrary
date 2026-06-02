@@ -485,6 +485,11 @@ actor WeReadSyncService {
                     }
                 }
 
+                // 单独的 checkContext 跨循环复用，专门用于在每本前快速 fetch 检查是否已被并发补全
+                // （bgContext 自身缓存可能过期，需要无缓存的 context 直接查 store；
+                //  fetch 总是命中 store，所以此 context 只读复用是安全的）
+                let checkContext = ModelContext(container)
+
                 for (index, book) in booksNeedEnrich.enumerated() {
                     guard !Task.isCancelled else { break }
                     let p9b = SyncProgress(current: index + 1, total: booksNeedEnrich.count, phase: "补全同步", detail: book.title)
@@ -493,8 +498,6 @@ actor WeReadSyncService {
                     guard let bookId = book.wereadBookId else { continue }
 
                     // 防止与智能补全并发冲突：用独立 context 检查是否已被其他 context 补全
-                    // bgContext 已缓存 book 对象，re-fetch 可能返回旧快照；新 context 无缓存，必定读 store
-                    let checkContext = ModelContext(container)
                     if let freshBook = try? checkContext.fetch(FetchDescriptor<Book>(
                         predicate: #Predicate { $0.wereadBookId == bookId }
                     )).first, freshBook.wereadEnrichedDate != nil {

@@ -624,13 +624,15 @@ struct DataMaintenanceView: View {
             var successCount = 0
             var completedCount = 0
 
+            // 单一 ModelContext 跨整个循环复用，避免每次迭代 new context 导致内存压力
+            // （每次 new ModelContext 会触发 KVO/NotificationCenter 注册并被 SwiftData 内部持有）
+            let taskContext = ModelContext(container)
+            taskContext.autosaveEnabled = false
+
             // 顺序处理：每本之间间隔 2 秒，与 WeRead 同步相同的 QPS 节奏
             // 不并发——并发 + 多源 HTTP 会导致 modem/CPU 持续高峰，手机过热
             for (index, bookID) in bookIDs.enumerated() {
                 if Task.isCancelled { break }
-
-                let taskContext = ModelContext(container)
-                taskContext.autosaveEnabled = false
 
                 guard let book = taskContext.model(for: bookID) as? Book else { continue }
                 let title = book.title
