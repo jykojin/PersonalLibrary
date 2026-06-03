@@ -80,6 +80,7 @@ final class Book {
     var wereadProgress: Int = 0  // 微信读书阅读进度 (0-100)
     var wereadReadingHours: Double = 0  // 微信读书阅读时长（小时）
     var wereadEnrichedDate: Date?  // 上次通过微信读书 API 补全的时间，nil 表示从未补全
+    var wereadBookmarkCount: Int = 0  // 上次同步时微信读书侧的划线数（对应 /user/notebooks 的 noteCount），用于增量检测划线是否有更新
     var isWereadUserImported: Bool = false  // true = 用户导入到微信读书的书(epub/pdf), false = 微信读书平台书
     var isStartedReadingDateEstimated: Bool = false  // true = startedReadingDate 是估算值(updateTime-totalSeconds)，下次同步获取到真实值时应覆盖
 

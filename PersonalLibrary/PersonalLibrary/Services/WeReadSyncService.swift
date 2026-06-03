@@ -459,128 +459,170 @@ actor WeReadSyncService {
             try? modelContext.save()
         }
 
-        // 9b. 逐本处理：补全 + 划线（在当前 Task 上下文执行，支持取消传播）
+        // 9b. 逐本处理：补全 + 划线（增量：用 notebooks 划线数变化驱动划线重拉，支持取消传播）
         if !Task.isCancelled {
             let bgContext = ModelContext(container)
             bgContext.autosaveEnabled = false
 
-            let enrichDescriptor = FetchDescriptor<Book>(
-                predicate: #Predicate<Book> { $0.wereadBookId != nil && $0.wereadEnrichedDate == nil }
+            // 所有微信读书来源的书（不仅是未补全的——老书也要检查划线是否有更新）
+            let allDescriptor = FetchDescriptor<Book>(
+                predicate: #Predicate<Book> { $0.wereadBookId != nil }
             )
-            let booksNeedEnrich = (try? bgContext.fetch(enrichDescriptor)) ?? []
+            let allWeReadBooks = (try? bgContext.fetch(allDescriptor)) ?? []
 
-            if !booksNeedEnrich.isEmpty {
-                // 一次性拉取书架进度数据（缓存，仅 Web 模式需要）
-                var progressMap: [String: WeReadBookProgress]?
-                if let webService = weReadService as? WeReadService {
-                    do {
-                        let shelfData = try await webService.fetchShelf()
-                        var map: [String: WeReadBookProgress] = [:]
-                        if let progressList = shelfData.bookProgress {
-                            for p in progressList { map[p.bookId] = p }
-                        }
-                        progressMap = map
-                    } catch {
-                        AppLogger.warning("预拉取书架进度失败: \(error)", category: "WeReadSync")
+            if !allWeReadBooks.isEmpty {
+                // 一次性拉取每本书的划线数（Skill 模式有；Web 模式或失败时为 nil → 降级为只在首次补全时拉划线）
+                let notebookCountMap = (try? await weReadService.fetchNotebookCounts()).flatMap { $0 }
+
+                // 预筛选真正需要处理的书：需补全 或（Skill 模式下）划线数有变化。
+                // 无变化的书直接排除，既不发请求也不计入进度，避免发烫和无意义遍历。
+                let booksToProcess = allWeReadBooks.filter { book in
+                    guard let bookId = book.wereadBookId else { return false }
+                    if book.wereadEnrichedDate == nil { return true }
+                    if let map = notebookCountMap {
+                        return (map[bookId] ?? 0) != book.wereadBookmarkCount
                     }
+                    return false
                 }
 
-                // 此 context 仅做一次性 bookId 查询（每本只查一次），不会命中自身缓存
-                // （bgContext 自身缓存可能过期，单独的 read-only context 保证 fetch 直接读 store）
-                let checkContext = ModelContext(container)
-
-                for (index, book) in booksNeedEnrich.enumerated() {
-                    guard !Task.isCancelled else { break }
-                    let p9b = SyncProgress(current: index + 1, total: booksNeedEnrich.count, phase: "补全同步", detail: book.title)
-                    onProgress?(p9b)
-                    Self.setProgress(p9b)
-                    guard let bookId = book.wereadBookId else { continue }
-
-                    // 防止与智能补全并发冲突：用独立 context 检查是否已被其他 context 补全
-                    if let freshBook = try? checkContext.fetch(FetchDescriptor<Book>(
-                        predicate: #Predicate { $0.wereadBookId == bookId }
-                    )).first, freshBook.wereadEnrichedDate != nil {
-                        continue
+                if !booksToProcess.isEmpty {
+                    // 一次性拉取书架进度数据（缓存，仅 Web 模式 enrich 需要）
+                    var progressMap: [String: WeReadBookProgress]?
+                    if let webService = weReadService as? WeReadService {
+                        do {
+                            let shelfData = try await webService.fetchShelf()
+                            var map: [String: WeReadBookProgress] = [:]
+                            if let progressList = shelfData.bookProgress {
+                                for p in progressList { map[p.bookId] = p }
+                            }
+                            progressMap = map
+                        } catch {
+                            AppLogger.warning("预拉取书架进度失败: \(error)", category: "WeReadSync")
+                        }
                     }
 
-                    // 限速：每本间隔 2 秒（避免密集网络请求导致手机发烫）
-                    if index > 0 {
-                        try? await Task.sleep(for: .seconds(2))
+                    // 此 context 仅做一次性 bookId 查询（每本只查一次），不会命中自身缓存
+                    // （bgContext 自身缓存可能过期，单独的 read-only context 保证 fetch 直接读 store）
+                    let checkContext = ModelContext(container)
+                    // 只在"做过网络请求的书"之间限速，避免无变化书拖慢整体节奏
+                    var madeNetworkCall = false
+
+                    for (index, book) in booksToProcess.enumerated() {
                         guard !Task.isCancelled else { break }
-                    }
+                        let p9b = SyncProgress(current: index + 1, total: booksToProcess.count, phase: "补全同步", detail: book.title)
+                        onProgress?(p9b)
+                        Self.setProgress(p9b)
+                        guard let bookId = book.wereadBookId else { continue }
 
-                    // (1) 补全书籍信息
-                    var enrichSucceeded = false
-                    do {
-                        let enrichResult: WeReadEnrichResult
-                        if let webService = weReadService as? WeReadService, let map = progressMap {
-                            enrichResult = try await webService.enrichBook(bookId: bookId, cachedProgress: map)
+                        // 是否需要补全（并发保护：用独立 context 检查是否已被智能补全补过）
+                        var needsEnrich = (book.wereadEnrichedDate == nil)
+                        if needsEnrich,
+                           let freshBook = try? checkContext.fetch(FetchDescriptor<Book>(
+                               predicate: #Predicate { $0.wereadBookId == bookId }
+                           )).first, freshBook.wereadEnrichedDate != nil {
+                            needsEnrich = false
+                        }
+
+                        // 是否需要拉划线：Skill 模式按划线数变化；Web 模式仅首次补全时拉（保持现状）
+                        let remoteNoteCount = notebookCountMap?[bookId] ?? 0
+                        let needsBookmarkFetch: Bool
+                        if notebookCountMap != nil {
+                            needsBookmarkFetch = (remoteNoteCount != book.wereadBookmarkCount)
                         } else {
-                            enrichResult = try await weReadService.enrichBook(bookId: bookId)
+                            needsBookmarkFetch = needsEnrich
                         }
-                        enrichResult.applyToBook(book)
-                        enrichSucceeded = true
-                    } catch {
-                        AppLogger.warning("微信读书补全失败 (\(book.title)): \(error)", category: "WeReadSync")
-                    }
-                    guard !Task.isCancelled else { break }
 
-                    // (1b) CB_ 用户导入书：WeRead 补全后若简介仍为空，查询外部源（豆瓣/Goodreads）
-                    if bookId.hasPrefix("CB_") {
-                        let needsBookDesc = (book.bookDescription ?? "").isEmpty
-                        let needsAuthorDesc = (book.authorDescription ?? "").isEmpty
-                        if needsBookDesc || needsAuthorDesc {
-                            let lookupService = ISBNLookupService()
-                            let extResult = await lookupService.smartFill(
-                                isbn: book.isbn ?? "",
-                                title: book.title,
-                                author: book.author,
-                                needsTitle: false,
-                                needsPublisher: false,
-                                needsPages: false,
-                                needsPrice: false,
-                                needsPublishDate: false,
-                                needsTranslator: false,
-                                needsAuthor: false,
-                                needsBookDesc: needsBookDesc,
-                                needsAuthorDesc: needsAuthorDesc
-                            )
-                            if let desc = extResult.bookDescription {
-                                book.bookDescription = desc
+                        // 都不需要（并发场景下可能发生）→ 跳过，不限速
+                        if !needsEnrich && !needsBookmarkFetch { continue }
+
+                        // 限速：在两本"做网络请求的书"之间间隔 2 秒（避免密集网络请求导致手机发烫）
+                        if madeNetworkCall {
+                            try? await Task.sleep(for: .seconds(2))
+                            guard !Task.isCancelled else { break }
+                        }
+                        madeNetworkCall = true
+
+                        // (1) 补全书籍信息（仅未补全的书）
+                        var enrichSucceeded = false
+                        if needsEnrich {
+                            do {
+                                let enrichResult: WeReadEnrichResult
+                                if let webService = weReadService as? WeReadService, let map = progressMap {
+                                    enrichResult = try await webService.enrichBook(bookId: bookId, cachedProgress: map)
+                                } else {
+                                    enrichResult = try await weReadService.enrichBook(bookId: bookId)
+                                }
+                                enrichResult.applyToBook(book)
+                                enrichSucceeded = true
+                            } catch {
+                                AppLogger.warning("微信读书补全失败 (\(book.title)): \(error)", category: "WeReadSync")
                             }
-                            if let desc = extResult.authorDescription {
-                                book.authorDescription = desc
+
+                            // (1b) CB_ 用户导入书：WeRead 补全后若简介仍为空，查询外部源（豆瓣/Goodreads）
+                            if bookId.hasPrefix("CB_") {
+                                let needsBookDesc = (book.bookDescription ?? "").isEmpty
+                                let needsAuthorDesc = (book.authorDescription ?? "").isEmpty
+                                if needsBookDesc || needsAuthorDesc {
+                                    let lookupService = ISBNLookupService()
+                                    let extResult = await lookupService.smartFill(
+                                        isbn: book.isbn ?? "",
+                                        title: book.title,
+                                        author: book.author,
+                                        needsTitle: false,
+                                        needsPublisher: false,
+                                        needsPages: false,
+                                        needsPrice: false,
+                                        needsPublishDate: false,
+                                        needsTranslator: false,
+                                        needsAuthor: false,
+                                        needsBookDesc: needsBookDesc,
+                                        needsAuthorDesc: needsAuthorDesc
+                                    )
+                                    if let desc = extResult.bookDescription {
+                                        book.bookDescription = desc
+                                    }
+                                    if let desc = extResult.authorDescription {
+                                        book.authorDescription = desc
+                                    }
+                                }
                             }
                         }
-                    }
 
-                    // (2) 拉取划线（有不同就覆盖）
-                    guard !Task.isCancelled else { break }
-                    do {
-                        let bookmarks = try await weReadService.fetchBookmarks(bookId: bookId)
-                        if !bookmarks.isEmpty {
-                            let formatted = WeReadSyncService.formatBookmarksStatic(bookmarks)
-                            if book.notes != formatted {
-                                book.notes = formatted
+                        // (2) 拉取划线（仅当划线数有变化 / 首次补全）
+                        guard !Task.isCancelled else { break }
+                        if needsBookmarkFetch {
+                            do {
+                                let bookmarks = try await weReadService.fetchBookmarks(bookId: bookId)
+                                if !bookmarks.isEmpty {
+                                    let formatted = WeReadSyncService.formatBookmarksStatic(bookmarks)
+                                    if book.notes != formatted {
+                                        book.notes = formatted
+                                    }
+                                }
+                                // 成功拉取后记录划线数（即使为空也记录，避免下次重复拉取）；仅 Skill 模式有 map
+                                if notebookCountMap != nil {
+                                    book.wereadBookmarkCount = remoteNoteCount
+                                }
+                            } catch {
+                                AppLogger.warning("拉取划线失败 (\(book.title)): \(error)", category: "WeReadSync")
+                                // 失败不更新 count，下次 sync 重试
                             }
                         }
-                    } catch {
-                        AppLogger.warning("拉取划线失败 (\(book.title)): \(error)", category: "WeReadSync")
-                    }
 
-                    // (3) 仅当补全成功时标记已完成（失败的书下次 sync 会重试）
-                    if enrichSucceeded {
-                        book.wereadEnrichedDate = Date()
-                        result.booksEnriched += 1
-                    }
+                        // (3) 仅当补全成功时标记已完成（失败的书下次 sync 会重试）
+                        if enrichSucceeded {
+                            book.wereadEnrichedDate = Date()
+                            result.booksEnriched += 1
+                        }
 
-                    // 每 10 本保存一次，减少 UI 刷新频率
-                    if (index + 1) % 10 == 0 {
-                        try? bgContext.save()
+                        // 每 10 本保存一次，减少 UI 刷新频率
+                        if (index + 1) % 10 == 0 {
+                            try? bgContext.save()
+                        }
                     }
+                    // 最终保存剩余
+                    try? bgContext.save()
                 }
-                // 最终保存剩余
-                try? bgContext.save()
             }
         }
 
