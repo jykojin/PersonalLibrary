@@ -8,10 +8,18 @@ actor DoubanRateLimiter {
     static let shared = DoubanRateLimiter()
     private var lastRequestTime: Date = .distantPast
     private let minInterval: TimeInterval = 5.0
+    /// 单次 wait 等待上限 — 防止批量任务结束/取消后 reservation 残留导致后续请求长时间卡住
+    /// 30 秒覆盖正常并发场景（3 路 × 5s = 15s），又能在状态污染时快速恢复
+    private let maxWait: TimeInterval = 30.0
 
     func wait() async {
         let now = Date()
-        let nextAllowed = max(now, lastRequestTime.addingTimeInterval(minInterval))
+        var nextAllowed = max(now, lastRequestTime.addingTimeInterval(minInterval))
+        if nextAllowed.timeIntervalSince(now) > maxWait {
+            // reservation 队列过长（>30s），多半是前面被排队的 task 已退出未释放
+            // 重置到"now + minInterval"，避免新调用方被卡住
+            nextAllowed = now.addingTimeInterval(minInterval)
+        }
         lastRequestTime = nextAllowed     // reserve synchronously, before any await
         let delay = nextAllowed.timeIntervalSince(now)
         if delay > 0 {
