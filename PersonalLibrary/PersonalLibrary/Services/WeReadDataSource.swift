@@ -59,6 +59,16 @@ protocol WeReadDataSource: Sendable {
     /// 获取书籍详情
     func fetchBookInfo(bookId: String) async throws -> WeReadShelfBook
 
+    /// 一次性拉取"每本书的划线数"（bookId → noteCount），用于增量检测划线变化。
+    /// 默认实现返回 nil，表示该数据源不支持 notebooks 概览（如 Web Cookie 模式）。
+    /// Skill 模式覆盖此方法返回真实数据。
+    /// （声明为协议要求 + 扩展默认实现，确保通过 any WeReadDataSource 调用时走动态派发）
+    func fetchNotebookCounts() async throws -> [String: Int]?
+
     /// 断开连接（清除凭证）
     func disconnect() async
+}
+
+extension WeReadDataSource {
+    func fetchNotebookCounts() async throws -> [String: Int]? { nil }
 }

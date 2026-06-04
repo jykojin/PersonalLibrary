@@ -314,9 +314,41 @@ actor WeReadSkillProvider: WeReadDataSource {
         return try await callAPI(apiName: "/readdata/detail", params: ["mode": mode])
     }
 
-    /// 获取笔记本概览
-    func getNotebooks(count: Int = 100) async throws -> [String: Any] {
-        return try await callAPI(apiName: "/user/notebooks", params: ["count": count])
+    /// 一次性拉取每本书的划线数（bookId → noteCount），用于增量检测划线变化。
+    /// /user/notebooks 用 lastSort 游标分页，循环拉取直到 hasMore != 1。
+    func fetchNotebookCounts() async throws -> [String: Int]? {
+        var counts: [String: Int] = [:]
+        var lastSort: Int?
+        // 防御性上限：极端情况下避免无限翻页（每页 100 本，100 页 = 1 万本有笔记的书）
+        for _ in 0..<100 {
+            var params: [String: Any] = ["count": 100]
+            if let lastSort { params["lastSort"] = lastSort }
+            let data = try await callAPI(apiName: "/user/notebooks", params: params)
+
+            counts.merge(Self.parseNotebookCounts(from: data)) { _, new in new }
+
+            // 翻页：hasMore=1 时取本页末条的 sort 作为下页游标
+            guard let hasMore = data["hasMore"] as? Int, hasMore == 1,
+                  let books = data["books"] as? [[String: Any]],
+                  let nextCursor = books.last?["sort"] as? Int else {
+                break
+            }
+            lastSort = nextCursor
+        }
+        return counts
+    }
+
+    /// 从 /user/notebooks 单页回包解析出 [bookId: 划线数]。
+    /// ⚠️ 微信读书字段坑：noteCount 才是"划线/高亮条数"（对应 /book/bookmarklist 的可导出内容）；
+    /// bookmarkCount 是"书签"（阅读位置标记，内容不可导出），不要用它当签名。
+    static func parseNotebookCounts(from response: [String: Any]) -> [String: Int] {
+        guard let books = response["books"] as? [[String: Any]] else { return [:] }
+        var map: [String: Int] = [:]
+        for book in books {
+            guard let bookId = book["bookId"] as? String else { continue }
+            map[bookId] = book["noteCount"] as? Int ?? 0
+        }
+        return map
     }
 
     /// 验证 API Key 是否有效（调用书架接口测试）

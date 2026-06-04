@@ -1541,12 +1541,14 @@ actor MockWeReadDataSource: WeReadDataSource {
     var books: [WeReadImportItem] = []
     var enrichResults: [String: WeReadEnrichResult] = [:]
     var bookmarkResults: [String: [WeReadBookmark]] = [:]
+    var notebookCounts: [String: Int]?  // nil = 不支持 notebooks（Web 模式行为）
     var enrichCallCount = 0
     var bookmarkCallCount = 0
 
     func setBooks(_ items: [WeReadImportItem]) { books = items }
     func setEnrichResults(_ results: [String: WeReadEnrichResult]) { enrichResults = results }
     func setBookmarks(_ bm: [String: [WeReadBookmark]]) { bookmarkResults = bm }
+    func setNotebookCounts(_ counts: [String: Int]?) { notebookCounts = counts }
 
     func isConnected() -> Bool { true }
     func disconnect() {}
@@ -1568,6 +1570,8 @@ actor MockWeReadDataSource: WeReadDataSource {
     func fetchBookInfo(bookId: String) async throws -> WeReadShelfBook {
         return WeReadShelfBook(bookId: bookId, title: nil, author: nil, cover: nil, translator: nil, category: nil, publisher: nil, publishTime: nil, intro: nil, isbn: nil, price: nil, finished: nil, format: nil, type: nil, readUpdateTime: nil, finishReadingTime: nil)
     }
+
+    func fetchNotebookCounts() async throws -> [String: Int]? { notebookCounts }
 }
 
 @Suite("WeRead Sync Enrichment Atomicity Tests", .serialized)
@@ -4000,5 +4004,179 @@ struct BookCoverThresholdTests {
         #expect(book.hasCoverData == false)
         book.coverImageData = Data(repeating: 1, count: 2048)
         #expect(book.hasCoverData == true)
+    }
+}
+
+// MARK: - WeRead Notebook Counts Parsing Tests
+
+@Suite("WeRead Notebook Counts Parsing Tests")
+struct WeReadNotebookCountsParsingTests {
+
+    @Test("解析 notebooks 回包：用 noteCount(划线数) 作为每本书的签名")
+    func parsesNoteCountPerBook() {
+        // 微信读书字段坑：noteCount 才是划线/高亮条数，bookmarkCount 是书签（不导出内容）
+        let response: [String: Any] = [
+            "books": [
+                ["bookId": "123", "noteCount": 45, "bookmarkCount": 3, "reviewCount": 2],
+                ["bookId": "456", "noteCount": 0, "bookmarkCount": 10]
+            ]
+        ]
+        let map = WeReadSkillProvider.parseNotebookCounts(from: response)
+        #expect(map["123"] == 45)
+        #expect(map["456"] == 0)  // 只有书签没划线 → 0
+    }
+
+    @Test("解析 notebooks 回包：缺失 books 字段返回空 map")
+    func emptyWhenNoBooks() {
+        #expect(WeReadSkillProvider.parseNotebookCounts(from: [:]).isEmpty)
+    }
+
+    @Test("解析 notebooks 回包：noteCount 缺失按 0 处理")
+    func missingNoteCountIsZero() {
+        let response: [String: Any] = ["books": [["bookId": "789"]]]
+        let map = WeReadSkillProvider.parseNotebookCounts(from: response)
+        #expect(map["789"] == 0)
+    }
+
+    @Test("解析 notebooks 回包：缺失 bookId 的条目被跳过")
+    func skipsEntriesWithoutBookId() {
+        let response: [String: Any] = [
+            "books": [
+                ["noteCount": 5],
+                ["bookId": "abc", "noteCount": 7]
+            ]
+        ]
+        let map = WeReadSkillProvider.parseNotebookCounts(from: response)
+        #expect(map.count == 1)
+        #expect(map["abc"] == 7)
+    }
+}
+
+// MARK: - WeRead Incremental Bookmark Sync Tests (A-宽：notebooks 划线数驱动增量同步)
+
+@Suite("WeRead Incremental Bookmark Sync Tests", .serialized)
+struct WeReadIncrementalBookmarkSyncTests {
+
+    private func makeContainer() throws -> ModelContainer {
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        return try ModelContainer(for: schema, configurations: [config])
+    }
+
+    @Test("划线数增加：已补全的老书重新拉划线（核心缺口修复）")
+    func increasedNoteCountRefetchesBookmarks() async throws {
+        WeReadSyncService.resetSyncLockForTesting()
+        let container = try makeContainer()
+        let context = ModelContext(container)
+
+        let book = Book(title: "Old Book", author: "Author", bookType: .ebook)
+        book.wereadBookId = "wr_x"
+        book.wereadEnrichedDate = Date()   // 已补全
+        book.wereadBookmarkCount = 2       // 上次同步时 2 条划线
+        context.insert(book)
+        try context.save()
+
+        let mock = MockWeReadDataSource()
+        await mock.setBooks([WeReadImportItem(id: "wr_x", title: "Old Book", author: "Author", bookType: .ebook)])
+        await mock.setNotebookCounts(["wr_x": 5])   // 现在变成 5 条
+        await mock.setBookmarks(["wr_x": [
+            WeReadBookmark(bookmarkId: "b1", markText: "新划线1", chapterName: nil, createTime: nil),
+            WeReadBookmark(bookmarkId: "b2", markText: "新划线2", chapterName: nil, createTime: nil)
+        ]])
+
+        let syncService = WeReadSyncService(provider: mock)
+        _ = await syncService.sync(container: container, skipLockCheck: true)
+
+        let enrichCount = await mock.enrichCallCount
+        let bmCount = await mock.bookmarkCallCount
+        #expect(enrichCount == 0, "已补全的书不应重新 enrich")
+        #expect(bmCount == 1, "划线数变化应触发一次划线重拉")
+
+        let verify = ModelContext(container)
+        let saved = try verify.fetch(FetchDescriptor<Book>()).first { $0.wereadBookId == "wr_x" }
+        #expect(saved?.wereadBookmarkCount == 5, "应记录新的划线数")
+        #expect(saved?.notes?.contains("新划线1") == true)
+    }
+
+    @Test("划线数未变：跳过划线拉取（降成本）")
+    func unchangedNoteCountSkipsBookmarks() async throws {
+        WeReadSyncService.resetSyncLockForTesting()
+        let container = try makeContainer()
+        let context = ModelContext(container)
+
+        let book = Book(title: "Stable Book", author: "Author", bookType: .ebook)
+        book.wereadBookId = "wr_y"
+        book.wereadEnrichedDate = Date()
+        book.wereadBookmarkCount = 5
+        context.insert(book)
+        try context.save()
+
+        let mock = MockWeReadDataSource()
+        await mock.setBooks([WeReadImportItem(id: "wr_y", title: "Stable Book", author: "Author", bookType: .ebook)])
+        await mock.setNotebookCounts(["wr_y": 5])   // 相同
+
+        let syncService = WeReadSyncService(provider: mock)
+        _ = await syncService.sync(container: container, skipLockCheck: true)
+
+        let bmCount = await mock.bookmarkCallCount
+        #expect(bmCount == 0, "划线数未变不应拉划线")
+    }
+
+    @Test("首次同步新书：补全 + 拉划线 + 记录划线数")
+    func firstSyncEnrichesAndRecordsCount() async throws {
+        WeReadSyncService.resetSyncLockForTesting()
+        let container = try makeContainer()
+        let context = ModelContext(container)
+
+        let book = Book(title: "New Book", author: "Author", bookType: .ebook)
+        book.wereadBookId = "wr_z"
+        book.wereadEnrichedDate = nil       // 未补全
+        book.wereadBookmarkCount = 0
+        context.insert(book)
+        try context.save()
+
+        let mock = MockWeReadDataSource()
+        await mock.setBooks([WeReadImportItem(id: "wr_z", title: "New Book", author: "Author", bookType: .ebook)])
+        await mock.setNotebookCounts(["wr_z": 3])
+        await mock.setBookmarks(["wr_z": [
+            WeReadBookmark(bookmarkId: "b1", markText: "划线", chapterName: nil, createTime: nil)
+        ]])
+
+        let syncService = WeReadSyncService(provider: mock)
+        _ = await syncService.sync(container: container, skipLockCheck: true)
+
+        let enrichCount = await mock.enrichCallCount
+        let bmCount = await mock.bookmarkCallCount
+        #expect(enrichCount == 1)
+        #expect(bmCount == 1)
+
+        let verify = ModelContext(container)
+        let saved = try verify.fetch(FetchDescriptor<Book>()).first { $0.wereadBookId == "wr_z" }
+        #expect(saved?.wereadEnrichedDate != nil)
+        #expect(saved?.wereadBookmarkCount == 3, "首次同步后应记录划线数")
+    }
+
+    @Test("已补全且划线数为0的书：从不拉划线（缺席视为 0）")
+    func enrichedBookWithZeroNotesSkipsBookmarks() async throws {
+        WeReadSyncService.resetSyncLockForTesting()
+        let container = try makeContainer()
+        let context = ModelContext(container)
+
+        let book = Book(title: "No Notes Book", author: "Author", bookType: .ebook)
+        book.wereadBookId = "wr_w"
+        book.wereadEnrichedDate = Date()
+        book.wereadBookmarkCount = 0
+        context.insert(book)
+        try context.save()
+
+        let mock = MockWeReadDataSource()
+        await mock.setBooks([WeReadImportItem(id: "wr_w", title: "No Notes Book", author: "Author", bookType: .ebook)])
+        await mock.setNotebookCounts([:])   // 该书无笔记 → 缺席 → 视为 0
+
+        let syncService = WeReadSyncService(provider: mock)
+        _ = await syncService.sync(container: container, skipLockCheck: true)
+
+        let bmCount = await mock.bookmarkCallCount
+        #expect(bmCount == 0)
     }
 }
