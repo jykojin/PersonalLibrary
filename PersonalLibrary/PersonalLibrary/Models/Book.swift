@@ -132,7 +132,7 @@ final class Book {
     /// 是否有有效封面数据（externalStorage 可能返回空 Data 而非 nil）
     var hasCoverData: Bool {
         guard let data = coverImageData else { return false }
-        return !data.isEmpty
+        return data.count >= 1024  // <1KB 视为损坏占位（历史写入过38字节坏数据），当作无封面以便重抓自愈
     }
 
     /// 阅读进度百分比 (0.0 ~ 1.0)

@@ -12,6 +12,8 @@ struct PersonalLibraryApp: App {
         } catch {
             fatalError("无法创建数据容器: \(error.localizedDescription)")
         }
+        // 一次性把历史超大/损坏封面压成缩略图（后台执行），根治库膨胀导致的卡顿与崩溃
+        StorageManager.shared.migrateOversizedCoversIfNeeded(modelContainer)
     }
 
     var body: some Scene {

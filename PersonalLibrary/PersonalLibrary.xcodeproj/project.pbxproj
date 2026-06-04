@@ -52,6 +52,7 @@
 		C551971A4E370D924C8088A8 /* EditBookView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8094BF7B50E8C310346BD62 /* EditBookView.swift */; };
 		CB816F264CEE6FC093F34C85 /* Book.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEFD01915041338525804236 /* Book.swift */; };
 		CC8BC6559F0277E35E120C23 /* BatchActionBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA5005EFDEC15CED4F9D5889 /* BatchActionBar.swift */; };
+		D6604DA46AB87AF827C2BB9A /* CoverImageProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D6AA34AA4A9D56280684A15 /* CoverImageProcessor.swift */; };
 		E2BDFD0F0D246A80DF84ED14 /* DataBackupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C28FE3D9EE058BC7758DDF70 /* DataBackupView.swift */; };
 		E4F62D5464026A921EBCB6E4 /* DoubanDescriptionFetcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4D9FBC97AC9CCCC3F252253 /* DoubanDescriptionFetcher.swift */; };
 		E6E6169E7D9AD9BD37E5B956 /* AuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD70F02DDA17AEF6E793FE28 /* AuthService.swift */; };
@@ -97,6 +98,7 @@
 		4E3F97857DF70CD057FA821D /* FileLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileLogger.swift; sourceTree = "<group>"; };
 		5139540D5CB335C7D3C65206 /* WeReadSkillSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeReadSkillSetupView.swift; sourceTree = "<group>"; };
 		527950641E4AC110D1BE65C5 /* BookDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookDetailView.swift; sourceTree = "<group>"; };
+		5D6AA34AA4A9D56280684A15 /* CoverImageProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoverImageProcessor.swift; sourceTree = "<group>"; };
 		5F0A0333C6DF63A521270EF4 /* AppLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLogger.swift; sourceTree = "<group>"; };
 		5F1F4735287F12B60CE6CEE6 /* ReadingRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingRecord.swift; sourceTree = "<group>"; };
 		705F4B59E1366B9C933D78BE /* WeReadSyncView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeReadSyncView.swift; sourceTree = "<group>"; };
@@ -253,6 +255,7 @@
 				BB885E2F5A0318AD80268E3F /* BatchEnrichmentState.swift */,
 				DD64B2DD2CB3C57DFE3DE2FB /* BookService.swift */,
 				F77EAA99251DD746575AEE56 /* CoverFetchService.swift */,
+				5D6AA34AA4A9D56280684A15 /* CoverImageProcessor.swift */,
 				B4D9FBC97AC9CCCC3F252253 /* DoubanDescriptionFetcher.swift */,
 				4D2E3C7560B14260793E3C54 /* ExcelImportExportService.swift */,
 				4E3F97857DF70CD057FA821D /* FileLogger.swift */,
@@ -492,6 +495,7 @@
 				5817492A88473ABA6FB56F9B /* BookshelfListView.swift in Sources */,
 				52D01BBD46ACCD3E5E5ABEAA /* ContentView.swift in Sources */,
 				EF65473F98061A197DD20854 /* CoverFetchService.swift in Sources */,
+				D6604DA46AB87AF827C2BB9A /* CoverImageProcessor.swift in Sources */,
 				E2BDFD0F0D246A80DF84ED14 /* DataBackupView.swift in Sources */,
 				E4F62D5464026A921EBCB6E4 /* DoubanDescriptionFetcher.swift in Sources */,
 				C551971A4E370D924C8088A8 /* EditBookView.swift in Sources */,
@@ -672,7 +676,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.77;
+				MARKETING_VERSION = 0.79;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.PersonalLibrary;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -694,7 +698,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.77;
+				MARKETING_VERSION = 0.79;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.PersonalLibrary;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";

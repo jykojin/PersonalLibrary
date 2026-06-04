@@ -424,7 +424,7 @@ struct AddBookView: View {
             authorDescription: authorDescription.isEmpty ? nil : authorDescription,
             coverImageURL: coverImageURL
         )
-        book.coverImageData = coverImageData
+        book.coverImageData = coverImageData.map { CoverImageProcessor.thumbnailData(from: $0) }  // 大图先压缩略图
         book.status = readingStatus
         book.statusChangedDate = Date()
         book.rating = rating

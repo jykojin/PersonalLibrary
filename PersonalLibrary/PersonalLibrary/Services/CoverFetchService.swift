@@ -315,7 +315,7 @@ actor CoverFetchService {
                   httpResponse.statusCode == 200 else {
                 return nil
             }
-            return data
+            return CoverImageProcessor.thumbnailData(from: data)  // 入口处压成缩略图，避免大图入库
         } catch {
             AppLogger.warning("Direct download failed: \(error)", category: "CoverFetch")
             return nil
@@ -392,7 +392,7 @@ actor CoverFetchService {
                 AppLogger.warning("Image too large: \(data.count) bytes, skipping", category: "CoverFetch")
                 return nil
             }
-            return data
+            return CoverImageProcessor.thumbnailData(from: data)  // 入口处压成缩略图，避免大图入库
         } catch {
             AppLogger.warning("Download failed: \(error)", category: "CoverFetch")
             return nil

@@ -88,7 +88,7 @@ class BookService {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else { return nil }
-            return data
+            return CoverImageProcessor.thumbnailData(from: data)  // 入口处压成缩略图，避免大图入库
         } catch {
             return nil
         }

@@ -3943,3 +3943,62 @@ struct EnrichBookFieldStrategyTests {
         #expect(book.finishedDate == date)
     }
 }
+
+// MARK: - Cover Image Processor Tests (封面缩略图化，根治库膨胀卡顿)
+
+@Suite("Cover Image Processor Tests")
+struct CoverImageProcessorTests {
+
+    /// 生成一张"难压缩"的大图（随机色块），确保 JPEG 体积 > 阈值以触发缩略图逻辑
+    private func makeNoisyJPEG(side: CGFloat) -> Data {
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: side, height: side))
+        let img = renderer.image { ctx in
+            for _ in 0..<3000 {
+                let x = CGFloat.random(in: 0..<side), y = CGFloat.random(in: 0..<side)
+                let w = CGFloat.random(in: 4..<40), h = CGFloat.random(in: 4..<40)
+                UIColor(red: .random(in: 0...1), green: .random(in: 0...1),
+                        blue: .random(in: 0...1), alpha: 1).setFill()
+                ctx.fill(CGRect(x: x, y: y, width: w, height: h))
+            }
+        }
+        return img.jpegData(compressionQuality: 1.0)!
+    }
+
+    @Test("大图被压成 ≤400px 且体积更小")
+    func largeImageDownsampled() throws {
+        let big = makeNoisyJPEG(side: 1500)
+        #expect(big.count > CoverImageProcessor.passthroughBelowBytes, "测试图应足够大以触发压缩")
+        let thumb = CoverImageProcessor.thumbnailData(from: big)
+        #expect(thumb.count < big.count, "缩略图应更小")
+        let ui = try #require(UIImage(data: thumb))
+        #expect(max(ui.size.width, ui.size.height) <= 401, "最长边应 ≤400px")
+    }
+
+    @Test("已经很小的数据原样返回")
+    func smallDataPassthrough() {
+        let small = Data(repeating: 0xAB, count: 100)
+        #expect(CoverImageProcessor.thumbnailData(from: small) == small)
+    }
+
+    @Test("38字节坏占位原样返回（交给 hasCoverData 判定为无封面）")
+    func brokenTinyPassthrough() {
+        let junk = Data(repeating: 0x00, count: 38)
+        #expect(CoverImageProcessor.thumbnailData(from: junk) == junk)
+    }
+}
+
+@Suite("Book hasCoverData Threshold Tests")
+struct BookCoverThresholdTests {
+    @Test("nil / 38字节 / <1KB 视为无封面；≥1KB 视为有封面")
+    func threshold() {
+        let book = Book(title: "T", author: "A")
+        book.coverImageData = nil
+        #expect(book.hasCoverData == false)
+        book.coverImageData = Data(repeating: 1, count: 38)
+        #expect(book.hasCoverData == false)
+        book.coverImageData = Data(repeating: 1, count: 1023)
+        #expect(book.hasCoverData == false)
+        book.coverImageData = Data(repeating: 1, count: 2048)
+        #expect(book.hasCoverData == true)
+    }
+}

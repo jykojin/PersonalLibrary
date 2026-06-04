@@ -266,17 +266,17 @@ struct BookDetailView: View {
                         notesInitialized = true
                     }
                 }
-                .onChange(of: notesText) { _, _ in
+                .onChange(of: notesText) { _, newValue in
                     saveTask?.cancel()
                     saveTask = Task {
                         try? await Task.sleep(for: .milliseconds(800))
                         if Task.isCancelled { return }
-                        performNotesSave(notesText)
+                        persistNotes(newValue)
                     }
                 }
                 .onDisappear {
                     saveTask?.cancel()
-                    performNotesSave(notesText)
+                    persistNotes(notesText)
                 }
 
             if notesText.isEmpty {
@@ -290,10 +290,21 @@ struct BookDetailView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    private func performNotesSave(_ value: String) {
+    /// 保存备注：仅当内容真正变化时写入，且在后台 context 执行，避免阻塞主线程。
+    /// 打开有备注的书时，onAppear 会把 notesText 从 "" 设为备注内容并触发 onChange——
+    /// 这里的"未变化"守卫会拦掉那次无谓保存（这正是"有备注的书一打开就卡"的根源）。
+    private func persistNotes(_ value: String) {
         let trimmed = String(value.prefix(5000))
-        book.notes = trimmed.isEmpty ? nil : trimmed
-        try? modelContext.save()
+        let newValue: String? = trimmed.isEmpty ? nil : trimmed
+        guard newValue != book.notes else { return }
+        let id = book.persistentModelID
+        let container = modelContext.container
+        Task.detached {
+            let ctx = ModelContext(container)
+            guard let target = ctx.model(for: id) as? Book else { return }
+            target.notes = newValue
+            try? ctx.save()
+        }
     }
 
     private var readingRecordsSection: some View {

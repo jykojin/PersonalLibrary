@@ -759,9 +759,10 @@ struct EditBookView: View {
         book.authorDescription = authorDescription.isEmpty ? nil : authorDescription
         book.notes = notes.isEmpty ? nil : notes
         book.bookshelf = selectedShelf
-        // 只在封面数据真正变化时写入，避免不必要的大 blob I/O
-        if book.coverImageData != coverData {
-            book.coverImageData = coverData
+        // 只在封面数据真正变化时写入，避免不必要的大 blob I/O；相册选的大图先压成缩略图
+        let newCover = coverData.map { CoverImageProcessor.thumbnailData(from: $0) }
+        if book.coverImageData != newCover {
+            book.coverImageData = newCover
         }
 
         if status == .finished && book.finishedDate == nil {
