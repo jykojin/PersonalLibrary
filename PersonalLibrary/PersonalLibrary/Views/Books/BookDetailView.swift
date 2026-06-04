@@ -40,11 +40,6 @@ struct BookDetailView: View {
                 // 备注
                 notesSection
 
-                // 加入日期
-                Text("加入：\(Self.addedDateFormatter.string(from: book.addedDate))")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-
                 // 阅读记录
                 readingRecordsSection
             }
@@ -319,27 +314,28 @@ struct BookDetailView: View {
                 .font(.subheadline)
             }
 
-            // 阅读时间线：开始阅读 → 累计时长 → 读完
-            if book.startedReadingDate != nil || book.wereadReadingHours > 0 || (book.status == .finished && book.finishedDate != nil) {
-                VStack(alignment: .leading, spacing: 4) {
-                    if let startDate = book.startedReadingDate {
-                        Label("开始阅读于 \(startDate, style: .date)", systemImage: "play.circle")
-                            .font(.subheadline)
-                            .foregroundStyle(.blue)
-                    }
-                    if let summary = book.readingSummaryText {
-                        Label(summary, systemImage: "clock")
-                            .font(.subheadline)
-                            .foregroundStyle(.blue)
-                    }
-                    if book.status == .finished, let date = book.finishedDate {
-                        Label("读完于 \(date, style: .date)", systemImage: "checkmark.circle")
-                            .font(.subheadline)
-                            .foregroundStyle(.green)
-                    }
+            // 阅读时间线：加入 → 开始阅读 → 累计时长 → 读完
+            VStack(alignment: .leading, spacing: 4) {
+                Label("加入于 \(Self.addedDateFormatter.string(from: book.addedDate))", systemImage: "plus.circle")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                if let startDate = book.startedReadingDate {
+                    Label("开始阅读于 \(startDate, style: .date)", systemImage: "play.circle")
+                        .font(.subheadline)
+                        .foregroundStyle(.blue)
                 }
-                .padding(.vertical, 4)
+                if let summary = book.readingSummaryText {
+                    Label(summary, systemImage: "clock")
+                        .font(.subheadline)
+                        .foregroundStyle(.blue)
+                }
+                if book.status == .finished, let date = book.finishedDate {
+                    Label("读完于 \(date, style: .date)", systemImage: "checkmark.circle")
+                        .font(.subheadline)
+                        .foregroundStyle(.green)
+                }
             }
+            .padding(.vertical, 4)
 
             if (book.readingRecords ?? []).isEmpty {
                 if book.wereadReadingHours == 0 {
