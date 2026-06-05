@@ -4180,3 +4180,196 @@ struct WeReadIncrementalBookmarkSyncTests {
         #expect(bmCount == 0)
     }
 }
+
+// MARK: - Cover Search URL Tests
+
+@Suite("Cover Search URL Tests")
+struct CoverSearchURLTests {
+
+    @Test("Google 图片搜索 URL：含 tbm=isch 与编码后的关键词")
+    func googleURL() {
+        let url = CoverSearchURL.make(engine: .google, query: "现代防守叫牌精要 杨小燕")
+        let s = url.absoluteString
+        #expect(s.hasPrefix("https://www.google.com/search?q="))
+        #expect(s.contains("&tbm=isch"))
+        #expect(!s.contains("现代"))
+        #expect(!s.contains(" "))
+    }
+
+    @Test("百度图片搜索 URL：baiduimage + word 参数")
+    func baiduURL() {
+        let url = CoverSearchURL.make(engine: .baidu, query: "瓷器中国")
+        let s = url.absoluteString
+        #expect(s.hasPrefix("https://image.baidu.com/search/index?"))
+        #expect(s.contains("tn=baiduimage"))
+        #expect(s.contains("word="))
+        #expect(!s.contains("瓷器"))
+    }
+
+    @Test("Bing 图片搜索 URL")
+    func bingURL() {
+        let url = CoverSearchURL.make(engine: .bing, query: "Swift Programming")
+        let s = url.absoluteString
+        #expect(s.hasPrefix("https://www.bing.com/images/search?q="))
+        #expect(!s.contains(" "))
+    }
+
+    @Test("空关键词也能产生合法 https URL，不崩溃")
+    func emptyQuery() {
+        let url = CoverSearchURL.make(engine: .google, query: "")
+        #expect(url.scheme == "https")
+    }
+
+    @Test("三种引擎都产生 https URL 且有 host")
+    func allEnginesHTTPS() {
+        for engine in CoverWebSearchView.SearchEngine.allCases {
+            let url = CoverSearchURL.make(engine: engine, query: "test book")
+            #expect(url.scheme == "https")
+            #expect(url.host != nil)
+        }
+    }
+}
+
+// MARK: - Cover Image Bytes Tests
+
+@Suite("Cover Image Bytes Tests")
+struct CoverImageBytesTests {
+
+    @Test("有效 data:URI 能解码出原始字节")
+    func decodeValidDataURI() {
+        let original = Data(repeating: 0xAB, count: 200)
+        let uri = "data:image/png;base64," + original.base64EncodedString()
+        #expect(CoverImageBytes.decodeDataURI(uri) == original)
+    }
+
+    @Test("非 data: 前缀返回 nil")
+    func nonDataURIReturnsNil() {
+        #expect(CoverImageBytes.decodeDataURI("https://example.com/a.jpg") == nil)
+    }
+
+    @Test("缺少 base64, 段返回 nil")
+    func missingBase64MarkerReturnsNil() {
+        #expect(CoverImageBytes.decodeDataURI("data:image/png,notbase64") == nil)
+    }
+
+    @Test("解码后过小（≤100 字节）视为无效")
+    func tooSmallReturnsNil() {
+        let tiny = Data(repeating: 0x01, count: 50)
+        let uri = "data:image/png;base64," + tiny.base64EncodedString()
+        #expect(CoverImageBytes.decodeDataURI(uri) == nil)
+    }
+
+    @Test("isAcceptable 边界：101 通过、10MB 通过、超过不通过、100 不通过")
+    func isAcceptableBoundaries() {
+        #expect(CoverImageBytes.isAcceptable(Data(repeating: 0, count: 101)))
+        #expect(CoverImageBytes.isAcceptable(Data(repeating: 0, count: CoverImageBytes.maxBytes)))
+        #expect(!CoverImageBytes.isAcceptable(Data(repeating: 0, count: CoverImageBytes.maxBytes + 1)))
+        #expect(!CoverImageBytes.isAcceptable(Data(repeating: 0, count: 100)))
+    }
+
+    @Test("referer 从页面 URL 取 scheme://host/")
+    func refererFromURL() {
+        #expect(CoverImageBytes.referer(for: URL(string: "https://www.google.com/search?q=abc&tbm=isch")) == "https://www.google.com/")
+        #expect(CoverImageBytes.referer(for: URL(string: "https://image.baidu.com/search/index?word=x")) == "https://image.baidu.com/")
+        #expect(CoverImageBytes.referer(for: nil) == "")
+    }
+
+    @Test("isDownloadable：https 公网放行")
+    func downloadableAllowsPublicHTTPS() {
+        #expect(CoverImageBytes.isDownloadable("https://encrypted-tbn0.gstatic.com/images?q=x"))
+        #expect(CoverImageBytes.isDownloadable("https://img.baidu.com/a.jpg"))
+    }
+
+    @Test("isDownloadable：http 一律拒绝（仅 https）")
+    func downloadableRejectsHTTP() {
+        #expect(!CoverImageBytes.isDownloadable("http://img.baidu.com/a.jpg"))
+    }
+
+    @Test("isDownloadable：阻断内网/本地/特殊主机（SSRF）")
+    func downloadableBlocksInternal() {
+        #expect(!CoverImageBytes.isDownloadable("https://localhost/a.jpg"))
+        #expect(!CoverImageBytes.isDownloadable("https://127.0.0.1/a.jpg"))
+        #expect(!CoverImageBytes.isDownloadable("https://192.168.1.1/a.jpg"))
+        #expect(!CoverImageBytes.isDownloadable("https://10.0.0.5/a.jpg"))
+        #expect(!CoverImageBytes.isDownloadable("https://169.254.1.1/a.jpg"))
+        #expect(!CoverImageBytes.isDownloadable("https://172.16.0.1/a.jpg"))
+        #expect(!CoverImageBytes.isDownloadable("https://172.31.255.1/a.jpg"))
+        #expect(!CoverImageBytes.isDownloadable("https://printer.local/a.jpg"))
+    }
+
+    @Test("isDownloadable：172.15 与 172.32 不属于私网，放行")
+    func downloadableAllows172PublicEdges() {
+        #expect(CoverImageBytes.isDownloadable("https://172.15.0.1/a.jpg"))
+        #expect(CoverImageBytes.isDownloadable("https://172.32.0.1/a.jpg"))
+    }
+
+    @Test("decodeDataURI：超大 base64 串在解码前被拒")
+    func decodeRejectsOversizedBase64() {
+        // 构造一个超过上限的 base64 字符串（不需真解码，长度判定即拒）
+        let huge = String(repeating: "A", count: CoverImageBytes.maxBytes / 3 * 4 + 8)
+        #expect(CoverImageBytes.decodeDataURI("data:image/png;base64," + huge) == nil)
+    }
+}
+
+// MARK: - Cover 二轮 review 补充覆盖
+
+@Suite("Cover Hardening Tests")
+struct CoverHardeningTests {
+
+    @Test("isDownloadable：阻断 IPv6 回环/链路本地/ULA")
+    func blocksIPv6Internal() {
+        #expect(!CoverImageBytes.isDownloadable("https://[::1]/a.jpg"))
+        #expect(!CoverImageBytes.isDownloadable("https://[fe80::1]/a.jpg"))
+        #expect(!CoverImageBytes.isDownloadable("https://[fd00::1]/a.jpg"))
+        #expect(!CoverImageBytes.isDownloadable("https://[fc00::1]/a.jpg"))
+    }
+
+    @Test("isDownloadable：拒绝缺失/畸形主机")
+    func rejectsInvalidHosts() {
+        #expect(!CoverImageBytes.isDownloadable("https:///image.jpg"))
+        #expect(!CoverImageBytes.isDownloadable("https://"))
+        #expect(!CoverImageBytes.isDownloadable("https://.jpg"))
+        #expect(!CoverImageBytes.isDownloadable("https://./image.jpg"))
+    }
+
+    @Test("isDownloadable：公网 IPv6 放行")
+    func allowsPublicIPv6() {
+        #expect(CoverImageBytes.isDownloadable("https://[2606:4700::1]/a.jpg"))
+    }
+
+    @Test("CoverSearchURL：& 被编码，关键词不被截断")
+    func ampersandEncoded() {
+        let url = CoverSearchURL.make(engine: .google, query: "Q&A 手册")
+        #expect(url.absoluteString.contains("%26"))
+        let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        // q 参数应完整保留原始关键词（含 &）
+        #expect(comps?.queryItems?.first(where: { $0.name == "q" })?.value == "Q&A 手册")
+    }
+
+    @Test("CoverSearchURL：? 与 # 被编码")
+    func questionAndHashEncoded() {
+        let url = CoverSearchURL.make(engine: .bing, query: "why? #1")
+        let s = url.absoluteString
+        // 关键词里的 ? 和 # 必须编码，不能作为裸分隔符出现在 query 之后
+        #expect(s.contains("%3F"))
+        #expect(s.contains("%23"))
+    }
+
+    @Test("decodeDataURI：恰好 maxBytes 通过、超 1 字节失败")
+    func decodeMaxBytesBoundary() {
+        let exact = Data(repeating: 0xAB, count: CoverImageBytes.maxBytes)
+        #expect(CoverImageBytes.decodeDataURI("data:image/png;base64," + exact.base64EncodedString()) == exact)
+        let over = Data(repeating: 0xAB, count: CoverImageBytes.maxBytes + 1)
+        #expect(CoverImageBytes.decodeDataURI("data:image/png;base64," + over.base64EncodedString()) == nil)
+    }
+
+    @Test("decodeDataURI：空串 / 无结构 data: / 含垃圾字符")
+    func decodeMalformed() {
+        #expect(CoverImageBytes.decodeDataURI("") == nil)
+        #expect(CoverImageBytes.decodeDataURI("data:image/png") == nil)
+        // ignoreUnknownCharacters：尾部垃圾被丢弃，有效部分仍解码（记录当前行为）
+        let original = Data(repeating: 0xAB, count: 200)
+        let withGarbage = "data:image/png;base64," + original.base64EncodedString() + "!!!!"
+        #expect(CoverImageBytes.decodeDataURI(withGarbage) == original)
+    }
+}

@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import PhotosUI
+import WebKit
 
 /// 编辑书籍信息 — 支持编辑所有字段，封面可从相册/相机/网络搜索获取
 struct EditBookView: View {
@@ -887,300 +888,274 @@ struct CameraCaptureView: UIViewControllerRepresentable {
     }
 }
 
-// MARK: - 封面网络搜索
+// MARK: - 封面网络搜索（内置浏览器 + 长按取图）
 
+/// 封面网络搜索：内置浏览器加载 Google/百度/Bing 图片搜索真实网页，
+/// 用户长按图片选"选做封面"。相比自己抓 URL，排序由搜索引擎负责、缩略图在真实会话内渲染，
+/// 相关性与防盗链问题都不复存在。
 struct CoverWebSearchView: View {
     @Environment(\.dismiss) private var dismiss
     let bookTitle: String
     let bookAuthor: String
     let onSelect: (Data) -> Void
 
-    @State private var searchQuery: String = ""
-    @State private var imageResults: [CoverSearchResult] = []
-    @State private var isSearching = false
-    @State private var selectedEngine: SearchEngine = .baidu
-    @State private var currentPage = 1
-
-    /// 分页上限（最多翻 5 页）
-    private static let maxPages = 5
-    /// 每页结果数（各引擎翻页偏移步进）
-    private static let pageSize = 30
-
-    enum SearchEngine: String, CaseIterable {
+    enum SearchEngine: String, CaseIterable, Identifiable {
+        case google = "Google"
         case baidu = "百度"
         case bing = "Bing"
+        var id: String { rawValue }
     }
 
-    struct CoverSearchResult: Identifiable {
-        let id = UUID()
-        let thumbnailURL: String
-        let fullURL: String
+    @State private var engine: SearchEngine?
+
+    /// 搜索关键词（书名 + 作者，避免泛词稀释相关性）
+    private var query: String {
+        "\(bookTitle) \(bookAuthor)".trimmingCharacters(in: .whitespaces)
     }
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                // 搜索引擎选择
-                Picker("搜索引擎", selection: $selectedEngine) {
-                    ForEach(SearchEngine.allCases, id: \.self) { engine in
-                        Text(engine.rawValue).tag(engine)
+            Group {
+                if let engine {
+                    CoverBrowser(url: CoverSearchURL.make(engine: engine, query: query)) { data in
+                        // 入口处统一压成缩略图（§4.1）后回传，并关闭
+                        onSelect(CoverImageProcessor.thumbnailData(from: data))
+                        dismiss()
                     }
-                }
-                .pickerStyle(.segmented)
-                .padding()
-                .onChange(of: selectedEngine) { _, _ in
-                    // 换引擎后若已有结果，重新从第 1 页搜索
-                    if !imageResults.isEmpty || isSearching {
-                        Task { await performSearch() }
-                    }
-                }
-
-                // 搜索栏
-                HStack {
-                    TextField("搜索图书封面", text: $searchQuery)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit {
-                            Task { await performSearch() }
-                        }
-                    Button("搜索") {
-                        Task { await performSearch() }
-                    }
-                    .disabled(searchQuery.trimmingCharacters(in: .whitespaces).isEmpty || isSearching)
-                }
-                .padding(.horizontal)
-
-                // 内容
-                if imageResults.isEmpty && !isSearching {
-                    Spacer()
-                    VStack(spacing: 8) {
-                        Image(systemName: "photo.on.rectangle")
-                            .font(.largeTitle)
-                            .foregroundStyle(.secondary)
-                        Text("输入关键词搜索封面图片")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        Text("建议搜索：书名 + 封面")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
-                    Spacer()
-                } else if isSearching {
-                    Spacer()
-                    ProgressView("搜索中...")
-                    Spacer()
+                    .ignoresSafeArea(edges: .bottom)
+                    .navigationTitle(bookTitle.isEmpty ? "搜索封面" : bookTitle)
+                    .navigationBarTitleDisplayMode(.inline)
                 } else {
-                    // 搜索结果网格
-                    ScrollView {
-                        LazyVGrid(columns: [
-                            GridItem(.flexible()),
-                            GridItem(.flexible()),
-                            GridItem(.flexible())
-                        ], spacing: 12) {
-                            ForEach(imageResults) { result in
-                                AsyncImage(url: URL(string: result.thumbnailURL)) { phase in
-                                    switch phase {
-                                    case .success(let image):
-                                        image
-                                            .resizable()
-                                            .scaledToFill()
-                                            .frame(height: 140)
-                                            .clipped()
-                                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                                            .onTapGesture {
-                                                Task { await selectImage(result) }
-                                            }
-                                    case .failure:
-                                        RoundedRectangle(cornerRadius: 6)
-                                            .fill(Color(.systemGray5))
-                                            .frame(height: 140)
-                                            .overlay {
-                                                Image(systemName: "exclamationmark.triangle")
-                                                    .foregroundStyle(.secondary)
-                                            }
-                                    default:
-                                        RoundedRectangle(cornerRadius: 6)
-                                            .fill(Color(.systemGray6))
-                                            .frame(height: 140)
-                                            .overlay { ProgressView() }
-                                    }
-                                }
-                            }
-                        }
-                        .padding()
-                    }
-
-                    // 分页条
-                    paginationBar
+                    enginePicker
+                        .navigationTitle("搜索封面")
+                        .navigationBarTitleDisplayMode(.inline)
                 }
             }
-            .navigationTitle("搜索封面")
-            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { dismiss() }
                 }
-            }
-            .onAppear {
-                if searchQuery.isEmpty {
-                    searchQuery = "\(bookTitle) \(bookAuthor) 封面".trimmingCharacters(in: .whitespaces)
+                if engine != nil {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("换引擎") { engine = nil }
+                    }
                 }
             }
         }
     }
 
-    // 分页条：上一页 / 页码 / 下一页（最多 5 页）
-    private var paginationBar: some View {
-        HStack(spacing: 24) {
-            Button {
-                Task { await goToPage(currentPage - 1) }
-            } label: {
-                Image(systemName: "chevron.left")
-            }
-            .disabled(currentPage <= 1 || isSearching)
-
-            Text("第 \(currentPage) / \(Self.maxPages) 页")
-                .font(.subheadline)
-                .monospacedDigit()
+    // 引擎选择页
+    private var enginePicker: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "magnifyingglass.circle")
+                .font(.system(size: 48))
                 .foregroundStyle(.secondary)
+            Text("选择搜索来源")
+                .font(.headline)
+            Text("打开网页后，长按目标封面图片，选「选做封面」")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
 
-            Button {
-                Task { await goToPage(currentPage + 1) }
-            } label: {
-                Image(systemName: "chevron.right")
+            ForEach(SearchEngine.allCases) { e in
+                Button {
+                    engine = e
+                } label: {
+                    Text(e.rawValue)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
+                }
+                .buttonStyle(.borderedProminent)
+                .padding(.horizontal, 40)
             }
-            .disabled(currentPage >= Self.maxPages || isSearching)
         }
-        .padding(.vertical, 8)
+        .padding(.top, 40)
+        .frame(maxHeight: .infinity, alignment: .top)
     }
+}
 
-    /// 从第 1 页开始搜索（新关键词 / 换引擎时调用）
-    private func performSearch() async {
-        await goToPage(1)
-    }
+// MARK: - 封面搜索 URL 构造（独立出来便于单测）
 
-    /// 跳到指定页（带边界保护）
-    private func goToPage(_ page: Int) async {
-        let target = max(1, min(page, Self.maxPages))
-        let query = searchQuery.trimmingCharacters(in: .whitespaces)
-        guard !query.isEmpty else { return }
+enum CoverSearchURL {
+    /// RFC3986 unreserved 字符集；其余（含 & ? # = 等保留字）全部编码，避免关键词被 URL 解析截断
+    private static let unreserved = CharacterSet(charactersIn:
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 
-        isSearching = true
-        currentPage = target
-        imageResults = []
-
-        let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
-        let offset = (target - 1) * Self.pageSize
-
-        switch selectedEngine {
-        case .bing:
-            await searchBing(encoded: encoded, offset: offset)
+    static func make(engine: CoverWebSearchView.SearchEngine, query: String) -> URL {
+        let q = query.addingPercentEncoding(withAllowedCharacters: unreserved) ?? query
+        let s: String
+        switch engine {
+        case .google:
+            s = "https://www.google.com/search?q=\(q)&tbm=isch"
         case .baidu:
-            await searchBaidu(encoded: encoded, offset: offset)
+            s = "https://image.baidu.com/search/index?tn=baiduimage&word=\(q)"
+        case .bing:
+            s = "https://www.bing.com/images/search?q=\(q)"
         }
+        return URL(string: s) ?? URL(string: "https://www.bing.com")!
+    }
+}
 
-        isSearching = false
+// MARK: - 封面字节解析（独立出来便于单测，不依赖网络/WebView）
+
+enum CoverImageBytes {
+    /// 原图最大 10MB，防超大图 OOM
+    static let maxBytes = 10 * 1024 * 1024
+
+    /// data:image/...;base64,xxxx → 解码后的二进制；非 data-uri 或解码失败返回 nil
+    static func decodeDataURI(_ src: String) -> Data? {
+        guard src.hasPrefix("data:"),
+              let comma = src.range(of: "base64,") else { return nil }
+        let encoded = src[comma.upperBound...]
+        // 解码前先卡 base64 串长度，防超大 payload 在解码时撑爆内存。
+        // base64 长度 = 4*ceil(n/3)，对 n=maxBytes 取上界并留余量（padding/换行），
+        // 避免把恰好 maxBytes 的合法数据误判为超限。
+        guard encoded.count <= (maxBytes + 2) / 3 * 4 + 16 else { return nil }
+        guard let data = Data(base64Encoded: String(encoded),
+                              options: .ignoreUnknownCharacters),
+              data.count > 100, data.count <= maxBytes else { return nil }
+        return data
     }
 
-    private func searchBing(encoded: String, offset: Int) async {
-        // first = 结果偏移量，用于翻页
-        guard let url = URL(string: "https://www.bing.com/images/search?q=\(encoded)&form=HDRSC2&first=\(offset + 1)") else { return }
+    /// 校验通过网络下载的数据是否可用作封面（大小区间）
+    static func isAcceptable(_ data: Data) -> Bool {
+        data.count > 100 && data.count <= maxBytes
+    }
 
-        do {
-            var request = URLRequest(url: url)
-            request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
-            request.timeoutInterval = 15
+    /// 从页面 URL 推导下载时该带的 Referer（防盗链）
+    static func referer(for pageURL: URL?) -> String {
+        guard let pageURL, let host = pageURL.host else { return "" }
+        return "\(pageURL.scheme ?? "https")://\(host)/"
+    }
 
-            let (data, _) = try await URLSession.shared.data(for: request)
-            guard let html = String(data: data, encoding: .utf8) else { return }
+    /// 校验图片 src 是否可安全下载：仅 https + 阻断内网/本地/特殊主机（SSRF 防护）。
+    /// 不做域名白名单——搜索引擎图床域名无法穷举，白名单会误杀真实封面；
+    /// 改为阻断内网目标，兼顾安全与可用。
+    static func isDownloadable(_ src: String) -> Bool {
+        guard let url = URL(string: src), url.scheme == "https",
+              let host = url.host?.lowercased(), !host.isEmpty,
+              // host 不能只由点组成（"." / ".jpg" 等畸形 host）
+              !host.allSatisfy({ $0 == "." }), host.first != "." else { return false }
+        // localhost / .local
+        if host == "localhost" || host.hasSuffix(".local") { return false }
+        // IPv4 回环 / 任意地址 / 内网网段 / link-local
+        if host == "127.0.0.1" || host == "0.0.0.0" { return false }
+        if host.hasPrefix("10.") || host.hasPrefix("192.168.")
+            || host.hasPrefix("169.254.") { return false }
+        // 172.16.0.0–172.31.255.255
+        if host.hasPrefix("172.") {
+            let parts = host.split(separator: ".")
+            if parts.count >= 2, let second = Int(parts[1]), (16...31).contains(second) { return false }
+        }
+        // IPv6（URL.host 已去掉方括号）：回环 ::1、link-local fe80::/10、ULA fc00::/7
+        if host == "::1" || host.hasPrefix("fe80:") || host.hasPrefix("fc") || host.hasPrefix("fd") { return false }
+        return true
+    }
+}
 
-            // Bing 图片搜索将原图 URL 存在 murl 字段，缩略图在 turl
-            var results: [CoverSearchResult] = []
+// MARK: - WKWebView 封装（长按图片 → 选做封面）
 
-            // 提取 murl（原图）
-            let murlPattern = #"murl&quot;:&quot;(https?://[^&]+?)&quot;"#
-            let turlPattern = #"turl&quot;:&quot;(https?://[^&]+?)&quot;"#
+private struct CoverBrowser: UIViewRepresentable {
+    let url: URL
+    let onPick: (Data) -> Void
 
-            let murls = extractMatches(from: html, pattern: murlPattern)
-            let turls = extractMatches(from: html, pattern: turlPattern)
+    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
 
-            for i in 0..<min(murls.count, Self.pageSize) {
-                let thumb = i < turls.count ? turls[i] : murls[i]
-                results.append(CoverSearchResult(
-                    thumbnailURL: thumb,
-                    fullURL: murls[i]
-                ))
+    func makeUIView(context: Context) -> WKWebView {
+        let cfg = WKWebViewConfiguration()
+        cfg.websiteDataStore = .nonPersistent()  // 隔离会话，不持久化第三方 cookie（与 WeReadLoginView 一致）
+        // 抑制 img 长按的系统存图菜单，让我们的长按手势接管
+        cfg.userContentController.addUserScript(WKUserScript(
+            source: Self.calloutSuppressionJS,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: false))
+
+        let web = WKWebView(frame: .zero, configuration: cfg)
+        web.allowsBackForwardNavigationGestures = true
+        web.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+        web.load(URLRequest(url: url))
+
+        // iOS WKWebView 不触发 JS contextmenu，改用原生长按手势 + elementFromPoint 取 img src
+        let longPress = UILongPressGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleLongPress(_:)))
+        longPress.delegate = context.coordinator
+        web.addGestureRecognizer(longPress)
+
+        context.coordinator.webView = web
+        return web
+    }
+
+    func updateUIView(_ webView: WKWebView, context: Context) {}
+
+    /// 注入 CSS 抑制 img 的系统长按菜单（存储图片等）
+    static let calloutSuppressionJS = """
+    (function() {
+      var s = document.createElement('style');
+      s.textContent = 'img { -webkit-touch-callout: none !important; }';
+      (document.head || document.documentElement).appendChild(s);
+    })();
+    """
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        let onPick: (Data) -> Void
+        weak var webView: WKWebView?
+
+        init(onPick: @escaping (Data) -> Void) { self.onPick = onPick }
+
+        // 与 WebView 内部手势共存
+        func gestureRecognizer(_ g: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+
+        @objc func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
+            guard gesture.state == .began, let webView else { return }
+            // 布局未完成时 bounds 为 0，避免除零（→ JS Infinity → elementFromPoint 失效）
+            guard webView.bounds.width > 0, webView.bounds.height > 0 else { return }
+            let pt = gesture.location(in: webView)
+            // 屏幕坐标 → 视口坐标（考虑缩放与滚动），再用 elementFromPoint 取 img src
+            let js = """
+            (function() {
+              var sx = window.innerWidth / \(Int(webView.bounds.width));
+              var sy = window.innerHeight / \(Int(webView.bounds.height));
+              var x = \(Int(pt.x)) * sx, y = \(Int(pt.y)) * sy;
+              var el = document.elementFromPoint(x, y);
+              if (!el) return '';
+              if (el.tagName === 'IMG') return el.currentSrc || el.src || '';
+              // 命中祖先 img（图片被包在链接里时）
+              var img = el.closest && el.closest('img');
+              // 命中容器内的子 img（点到链接的 padding 区域时）
+              if (!img && el.querySelector) img = el.querySelector('img');
+              if (img) return img.currentSrc || img.src || '';
+              if (el.dataset && el.dataset.src) return el.dataset.src;
+              return '';
+            })();
+            """
+            webView.evaluateJavaScript(js) { [weak self] result, _ in
+                guard let self, let src = result as? String, !src.isEmpty else { return }
+                self.handle(src: src)
             }
-
-            imageResults = results
-        } catch {
-            AppLogger.warning("Bing error: \(error)", category: "CoverSearch")
         }
-    }
 
-    private func searchBaidu(encoded: String, offset: Int) async {
-        // acjson JSON 端点：pn = 偏移量，rn = 每页数量。比 HTML 页更适合翻页
-        guard let url = URL(string: "https://image.baidu.com/search/acjson?tn=resultjson_com&word=\(encoded)&pn=\(offset)&rn=\(Self.pageSize)") else { return }
-
-        do {
-            var request = URLRequest(url: url)
-            request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
-            request.setValue("https://image.baidu.com/", forHTTPHeaderField: "Referer")
-            request.timeoutInterval = 15
-
-            let (data, _) = try await URLSession.shared.data(for: request)
-            guard let json = String(data: data, encoding: .utf8) else { return }
-
-            var results: [CoverSearchResult] = []
-
-            // acjson 返回的 JSON 常含非法控制字符，用正则按字段抽取更稳
-            // 原图用 middleURL（objURL 是加密串，反正入库会压成缩略图，中图足够）
-            let thumbURLs = extractMatches(from: json, pattern: #""thumbURL":"(https?:\\?/\\?/[^"]+?)""#)
-            let middleURLs = extractMatches(from: json, pattern: #""middleURL":"(https?:\\?/\\?/[^"]+?)""#)
-
-            for i in 0..<min(thumbURLs.count, Self.pageSize) {
-                let thumb = unescapeJSONURL(thumbURLs[i])
-                let full = i < middleURLs.count ? unescapeJSONURL(middleURLs[i]) : thumb
-                results.append(CoverSearchResult(thumbnailURL: thumb, fullURL: full))
+        // 三层取字节：data-uri 直接解码 / 否则带 Referer 下载
+        private func handle(src: String) {
+            if src.hasPrefix("data:") {
+                if let data = CoverImageBytes.decodeDataURI(src) { deliver(data) }
+                return
             }
-
-            imageResults = results
-        } catch {
-            AppLogger.warning("Baidu error: \(error)", category: "CoverSearch")
+            guard CoverImageBytes.isDownloadable(src), let url = URL(string: src) else { return }
+            var req = URLRequest(url: url)
+            req.setValue(CoverImageBytes.referer(for: webView?.url), forHTTPHeaderField: "Referer")
+            req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
+            req.timeoutInterval = 15
+            URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
+                guard let self, let data, CoverImageBytes.isAcceptable(data) else { return }
+                self.deliver(data)
+            }.resume()
         }
-    }
 
-    /// 还原 JSON 里被转义的斜杠（\/  →  /）
-    private func unescapeJSONURL(_ s: String) -> String {
-        s.replacingOccurrences(of: "\\/", with: "/")
-    }
-
-    private func extractMatches(from text: String, pattern: String) -> [String] {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return [] }
-        let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
-        return matches.compactMap { match in
-            guard match.numberOfRanges > 1, let range = Range(match.range(at: 1), in: text) else { return nil }
-            return String(text[range])
-        }
-    }
-
-    /// 搜索结果原图最大允许 10MB（图床域名不可控，防超大图 OOM）
-    private static let maxImageSize = 10 * 1024 * 1024
-
-    private func selectImage(_ result: CoverSearchResult) async {
-        // 图床域名不可控，无法套豆瓣白名单，但仍要求 https，防明文/SSRF
-        guard let url = URL(string: result.fullURL), url.scheme == "https" else { return }
-        do {
-            var request = URLRequest(url: url)
-            request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
-            request.timeoutInterval = 15
-            let (data, _) = try await URLSession.shared.data(for: request)
-            // 防超大响应耗尽内存
-            guard data.count > 500, data.count <= Self.maxImageSize else { return }
-            // 入口处统一压成缩略图（§4.1），避免未压缩大图驻留 State / 入库
-            onSelect(CoverImageProcessor.thumbnailData(from: data))
-            dismiss()
-        } catch {
-            AppLogger.warning("Download failed: \(error)", category: "CoverSearch")
+        private func deliver(_ data: Data) {
+            DispatchQueue.main.async { self.onPick(data) }
         }
     }
 }
