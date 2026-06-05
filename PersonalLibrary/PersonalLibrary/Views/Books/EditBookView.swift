@@ -899,6 +899,12 @@ struct CoverWebSearchView: View {
     @State private var imageResults: [CoverSearchResult] = []
     @State private var isSearching = false
     @State private var selectedEngine: SearchEngine = .baidu
+    @State private var currentPage = 1
+
+    /// 分页上限（最多翻 5 页）
+    private static let maxPages = 5
+    /// 每页结果数（各引擎翻页偏移步进）
+    private static let pageSize = 30
 
     enum SearchEngine: String, CaseIterable {
         case baidu = "百度"
@@ -922,6 +928,12 @@ struct CoverWebSearchView: View {
                 }
                 .pickerStyle(.segmented)
                 .padding()
+                .onChange(of: selectedEngine) { _, _ in
+                    // 换引擎后若已有结果，重新从第 1 页搜索
+                    if !imageResults.isEmpty || isSearching {
+                        Task { await performSearch() }
+                    }
+                }
 
                 // 搜索栏
                 HStack {
@@ -996,6 +1008,9 @@ struct CoverWebSearchView: View {
                         }
                         .padding()
                     }
+
+                    // 分页条
+                    paginationBar
                 }
             }
             .navigationTitle("搜索封面")
@@ -1013,27 +1028,62 @@ struct CoverWebSearchView: View {
         }
     }
 
+    // 分页条：上一页 / 页码 / 下一页（最多 5 页）
+    private var paginationBar: some View {
+        HStack(spacing: 24) {
+            Button {
+                Task { await goToPage(currentPage - 1) }
+            } label: {
+                Image(systemName: "chevron.left")
+            }
+            .disabled(currentPage <= 1 || isSearching)
+
+            Text("第 \(currentPage) / \(Self.maxPages) 页")
+                .font(.subheadline)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+
+            Button {
+                Task { await goToPage(currentPage + 1) }
+            } label: {
+                Image(systemName: "chevron.right")
+            }
+            .disabled(currentPage >= Self.maxPages || isSearching)
+        }
+        .padding(.vertical, 8)
+    }
+
+    /// 从第 1 页开始搜索（新关键词 / 换引擎时调用）
     private func performSearch() async {
+        await goToPage(1)
+    }
+
+    /// 跳到指定页（带边界保护）
+    private func goToPage(_ page: Int) async {
+        let target = max(1, min(page, Self.maxPages))
         let query = searchQuery.trimmingCharacters(in: .whitespaces)
         guard !query.isEmpty else { return }
 
         isSearching = true
+        currentPage = target
         imageResults = []
 
         let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+        let offset = (target - 1) * Self.pageSize
 
         switch selectedEngine {
         case .bing:
-            await searchBing(encoded: encoded)
+            await searchBing(encoded: encoded, offset: offset)
         case .baidu:
-            await searchBaidu(encoded: encoded)
+            await searchBaidu(encoded: encoded, offset: offset)
         }
 
         isSearching = false
     }
 
-    private func searchBing(encoded: String) async {
-        guard let url = URL(string: "https://www.bing.com/images/search?q=\(encoded)&form=HDRSC2&first=1") else { return }
+    private func searchBing(encoded: String, offset: Int) async {
+        // first = 结果偏移量，用于翻页
+        guard let url = URL(string: "https://www.bing.com/images/search?q=\(encoded)&form=HDRSC2&first=\(offset + 1)") else { return }
 
         do {
             var request = URLRequest(url: url)
@@ -1053,7 +1103,7 @@ struct CoverWebSearchView: View {
             let murls = extractMatches(from: html, pattern: murlPattern)
             let turls = extractMatches(from: html, pattern: turlPattern)
 
-            for i in 0..<min(murls.count, 15) {
+            for i in 0..<min(murls.count, Self.pageSize) {
                 let thumb = i < turls.count ? turls[i] : murls[i]
                 results.append(CoverSearchResult(
                     thumbnailURL: thumb,
@@ -1067,53 +1117,41 @@ struct CoverWebSearchView: View {
         }
     }
 
-    private func searchBaidu(encoded: String) async {
-        guard let url = URL(string: "https://image.baidu.com/search/index?tn=baiduimage&word=\(encoded)") else { return }
+    private func searchBaidu(encoded: String, offset: Int) async {
+        // acjson JSON 端点：pn = 偏移量，rn = 每页数量。比 HTML 页更适合翻页
+        guard let url = URL(string: "https://image.baidu.com/search/acjson?tn=resultjson_com&word=\(encoded)&pn=\(offset)&rn=\(Self.pageSize)") else { return }
 
         do {
             var request = URLRequest(url: url)
             request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+            request.setValue("https://image.baidu.com/", forHTTPHeaderField: "Referer")
             request.timeoutInterval = 15
 
             let (data, _) = try await URLSession.shared.data(for: request)
-            guard let html = String(data: data, encoding: .utf8) else { return }
+            guard let json = String(data: data, encoding: .utf8) else { return }
 
             var results: [CoverSearchResult] = []
 
-            // 百度图片搜索: thumbURL 字段
-            let thumbPattern = #""thumbURL":"(https?://[^"]+)""#
-            let thumbURLs = extractMatches(from: html, pattern: thumbPattern)
-            for thumb in thumbURLs.prefix(15) {
-                results.append(CoverSearchResult(
-                    thumbnailURL: thumb,
-                    fullURL: thumb
-                ))
-            }
+            // acjson 返回的 JSON 常含非法控制字符，用正则按字段抽取更稳
+            // 原图用 middleURL（objURL 是加密串，反正入库会压成缩略图，中图足够）
+            let thumbURLs = extractMatches(from: json, pattern: #""thumbURL":"(https?:\\?/\\?/[^"]+?)""#)
+            let middleURLs = extractMatches(from: json, pattern: #""middleURL":"(https?:\\?/\\?/[^"]+?)""#)
 
-            // 备用模式：直接匹配图片 URL
-            if results.isEmpty {
-                let altPattern = #"https?://[^"'\s]+\.(?:jpg|jpeg|png)"#
-                if let regex = try? NSRegularExpression(pattern: altPattern, options: .caseInsensitive) {
-                    let matches = regex.matches(in: html, range: NSRange(html.startIndex..., in: html))
-                    for match in matches {
-                        if let range = Range(match.range, in: html) {
-                            let imgURL = String(html[range])
-                            if !imgURL.contains("bdimg") && !imgURL.contains("baidu.com") && !imgURL.contains("bcebos") {
-                                results.append(CoverSearchResult(
-                                    thumbnailURL: imgURL,
-                                    fullURL: imgURL
-                                ))
-                            }
-                        }
-                        if results.count >= 15 { break }
-                    }
-                }
+            for i in 0..<min(thumbURLs.count, Self.pageSize) {
+                let thumb = unescapeJSONURL(thumbURLs[i])
+                let full = i < middleURLs.count ? unescapeJSONURL(middleURLs[i]) : thumb
+                results.append(CoverSearchResult(thumbnailURL: thumb, fullURL: full))
             }
 
             imageResults = results
         } catch {
             AppLogger.warning("Baidu error: \(error)", category: "CoverSearch")
         }
+    }
+
+    /// 还原 JSON 里被转义的斜杠（\/  →  /）
+    private func unescapeJSONURL(_ s: String) -> String {
+        s.replacingOccurrences(of: "\\/", with: "/")
     }
 
     private func extractMatches(from text: String, pattern: String) -> [String] {
@@ -1125,17 +1163,22 @@ struct CoverWebSearchView: View {
         }
     }
 
+    /// 搜索结果原图最大允许 10MB（图床域名不可控，防超大图 OOM）
+    private static let maxImageSize = 10 * 1024 * 1024
+
     private func selectImage(_ result: CoverSearchResult) async {
-        guard let url = URL(string: result.fullURL) else { return }
+        // 图床域名不可控，无法套豆瓣白名单，但仍要求 https，防明文/SSRF
+        guard let url = URL(string: result.fullURL), url.scheme == "https" else { return }
         do {
             var request = URLRequest(url: url)
             request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
             request.timeoutInterval = 15
             let (data, _) = try await URLSession.shared.data(for: request)
-            if data.count > 500 {
-                onSelect(data)
-                dismiss()
-            }
+            // 防超大响应耗尽内存
+            guard data.count > 500, data.count <= Self.maxImageSize else { return }
+            // 入口处统一压成缩略图（§4.1），避免未压缩大图驻留 State / 入库
+            onSelect(CoverImageProcessor.thumbnailData(from: data))
+            dismiss()
         } catch {
             AppLogger.warning("Download failed: \(error)", category: "CoverSearch")
         }

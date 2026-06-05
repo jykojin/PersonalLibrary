@@ -79,15 +79,21 @@ class BookService {
         return shelf
     }
 
+    /// WeRead 封面图片最大允许 10MB（防超大响应耗尽内存）
+    private static let maxCoverSize = 10 * 1024 * 1024
+
     /// 下载图片数据（供封面下载等共用）
+    /// 注：URL 来自微信读书 API（可信源，非用户输入），故不做域名白名单——
+    /// WeRead 封面 CDN 域名不固定，白名单会静默掐断正常封面同步。仅做 https + 大小上限。
     static func downloadImage(from urlString: String) async -> Data? {
-        guard let url = URL(string: urlString) else { return nil }
+        guard let url = URL(string: urlString), url.scheme == "https" else { return nil }
         var request = URLRequest(url: url)
         request.timeoutInterval = 10
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200 else { return nil }
+                  httpResponse.statusCode == 200,
+                  data.count <= maxCoverSize else { return nil }
             return CoverImageProcessor.thumbnailData(from: data)  // 入口处压成缩略图，避免大图入库
         } catch {
             return nil

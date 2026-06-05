@@ -34,6 +34,7 @@ struct AddBookView: View {
     @State private var coverImageData: Data?
     @State private var coverImageURL: String?
     @State private var doubanURL: String?
+    @State private var showWebSearch = false
 
     // 类型 & 状态 & 评分
     @State private var bookType: BookType = .paper
@@ -42,7 +43,7 @@ struct AddBookView: View {
 
     // 书架 & 标签
     @State private var selectedBookshelf: Bookshelf?
-    @State private var selectedTags: Set<Tag> = []
+    @State private var selectedTags: Set<String> = []  // 存标签名（与 EditBookView 一致），落库时按名查找或创建
     @State private var showingNewTag = false
     @State private var newTagName = ""
     @State private var tagSearchText = ""
@@ -89,19 +90,29 @@ struct AddBookView: View {
                     }
                 }
 
-                // MARK: - 封面预览
-                if let imageData = coverImageData,
-                   let uiImage = UIImage(data: imageData) {
-                    Section("封面") {
-                        HStack {
-                            Spacer()
-                            Image(uiImage: uiImage)
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(height: 200)
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                                .shadow(radius: 2)
-                            Spacer()
+                // MARK: - 封面
+                Section("封面") {
+                    VStack(spacing: 12) {
+                        if let imageData = coverImageData,
+                           let uiImage = UIImage(data: imageData) {
+                            HStack {
+                                Spacer()
+                                Image(uiImage: uiImage)
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fit)
+                                    .frame(height: 200)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    .shadow(radius: 2)
+                                Spacer()
+                            }
+                        }
+
+                        // 始终提供手动搜索封面入口（ISBN 没匹配到封面时也能补）
+                        Button {
+                            showWebSearch = true
+                        } label: {
+                            Label(coverImageData == nil ? "搜索封面" : "重新搜索封面",
+                                  systemImage: "magnifyingglass")
                         }
                     }
                 }
@@ -203,9 +214,9 @@ struct AddBookView: View {
                     // 已选标签
                     if !selectedTags.isEmpty {
                         FlowLayout(spacing: 8) {
-                            ForEach(Array(selectedTags)) { tag in
-                                TagChip(tag: tag, isSelected: true) {
-                                    selectedTags.remove(tag)
+                            ForEach(Array(selectedTags).sorted(), id: \.self) { tagName in
+                                TagChip(name: tagName, isSelected: true) {
+                                    selectedTags.remove(tagName)
                                 }
                             }
                         }
@@ -223,7 +234,7 @@ struct AddBookView: View {
                     if !tagSearchText.isEmpty {
                         let matched = allTags.filter {
                             $0.name.localizedCaseInsensitiveContains(tagSearchText)
-                            && !selectedTags.contains($0)
+                            && !selectedTags.contains($0.name)
                         }
                         if matched.isEmpty {
                             Button {
@@ -235,8 +246,8 @@ struct AddBookView: View {
                         } else {
                             FlowLayout(spacing: 8) {
                                 ForEach(matched) { tag in
-                                    TagChip(tag: tag, isSelected: false) {
-                                        selectedTags.insert(tag)
+                                    TagChip(name: tag.name, isSelected: false) {
+                                        selectedTags.insert(tag.name)
                                         tagSearchText = ""
                                     }
                                 }
@@ -265,6 +276,11 @@ struct AddBookView: View {
             }
             .sheet(isPresented: $showingScanner) {
                 BarcodeScannerView(scannedISBN: $scannedISBN, isPresented: $showingScanner)
+            }
+            .sheet(isPresented: $showWebSearch) {
+                CoverWebSearchView(bookTitle: title, bookAuthor: author) { imageData in
+                    coverImageData = imageData  // 已在 CoverWebSearchView 入口压成缩略图
+                }
             }
             .onChange(of: scannedISBN) { _, newValue in
                 if let newValue, !newValue.isEmpty {
@@ -411,47 +427,89 @@ struct AddBookView: View {
     // MARK: - Save
 
     private func saveBook() {
-        let book = Book(
-            title: title.trimmingCharacters(in: .whitespaces),
-            author: author.trimmingCharacters(in: .whitespaces),
-            isbn: isbn.isEmpty ? nil : isbn,
-            publisher: publisher.isEmpty ? nil : publisher,
-            totalPages: Int(totalPages) ?? 0,
-            price: price.isEmpty ? nil : price,
-            doubanURL: doubanURL,
-            bookType: bookType,
-            bookDescription: bookDescription.isEmpty ? nil : bookDescription,
-            authorDescription: authorDescription.isEmpty ? nil : authorDescription,
-            coverImageURL: coverImageURL
-        )
-        book.coverImageData = coverImageData.map { CoverImageProcessor.thumbnailData(from: $0) }  // 大图先压缩略图
-        book.status = readingStatus
-        book.statusChangedDate = Date()
-        book.rating = rating
-        book.bookshelf = selectedBookshelf
-        book.tags = Array(selectedTags)
+        // 在主线程收集值类型字段 + 关系标识（关系对象属于主 context，不能跨 context 传递）。
+        // 全部写入放后台 context：主 context 被列表 @Query 注册了全部书，直接在主 context
+        // insert/save 会 bridge 所有已注册对象造成卡顿（§4.2）。
+        let container = modelContext.container
+        let titleVal = title.trimmingCharacters(in: .whitespaces)
+        let authorVal = author.trimmingCharacters(in: .whitespaces)
+        let isbnVal = isbn.isEmpty ? nil : isbn
+        let publisherVal = publisher.isEmpty ? nil : publisher
+        let totalPagesVal = Int(totalPages) ?? 0
+        let priceVal = price.isEmpty ? nil : price
+        let doubanURLVal = doubanURL
+        let bookTypeVal = bookType
+        let bookDescVal = bookDescription.isEmpty ? nil : bookDescription
+        let authorDescVal = authorDescription.isEmpty ? nil : authorDescription
+        let coverURLVal = coverImageURL
+        let rawCover = coverImageData
+        let statusVal = readingStatus
+        let ratingVal = rating
+        let shelfID = selectedBookshelf?.persistentModelID
+        let tagNames = Array(selectedTags)
         let source: AddSource = scannedISBN != nil ? .scanned : .manual
-        book.addSource = source
 
-        // 记录添加历史
-        let record = ImportRecord(
-            source: source.rawValue,
-            totalCount: 1,
-            successCount: 1
-        )
-        modelContext.insert(record)
-
-        modelContext.insert(book)
         dismiss()
+
+        Task.detached(priority: .userInitiated) {
+            let bg = ModelContext(container)
+            bg.autosaveEnabled = false
+
+            let book = Book(
+                title: titleVal,
+                author: authorVal,
+                isbn: isbnVal,
+                publisher: publisherVal,
+                totalPages: totalPagesVal,
+                price: priceVal,
+                doubanURL: doubanURLVal,
+                bookType: bookTypeVal,
+                bookDescription: bookDescVal,
+                authorDescription: authorDescVal,
+                coverImageURL: coverURLVal
+            )
+            book.coverImageData = rawCover.map { CoverImageProcessor.thumbnailData(from: $0) }  // 大图先压缩略图（后台线程）
+            book.status = statusVal
+            book.statusChangedDate = Date()
+            book.rating = ratingVal
+            book.addSource = source
+
+            // 书架：来自主 context @Query，按 ID 在后台 context 重新取
+            if let shelfID, let shelf = bg.model(for: shelfID) as? Bookshelf {
+                book.bookshelf = shelf
+            }
+            // 标签：按名字在后台 context 查找或创建（与 BatchTagView.applyTags 一致）
+            if !tagNames.isEmpty {
+                let existing = (try? bg.fetch(FetchDescriptor<Tag>())) ?? []
+                var tagMap = Dictionary(existing.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+                var bookTags: [Tag] = []
+                for name in tagNames {
+                    if let tag = tagMap[name] {
+                        bookTags.append(tag)
+                    } else {
+                        let tag = Tag(name: name)
+                        bg.insert(tag)
+                        tagMap[name] = tag
+                        bookTags.append(tag)
+                    }
+                }
+                book.tags = bookTags
+            }
+
+            bg.insert(book)
+            bg.insert(ImportRecord(source: source.rawValue, totalCount: 1, successCount: 1))
+            try? bg.save()
+        }
     }
 
     // MARK: - Tag Creation
 
     private func createNewTag() {
-        guard !newTagName.isEmpty else { return }
-        let tag = Tag(name: newTagName.trimmingCharacters(in: .whitespaces))
-        modelContext.insert(tag)
-        selectedTags.insert(tag)
+        let trimmed = newTagName.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        // 只记标签名（Set<String> 天然按名去重）；真正落库在 saveBook 的后台 context
+        // 按名查找或创建（避免往主 context 插孤儿标签 / 跨 context 竞态）。
+        selectedTags.insert(trimmed)
         newTagName = ""
     }
 }
@@ -459,13 +517,13 @@ struct AddBookView: View {
 // MARK: - Tag Chip View
 
 struct TagChip: View {
-    let tag: Tag
+    let name: String
     let isSelected: Bool
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Text(tag.name)
+            Text(name)
                 .font(.caption)
                 .fontWeight(.medium)
                 .padding(.horizontal, 10)
