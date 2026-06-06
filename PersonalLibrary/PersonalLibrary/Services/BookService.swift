@@ -17,10 +17,14 @@ class BookService {
         return nil
     }
 
+    /// 当月零点（1 号 00:00）。日历计算理论上不会失败，但避免强解包导致崩溃。
+    static func startOfCurrentMonth(now: Date = Date(), calendar: Calendar = .current) -> Date? {
+        calendar.date(from: calendar.dateComponents([.year, .month], from: now))
+    }
+
     /// 获取本月阅读统计
     func monthlyStats() -> (pagesRead: Int, minutesRead: Int, booksFinished: Int) {
-        let calendar = Calendar.current
-        let startOfMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: Date()))!
+        guard let startOfMonth = Self.startOfCurrentMonth() else { return (0, 0, 0) }
 
         let descriptor = FetchDescriptor<ReadingRecord>(
             predicate: #Predicate<ReadingRecord> { record in
@@ -37,9 +41,8 @@ class BookService {
         let allBooksDescriptor = FetchDescriptor<Book>()
         let allBooks = (try? modelContext.fetch(allBooksDescriptor)) ?? []
         let booksFinished = allBooks.filter { book in
-            book.status == .finished &&
-            book.finishedDate != nil &&
-            book.finishedDate! >= startOfMonth
+            guard book.status == .finished, let finished = book.finishedDate else { return false }
+            return finished >= startOfMonth
         }.count
 
         return (pages, minutes, booksFinished)

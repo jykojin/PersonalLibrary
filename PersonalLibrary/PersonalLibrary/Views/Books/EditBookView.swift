@@ -43,6 +43,8 @@ struct EditBookView: View {
     @State private var showCamera = false
     @State private var showWebSearch = false
     @State private var selectedPhotoItem: PhotosPickerItem?
+    /// 选定/搜到的原图，进裁剪编辑器；裁剪确定后才落地为封面
+    @State private var cropTarget: CropTarget?
 
     // 智能补全
     @State private var isAutoFilling = false
@@ -75,7 +77,12 @@ struct EditBookView: View {
             .onAppear { loadBookData() }
             .sheet(isPresented: $showWebSearch) {
                 CoverWebSearchView(bookTitle: title, bookAuthor: author) { imageData in
-                    coverData = imageData
+                    coverData = imageData  // 已在搜索页内部裁剪+压缩（§4.1）
+                }
+            }
+            .fullScreenCover(item: $cropTarget) { target in
+                CoverCropView(image: target.image) { cropped in
+                    applyCroppedCover(cropped)
                 }
             }
             .sheet(isPresented: $showDatePicker) {
@@ -118,7 +125,7 @@ struct EditBookView: View {
                         .onChange(of: selectedPhotoItem) { _, newItem in
                             Task {
                                 if let data = try? await newItem?.loadTransferable(type: Data.self) {
-                                    coverData = data
+                                    presentCrop(data)
                                 }
                             }
                         }
@@ -157,7 +164,7 @@ struct EditBookView: View {
             .padding(.vertical, 8)
             .fullScreenCover(isPresented: $showCamera) {
                 CameraCaptureView { imageData in
-                    coverData = imageData
+                    presentCrop(imageData)
                 }
             }
         }
@@ -377,6 +384,24 @@ struct EditBookView: View {
                 }
             }
         }
+    }
+
+    // MARK: - 封面裁剪
+
+    /// 任意来源拿到原图字节后，先进裁剪编辑器。
+    /// 用限尺寸解码（≤maxCropPixel）防 pixel-bomb OOM；解码失败则直接压缩原图兜底（不丢数据）。
+    private func presentCrop(_ data: Data?) {
+        guard let data, let image = CoverCropGeometry.decodeForCropping(data) else {
+            if let data { coverData = CoverImageProcessor.thumbnailData(from: data) }
+            return
+        }
+        cropTarget = CropTarget(image: image)
+    }
+
+    /// 裁剪确定后，统一压成缩略图（§4.1）再落地为封面
+    private func applyCroppedCover(_ image: UIImage) {
+        guard let jpeg = image.jpegData(compressionQuality: 0.9) else { return }
+        coverData = CoverImageProcessor.thumbnailData(from: jpeg)
     }
 
     // MARK: - 数据加载与保存
@@ -907,6 +932,8 @@ struct CoverWebSearchView: View {
     }
 
     @State private var engine: SearchEngine?
+    /// 长按选中、下载好的原图，进裁剪窗；取消则回到搜索结果（不关搜索页）
+    @State private var cropTarget: CropTarget?
 
     /// 搜索关键词（书名 + 作者，避免泛词稀释相关性）
     private var query: String {
@@ -918,9 +945,10 @@ struct CoverWebSearchView: View {
             Group {
                 if let engine {
                     CoverBrowser(url: CoverSearchURL.make(engine: engine, query: query)) { data in
-                        // 入口处统一压成缩略图（§4.1）后回传，并关闭
-                        onSelect(CoverImageProcessor.thumbnailData(from: data))
-                        dismiss()
+                        // 下载到原图，限尺寸解码后进裁剪窗（不在此压缩，保留分辨率给裁剪）
+                        if let image = CoverCropGeometry.decodeForCropping(data) {
+                            cropTarget = CropTarget(image: image)
+                        }
                     }
                     .ignoresSafeArea(edges: .bottom)
                     .navigationTitle(bookTitle.isEmpty ? "搜索封面" : bookTitle)
@@ -938,6 +966,15 @@ struct CoverWebSearchView: View {
                 if engine != nil {
                     ToolbarItem(placement: .primaryAction) {
                         Button("换引擎") { engine = nil }
+                    }
+                }
+            }
+            // 裁剪窗在搜索页内部弹出：取消 → 回搜索结果；确定 → 压缩回传并关闭搜索页
+            .fullScreenCover(item: $cropTarget) { target in
+                CoverCropView(image: target.image) { cropped in
+                    if let jpeg = cropped.jpegData(compressionQuality: 0.9) {
+                        onSelect(CoverImageProcessor.thumbnailData(from: jpeg))
+                        dismiss()
                     }
                 }
             }
@@ -989,7 +1026,9 @@ enum CoverSearchURL {
         case .google:
             s = "https://www.google.com/search?q=\(q)&tbm=isch"
         case .baidu:
-            s = "https://image.baidu.com/search/index?tn=baiduimage&word=\(q)"
+            // 移动端图片搜索入口：版式响应式、对非标准 UA 的风控比 PC 站宽松。
+            // tn=vsearch&atn=page 必带，否则 m.baidu.com 会把请求重定向回首页、不执行搜索。
+            s = "https://m.baidu.com/sf/vsearch?pd=image_content&tn=vsearch&atn=page&word=\(q)"
         case .bing:
             s = "https://www.bing.com/images/search?q=\(q)"
         }
@@ -1034,13 +1073,17 @@ enum CoverImageBytes {
     /// 改为阻断内网目标，兼顾安全与可用。
     static func isDownloadable(_ src: String) -> Bool {
         guard let url = URL(string: src), url.scheme == "https",
-              let host = url.host?.lowercased(), !host.isEmpty,
+              let rawHost = url.host?.lowercased(), !rawHost.isEmpty,
               // host 不能只由点组成（"." / ".jpg" 等畸形 host）
-              !host.allSatisfy({ $0 == "." }), host.first != "." else { return false }
+              !rawHost.allSatisfy({ $0 == "." }), rawHost.first != "." else { return false }
+        // 先把十进制/八进制/十六进制等非点分 IPv4 编码规范化成点分十进制，
+        // 否则 "2130706433"/"0x7f.0.0.1" 这类会绕过下面的 hasPrefix 网段检查（SSRF）。
+        let host = canonicalizedIPv4(rawHost) ?? rawHost
         // localhost / .local
         if host == "localhost" || host.hasSuffix(".local") { return false }
         // IPv4 回环 / 任意地址 / 内网网段 / link-local
         if host == "127.0.0.1" || host == "0.0.0.0" { return false }
+        if host.hasPrefix("127.") { return false }   // 整个 127/8 回环段
         if host.hasPrefix("10.") || host.hasPrefix("192.168.")
             || host.hasPrefix("169.254.") { return false }
         // 172.16.0.0–172.31.255.255
@@ -1048,9 +1091,31 @@ enum CoverImageBytes {
             let parts = host.split(separator: ".")
             if parts.count >= 2, let second = Int(parts[1]), (16...31).contains(second) { return false }
         }
-        // IPv6（URL.host 已去掉方括号）：回环 ::1、link-local fe80::/10、ULA fc00::/7
+        // IPv6（URL.host 已去掉方括号）：回环 ::1、link-local fe80::/10、ULA fc00::/7、IPv4 映射
         if host == "::1" || host.hasPrefix("fe80:") || host.hasPrefix("fc") || host.hasPrefix("fd") { return false }
+        if host.hasPrefix("::ffff:") { return false }   // IPv4-mapped IPv6，避免映射内网地址绕过
         return true
+    }
+
+    /// 把任意合法 IPv4 表示（十进制 2130706433 / 十六进制 0xc0a80101 / 八进制 / 点分混合）
+    /// 规范化成点分十进制 "a.b.c.d"；非 IPv4 主机（域名/IPv6）返回 nil。
+    /// 用 inet_aton（支持所有历史 IPv4 写法），再用 inet_ntop 转回标准点分。
+    static func canonicalizedIPv4(_ host: String) -> String? {
+        // 必须全部由 IPv4 允许的字符组成，排除域名（含字母 g-z、连字符等）
+        guard !host.isEmpty,
+              host.allSatisfy({ $0.isHexDigit || $0 == "." || $0 == "x" || $0 == "X" }) else { return nil }
+        var addr = in_addr()
+        guard inet_aton(host, &addr) == 1 else { return nil }
+        var buf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+        guard inet_ntop(AF_INET, &addr, &buf, socklen_t(INET_ADDRSTRLEN)) != nil else { return nil }
+        return String(cString: buf)
+    }
+
+    /// 剥离 HTTP 头值里的 CR/LF 与控制字符，防止页面可控的 navigator.userAgent
+    /// 注入额外请求头（CRLF injection）。
+    static func sanitizeHeaderValue(_ value: String) -> String {
+        value.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7F }
+            .reduce(into: "") { $0.unicodeScalars.append($1) }
     }
 }
 
@@ -1073,7 +1138,7 @@ private struct CoverBrowser: UIViewRepresentable {
 
         let web = WKWebView(frame: .zero, configuration: cfg)
         web.allowsBackForwardNavigationGestures = true
-        web.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+        // 不设 customUserAgent：用系统默认 Safari UA，更像真实浏览器，降低被风控/弹验证码概率
         web.load(URLRequest(url: url))
 
         // iOS WKWebView 不触发 JS contextmenu，改用原生长按手势 + elementFromPoint 取 img src
@@ -1133,8 +1198,26 @@ private struct CoverBrowser: UIViewRepresentable {
             """
             webView.evaluateJavaScript(js) { [weak self] result, _ in
                 guard let self, let src = result as? String, !src.isEmpty else { return }
-                self.handle(src: src)
+                // evaluateJavaScript 回调线程不保证主线程，present UIAlertController 必须切主线程
+                DispatchQueue.main.async { self.confirmSelection(src: src, at: pt) }
             }
+        }
+
+        /// 长按命中图片后，弹「选做封面 / 取消」确认菜单，确认才下载
+        private func confirmSelection(src: String, at point: CGPoint) {
+            guard let webView, let presenter = webView.findViewController(),
+                  presenter.presentedViewController == nil else { return }  // 防连续长按重复弹出
+            let sheet = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
+            sheet.addAction(UIAlertAction(title: "选做封面", style: .default) { [weak self] _ in
+                self?.handle(src: src)
+            })
+            sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
+            // iPad：actionSheet 需锚点，锚到长按位置避免崩溃
+            if let pop = sheet.popoverPresentationController {
+                pop.sourceView = webView
+                pop.sourceRect = CGRect(origin: point, size: .zero)
+            }
+            presenter.present(sheet, animated: true)
         }
 
         // 三层取字节：data-uri 直接解码 / 否则带 Referer 下载
@@ -1144,9 +1227,20 @@ private struct CoverBrowser: UIViewRepresentable {
                 return
             }
             guard CoverImageBytes.isDownloadable(src), let url = URL(string: src) else { return }
+            let referer = CoverImageBytes.referer(for: webView?.url)
+            // 取浏览器真实 UA，保持下载与浏览一致（防盗链/风控对 UA 不一致敏感）
+            webView?.evaluateJavaScript("navigator.userAgent") { [weak self] ua, _ in
+                self?.download(url: url, referer: referer, userAgent: ua as? String)
+            }
+        }
+
+        private func download(url: URL, referer: String, userAgent: String?) {
             var req = URLRequest(url: url)
-            req.setValue(CoverImageBytes.referer(for: webView?.url), forHTTPHeaderField: "Referer")
-            req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
+            req.setValue(CoverImageBytes.sanitizeHeaderValue(referer), forHTTPHeaderField: "Referer")
+            // userAgent 取自页面可控的 navigator.userAgent，剥离 CRLF 防头注入
+            if let userAgent {
+                req.setValue(CoverImageBytes.sanitizeHeaderValue(userAgent), forHTTPHeaderField: "User-Agent")
+            }
             req.timeoutInterval = 15
             URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
                 guard let self, let data, CoverImageBytes.isAcceptable(data) else { return }
@@ -1157,6 +1251,18 @@ private struct CoverBrowser: UIViewRepresentable {
         private func deliver(_ data: Data) {
             DispatchQueue.main.async { self.onPick(data) }
         }
+    }
+}
+
+private extension UIView {
+    /// 沿响应链找到承载本视图的 UIViewController，用于 present 确认菜单
+    func findViewController() -> UIViewController? {
+        var responder: UIResponder? = self
+        while let next = responder?.next {
+            if let vc = next as? UIViewController { return vc }
+            responder = next
+        }
+        return nil
     }
 }
 

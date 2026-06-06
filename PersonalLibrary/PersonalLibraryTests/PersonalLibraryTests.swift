@@ -3968,14 +3968,19 @@ struct CoverImageProcessorTests {
         return img.jpegData(compressionQuality: 1.0)!
     }
 
-    @Test("大图被压成 ≤400px 且体积更小")
+    @Test("大图被压成 ≤maxPixelSize 且体积更小")
     func largeImageDownsampled() throws {
-        let big = makeNoisyJPEG(side: 1500)
+        let big = makeNoisyJPEG(side: 2000)
         #expect(big.count > CoverImageProcessor.passthroughBelowBytes, "测试图应足够大以触发压缩")
         let thumb = CoverImageProcessor.thumbnailData(from: big)
         #expect(thumb.count < big.count, "缩略图应更小")
         let ui = try #require(UIImage(data: thumb))
-        #expect(max(ui.size.width, ui.size.height) <= 401, "最长边应 ≤400px")
+        #expect(max(ui.size.width, ui.size.height) <= CoverImageProcessor.maxPixelSize + 1, "最长边应 ≤maxPixelSize")
+    }
+
+    @Test("maxPixelSize 为 800（详情页 3x 屏不虚）")
+    func maxPixelSizeIs800() {
+        #expect(CoverImageProcessor.maxPixelSize == 800)
     }
 
     @Test("已经很小的数据原样返回")
@@ -4196,12 +4201,13 @@ struct CoverSearchURLTests {
         #expect(!s.contains(" "))
     }
 
-    @Test("百度图片搜索 URL：baiduimage + word 参数")
+    @Test("百度图片搜索 URL：移动端 m.baidu.com + word 参数")
     func baiduURL() {
         let url = CoverSearchURL.make(engine: .baidu, query: "瓷器中国")
         let s = url.absoluteString
-        #expect(s.hasPrefix("https://image.baidu.com/search/index?"))
-        #expect(s.contains("tn=baiduimage"))
+        #expect(s.hasPrefix("https://m.baidu.com/sf/vsearch?"))
+        #expect(s.contains("pd=image_content"))
+        #expect(s.contains("tn=vsearch"))
         #expect(s.contains("word="))
         #expect(!s.contains("瓷器"))
     }
@@ -4371,5 +4377,254 @@ struct CoverHardeningTests {
         let original = Data(repeating: 0xAB, count: 200)
         let withGarbage = "data:image/png;base64," + original.base64EncodedString() + "!!!!"
         #expect(CoverImageBytes.decodeDataURI(withGarbage) == original)
+    }
+
+    @Test("isDownloadable：阻断十进制/八进制/十六进制 IP 编码绕过（SSRF）")
+    func downloadableBlocksNumericIPEncodings() {
+        // 2130706433 = 127.0.0.1
+        #expect(!CoverImageBytes.isDownloadable("https://2130706433/a.jpg"))
+        // 0x7f.0.0.1 / 0xc0a80101 = 127.0.0.1 / 192.168.1.1
+        #expect(!CoverImageBytes.isDownloadable("https://0x7f.0.0.1/a.jpg"))
+        #expect(!CoverImageBytes.isDownloadable("https://0xc0a80101/a.jpg"))
+        // 八进制 0177.0.0.1 = 127.0.0.1
+        #expect(!CoverImageBytes.isDownloadable("https://0177.0.0.1/a.jpg"))
+        // AWS 元数据端点十进制 2852039166 = 169.254.169.254
+        #expect(!CoverImageBytes.isDownloadable("https://2852039166/latest/meta-data/"))
+    }
+
+    @Test("isDownloadable：公网域名/IP 仍放行（数值校验不误杀）")
+    func downloadableStillAllowsPublic() {
+        #expect(CoverImageBytes.isDownloadable("https://img.baidu.com/a.jpg"))
+        #expect(CoverImageBytes.isDownloadable("https://8.8.8.8/a.jpg"))
+    }
+
+    @Test("sanitizeHeaderValue：剥离 CRLF 防 HTTP 头注入")
+    func sanitizeStripsCRLF() {
+        let evil = "Bot\r\nAuthorization: Bearer x\r\nX-Injected: 1"
+        let clean = CoverImageBytes.sanitizeHeaderValue(evil)
+        #expect(!clean.contains("\r"))
+        #expect(!clean.contains("\n"))
+        // 正常 UA 不被破坏
+        let ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)"
+        #expect(CoverImageBytes.sanitizeHeaderValue(ua) == ua)
+    }
+}
+
+// MARK: - Cover Crop Geometry Tests
+
+@Suite("Cover Crop Geometry Tests")
+struct CoverCropGeometryTests {
+
+    /// 生成一张左右两半不同纯色的 .up 图（左红右蓝），便于按区域断言裁剪结果
+    private func makeHalvesImage(width: CGFloat, height: CGFloat,
+                                 left: UIColor, right: UIColor) -> UIImage {
+        let fmt = UIGraphicsImageRendererFormat()
+        fmt.scale = 1                 // 让 size(pt) == 像素，断言更直观
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: width, height: height), format: fmt)
+        return renderer.image { ctx in
+            left.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: width / 2, height: height))
+            right.setFill()
+            ctx.fill(CGRect(x: width / 2, y: 0, width: width / 2, height: height))
+        }
+    }
+
+    /// 读取烘焙后位图在给定像素点（左上原点）的 RGB
+    private func color(at point: CGPoint, in image: UIImage) -> (r: UInt8, g: UInt8, b: UInt8)? {
+        guard let cg = image.cgImage else { return nil }
+        var px: [UInt8] = [0, 0, 0, 0]
+        let cs = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(data: &px, width: 1, height: 1, bitsPerComponent: 8,
+                                  bytesPerRow: 4, space: cs,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        // 把目标像素平移到 1x1 画布原点；CG 坐标系左下原点，故 y 取 (h-1-point.y)
+        ctx.draw(cg, in: CGRect(x: -point.x, y: -(CGFloat(cg.height) - 1 - point.y),
+                                width: CGFloat(cg.width), height: CGFloat(cg.height)))
+        return (px[0], px[1], px[2])
+    }
+
+    @Test("normalizedRect：无缩放无偏移、裁剪框等于图 → 整图 (0,0,1,1)")
+    func identity() {
+        let r = CoverCropGeometry.normalizedRect(
+            contentOffset: .zero, zoomScale: 1,
+            cropFrame: CGRect(x: 0, y: 0, width: 100, height: 150),
+            fitSize: CGSize(width: 100, height: 150))
+        #expect(abs(r.minX) < 0.001 && abs(r.minY) < 0.001)
+        #expect(abs(r.width - 1) < 0.001 && abs(r.height - 1) < 0.001)
+    }
+
+    @Test("normalizedRect：2x 缩放居中 → 选中中心 1/4")
+    func zoomCenter() {
+        // scrollview 窗口 100x100，2x 放大后内容 200x200，居中偏移 (50,50)，裁剪框=整窗
+        let r = CoverCropGeometry.normalizedRect(
+            contentOffset: CGPoint(x: 50, y: 50), zoomScale: 2,
+            cropFrame: CGRect(x: 0, y: 0, width: 100, height: 100),
+            fitSize: CGSize(width: 100, height: 100))
+        #expect(abs(r.minX - 0.25) < 0.001 && abs(r.minY - 0.25) < 0.001)
+        #expect(abs(r.width - 0.5) < 0.001 && abs(r.height - 0.5) < 0.001)
+    }
+
+    @Test("normalizedRect：越界（回弹负偏移）被夹回单位方框")
+    func clampToUnit() {
+        let r = CoverCropGeometry.normalizedRect(
+            contentOffset: CGPoint(x: -20, y: -20), zoomScale: 1,
+            cropFrame: CGRect(x: 0, y: 0, width: 100, height: 100),
+            fitSize: CGSize(width: 100, height: 100))
+        // (-0.2,-0.2,1,1) ∩ (0,0,1,1) = (0,0,0.8,0.8)
+        #expect(abs(r.minX) < 0.001 && abs(r.minY) < 0.001)
+        #expect(abs(r.width - 0.8) < 0.001 && abs(r.height - 0.8) < 0.001)
+    }
+
+    @Test("normalizedRect：fitSize 为 0 不崩溃，返回零矩形")
+    func zeroFitSize() {
+        let r = CoverCropGeometry.normalizedRect(
+            contentOffset: .zero, zoomScale: 1,
+            cropFrame: CGRect(x: 0, y: 0, width: 100, height: 100),
+            fitSize: .zero)
+        #expect(r == .zero)
+    }
+
+    @Test("crop：左半归一化矩形 → 输出宽为原图一半")
+    func cropSize() throws {
+        let img = makeHalvesImage(width: 200, height: 100, left: .red, right: .blue)
+        let out = try #require(CoverCropGeometry.crop(img, to: CGRect(x: 0, y: 0, width: 0.5, height: 1)))
+        #expect(out.cgImage!.width == 100)
+        #expect(out.cgImage!.height == 100)
+    }
+
+    @Test("crop：空/退化矩形返回 nil")
+    func cropEmptyNil() {
+        let img = makeHalvesImage(width: 100, height: 100, left: .red, right: .blue)
+        #expect(CoverCropGeometry.crop(img, to: .zero) == nil)
+        #expect(CoverCropGeometry.crop(img, to: CGRect(x: 2, y: 2, width: 1, height: 1)) == nil)
+    }
+
+    @Test("crop：.down 朝向先烘焙再裁剪 — 显示左半取到的是显示左侧的颜色")
+    func cropRespectsOrientation() throws {
+        // 存储图左红右蓝；包成 .down（旋转 180°）后，显示左半 = 存储右半 = 蓝
+        let base = makeHalvesImage(width: 100, height: 100, left: .red, right: .blue)
+        let down = UIImage(cgImage: base.cgImage!, scale: 1, orientation: .down)
+        let out = try #require(CoverCropGeometry.crop(down, to: CGRect(x: 0, y: 0, width: 0.5, height: 1)))
+        let c = try #require(color(at: CGPoint(x: 25, y: 50), in: out))
+        // 蓝：b 远大于 r
+        #expect(c.b > 200 && c.r < 80)
+    }
+
+    @Test("decodeForCropping：超大图被降采样到 ≤ maxCropPixel（防 pixel-bomb OOM）")
+    func decodeBoundsHugeImage() throws {
+        // 3000px 噪声图 → JPEG，解码时应被限到 ≤2048px，不全量解码
+        let fmt = UIGraphicsImageRendererFormat()
+        fmt.scale = 1
+        let big = UIGraphicsImageRenderer(size: CGSize(width: 3000, height: 1500), format: fmt).image { ctx in
+            for _ in 0..<2000 {
+                UIColor(red: .random(in: 0...1), green: .random(in: 0...1),
+                        blue: .random(in: 0...1), alpha: 1).setFill()
+                ctx.fill(CGRect(x: .random(in: 0..<3000), y: .random(in: 0..<1500),
+                                width: 30, height: 30))
+            }
+        }
+        let data = big.jpegData(compressionQuality: 0.8)!
+        let decoded = try #require(CoverCropGeometry.decodeForCropping(data))
+        let maxSide = max(decoded.size.width * decoded.scale, decoded.size.height * decoded.scale)
+        #expect(maxSide <= CoverCropGeometry.maxCropPixel + 1)
+    }
+
+    @Test("decodeForCropping：坏数据返回 nil")
+    func decodeBadDataNil() {
+        #expect(CoverCropGeometry.decodeForCropping(Data(repeating: 0, count: 64)) == nil)
+    }
+
+    @Test("decodeForCropping：小图不被放大")
+    func decodeSmallNotUpscaled() throws {
+        let small = makeHalvesImage(width: 120, height: 80, left: .red, right: .blue)
+        let data = small.jpegData(compressionQuality: 1)!
+        let decoded = try #require(CoverCropGeometry.decodeForCropping(data))
+        let maxSide = max(decoded.size.width * decoded.scale, decoded.size.height * decoded.scale)
+        #expect(maxSide <= 121)   // 原图 120px，不应被放大
+    }
+
+    @Test("rotated90：顺时针旋转后宽高互换")
+    func rotateSwapsDimensions() throws {
+        let img = makeHalvesImage(width: 200, height: 100, left: .red, right: .blue)
+        let out = try #require(CoverCropGeometry.rotated90(img, clockwise: true))
+        #expect(out.cgImage!.width == 100)
+        #expect(out.cgImage!.height == 200)
+    }
+
+    @Test("rotated90：顺时针 — 原图左侧(红)转到顶部")
+    func rotateClockwisePixels() throws {
+        // 左红右蓝，顺时针 90°：原图左边缘 → 转到顶边。取顶部中点应为红
+        let img = makeHalvesImage(width: 200, height: 100, left: .red, right: .blue)
+        let out = try #require(CoverCropGeometry.rotated90(img, clockwise: true))  // 100x200
+        let c = try #require(color(at: CGPoint(x: 50, y: 20), in: out))
+        #expect(c.r > 200 && c.b < 80)
+    }
+
+    @Test("rotated90：逆时针 — 原图左侧(红)转到底部")
+    func rotateCounterClockwisePixels() throws {
+        let img = makeHalvesImage(width: 200, height: 100, left: .red, right: .blue)
+        let out = try #require(CoverCropGeometry.rotated90(img, clockwise: false))  // 100x200
+        let c = try #require(color(at: CGPoint(x: 50, y: 180), in: out))
+        #expect(c.r > 200 && c.b < 80)
+    }
+}
+
+// MARK: - 全量审计修复：封面域名白名单 / CSV 注入 / 月度统计健壮性
+
+@Suite("Cover Domain Policy Tests")
+struct CoverDomainPolicyTests {
+
+    @Test("白名单域名及其子域放行")
+    func allowsWhitelistAndSubdomains() {
+        #expect(CoverImageDomainPolicy.isAllowed("https://img1.doubanio.com/view/a.jpg"))
+        #expect(CoverImageDomainPolicy.isAllowed("https://covers.openlibrary.org/b/id/1.jpg"))
+        #expect(CoverImageDomainPolicy.isAllowed("https://books.google.com/c.jpg"))
+    }
+
+    @Test("后缀冒充域名被拒（doubanio.com 不放行 evildoubanio.com）")
+    func rejectsSuffixSpoofing() {
+        // hasSuffix("doubanio.com") 的旧实现会误放行这些
+        #expect(!CoverImageDomainPolicy.isAllowed("https://evildoubanio.com/a.jpg"))
+        #expect(!CoverImageDomainPolicy.isAllowed("https://notdouban.com/a.jpg"))
+        #expect(!CoverImageDomainPolicy.isAllowed("https://doubanio.com.evil.com/a.jpg"))
+    }
+
+    @Test("非白名单域名/非 https 被拒")
+    func rejectsNonWhitelistAndNonHTTPS() {
+        #expect(!CoverImageDomainPolicy.isAllowed("https://example.com/a.jpg"))
+        #expect(!CoverImageDomainPolicy.isAllowed("ftp://doubanio.com/a.jpg"))
+        #expect(!CoverImageDomainPolicy.isAllowed("not a url"))
+    }
+}
+
+@Suite("CSV Injection Safety Tests")
+struct CSVInjectionSafetyTests {
+
+    @Test("公式注入前缀字符被前置单引号转义")
+    func escapesFormulaPrefixes() {
+        #expect(ExcelImportExportService.csvSafeField("=cmd|'/c calc'!A1").hasPrefix("'="))
+        #expect(ExcelImportExportService.csvSafeField("+1+1").hasPrefix("'+"))
+        #expect(ExcelImportExportService.csvSafeField("-2").hasPrefix("'-"))
+        #expect(ExcelImportExportService.csvSafeField("@SUM(1)").hasPrefix("'@"))
+    }
+
+    @Test("普通文本不被改动，制表符仍替换为空格")
+    func leavesNormalTextIntact() {
+        #expect(ExcelImportExportService.csvSafeField("红楼梦") == "红楼梦")
+        #expect(ExcelImportExportService.csvSafeField("a\tb") == "a b")
+        #expect(ExcelImportExportService.csvSafeField("") == "")
+    }
+}
+
+@Suite("BookService Robustness Tests")
+struct BookServiceRobustnessTests {
+
+    @Test("startOfCurrentMonth 返回当月零点（不崩溃）")
+    func startOfMonthValid() throws {
+        let start = try #require(BookService.startOfCurrentMonth())
+        let comps = Calendar.current.dateComponents([.day, .hour, .minute], from: start)
+        #expect(comps.day == 1)
+        #expect(comps.hour == 0)
+        #expect(comps.minute == 0)
     }
 }

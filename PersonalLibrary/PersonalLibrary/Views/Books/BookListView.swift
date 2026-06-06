@@ -81,6 +81,11 @@ struct BookListView: View {
                 // 搜索栏
                 searchBar
 
+                // 高级搜索结果提示条（仅搜索态显示，提供一键清除）
+                if let advResults = advancedSearchResults {
+                    advancedSearchBanner(count: advResults.count)
+                }
+
                 // 书架切换栏
                 shelfTabBar
 
@@ -353,6 +358,28 @@ struct BookListView: View {
         .padding(.horizontal, 16)
         .padding(.top, 8)
         .padding(.bottom, 4)
+    }
+
+    // 高级搜索结果提示条：左侧标明当前是搜索结果，右侧一键清除回到全部藏书
+    private func advancedSearchBanner(count: Int) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "slider.horizontal.3")
+                .font(.caption)
+            Text("高级搜索结果（\(count) 本）")
+                .font(.subheadline)
+            Spacer()
+            Button {
+                advancedSearchResults = nil
+                recomputeFilteredBooks()
+            } label: {
+                Label("清除", systemImage: "xmark.circle.fill")
+                    .font(.subheadline)
+            }
+        }
+        .foregroundStyle(.orange)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(Color.orange.opacity(0.1))
     }
 
     private func searchScopeChip(scope: SearchScope) -> some View {

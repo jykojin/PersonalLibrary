@@ -44,6 +44,7 @@
 		A490080504DE0091F1993BE0 /* ExcelImportExportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D2E3C7560B14260793E3C54 /* ExcelImportExportService.swift */; };
 		A8381A1722F0F43B5228D813 /* Bookshelf.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC5361797A17134EBBC3B518 /* Bookshelf.swift */; };
 		A931AF1221AB2786C34C6D85 /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 0A5F617F7BA886A2A83F6679 /* Preview Assets.xcassets */; };
+		AD56679DFB3E3A3F966EB435 /* CoverCropView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A25D1B101F56BEB8C95F0082 /* CoverCropView.swift */; };
 		B156F621F880FF7035F11EB6 /* ImportRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80C26F79C497CEB88D3F5327 /* ImportRecord.swift */; };
 		B46C376CEDC2632F7B5943EB /* AddReadingRecordView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C804FF15BDE4A5A85C367911 /* AddReadingRecordView.swift */; };
 		C2BF102B722D1457EC5F5DFF /* StorageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDB95BE34A79F5D4E93F7D3C /* StorageManager.swift */; };
@@ -55,6 +56,7 @@
 		D6604DA46AB87AF827C2BB9A /* CoverImageProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D6AA34AA4A9D56280684A15 /* CoverImageProcessor.swift */; };
 		E2BDFD0F0D246A80DF84ED14 /* DataBackupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C28FE3D9EE058BC7758DDF70 /* DataBackupView.swift */; };
 		E4F62D5464026A921EBCB6E4 /* DoubanDescriptionFetcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4D9FBC97AC9CCCC3F252253 /* DoubanDescriptionFetcher.swift */; };
+		E5233B3AC501F8612B326BD7 /* CoverCropGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56552317E89338924CCE6DE1 /* CoverCropGeometry.swift */; };
 		E6E6169E7D9AD9BD37E5B956 /* AuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD70F02DDA17AEF6E793FE28 /* AuthService.swift */; };
 		E7E73C9ED56AB64680A0DBA6 /* AddBookView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B85318DE00198B35B0A6090 /* AddBookView.swift */; };
 		E8C05F80D343BE7A188CB096 /* WeReadSyncView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 705F4B59E1366B9C933D78BE /* WeReadSyncView.swift */; };
@@ -98,6 +100,7 @@
 		4E3F97857DF70CD057FA821D /* FileLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileLogger.swift; sourceTree = "<group>"; };
 		5139540D5CB335C7D3C65206 /* WeReadSkillSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeReadSkillSetupView.swift; sourceTree = "<group>"; };
 		527950641E4AC110D1BE65C5 /* BookDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookDetailView.swift; sourceTree = "<group>"; };
+		56552317E89338924CCE6DE1 /* CoverCropGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoverCropGeometry.swift; sourceTree = "<group>"; };
 		5D6AA34AA4A9D56280684A15 /* CoverImageProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoverImageProcessor.swift; sourceTree = "<group>"; };
 		5F0A0333C6DF63A521270EF4 /* AppLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLogger.swift; sourceTree = "<group>"; };
 		5F1F4735287F12B60CE6CEE6 /* ReadingRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingRecord.swift; sourceTree = "<group>"; };
@@ -116,6 +119,7 @@
 		8BBD6F76EC899152EEF4314A /* PersonalLibrary.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PersonalLibrary.entitlements; sourceTree = "<group>"; };
 		9144AAAF1F9DE1D5893AF89A /* PersonalLibrary.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PersonalLibrary.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9B85318DE00198B35B0A6090 /* AddBookView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddBookView.swift; sourceTree = "<group>"; };
+		A25D1B101F56BEB8C95F0082 /* CoverCropView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoverCropView.swift; sourceTree = "<group>"; };
 		A95E2C460974691EB8538BB5 /* ImportHistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportHistoryView.swift; sourceTree = "<group>"; };
 		AD70F02DDA17AEF6E793FE28 /* AuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthService.swift; sourceTree = "<group>"; };
 		AE64F2E7B6950EAE60EA9D19 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -303,6 +307,8 @@
 				13D0C01BAB671BED7B139079 /* AdvancedSearchView.swift */,
 				527950641E4AC110D1BE65C5 /* BookDetailView.swift */,
 				FD0C4ECB47E8B8E9F4E601D5 /* BookListView.swift */,
+				56552317E89338924CCE6DE1 /* CoverCropGeometry.swift */,
+				A25D1B101F56BEB8C95F0082 /* CoverCropView.swift */,
 				E8094BF7B50E8C310346BD62 /* EditBookView.swift */,
 				BDEC24B8D2A8205B1888FC19 /* FilteredBooksView.swift */,
 			);
@@ -494,6 +500,8 @@
 				A8381A1722F0F43B5228D813 /* Bookshelf.swift in Sources */,
 				5817492A88473ABA6FB56F9B /* BookshelfListView.swift in Sources */,
 				52D01BBD46ACCD3E5E5ABEAA /* ContentView.swift in Sources */,
+				E5233B3AC501F8612B326BD7 /* CoverCropGeometry.swift in Sources */,
+				AD56679DFB3E3A3F966EB435 /* CoverCropView.swift in Sources */,
 				EF65473F98061A197DD20854 /* CoverFetchService.swift in Sources */,
 				D6604DA46AB87AF827C2BB9A /* CoverImageProcessor.swift in Sources */,
 				E2BDFD0F0D246A80DF84ED14 /* DataBackupView.swift in Sources */,
@@ -676,7 +684,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.81;
+				MARKETING_VERSION = 0.82;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.PersonalLibrary;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -698,7 +706,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.81;
+				MARKETING_VERSION = 0.82;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.PersonalLibrary;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";

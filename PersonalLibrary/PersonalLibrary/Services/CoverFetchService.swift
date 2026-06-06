@@ -68,6 +68,27 @@ final class CoverImageCache: @unchecked Sendable {
     }
 }
 
+// MARK: - 封面域名白名单策略（独立出来便于单测）
+
+/// 校验封面图片 URL 是否在白名单域名内（仅 https）。
+/// 用精确的"等于或 .子域"匹配，避免 hasSuffix 被 evildoubanio.com 之类后缀冒充绕过（SSRF）。
+enum CoverImageDomainPolicy {
+    static let allowedDomains = [
+        "doubanio.com",
+        "douban.com",
+        "openlibrary.org",
+        "googleapis.com",
+        "books.google.com",
+        "covers.openlibrary.org"
+    ]
+
+    static func isAllowed(_ urlStr: String) -> Bool {
+        guard let url = URL(string: urlStr), url.scheme == "https",
+              let host = url.host?.lowercased(), !host.isEmpty else { return false }
+        return allowedDomains.contains { host == $0 || host.hasSuffix("." + $0) }
+    }
+}
+
 // MARK: - 封面获取服务
 
 /// 封面图片获取服务
@@ -276,24 +297,9 @@ actor CoverFetchService {
         }
     }
 
-    /// 允许下载封面的域名白名单
-    private static let allowedImageDomains = [
-        "doubanio.com",
-        "douban.com",
-        "openlibrary.org",
-        "googleapis.com",
-        "books.google.com",
-        "covers.openlibrary.org"
-    ]
-
     /// 验证 URL 是否在允许的域名白名单内
     private func isAllowedDomain(_ urlStr: String) -> Bool {
-        guard let url = URL(string: urlStr),
-              let host = url.host?.lowercased(),
-              url.scheme == "https" || url.scheme == "http" else {
-            return false
-        }
-        return Self.allowedImageDomains.contains { host.hasSuffix($0) }
+        CoverImageDomainPolicy.isAllowed(urlStr)
     }
 
     /// 下载豆瓣封面图片

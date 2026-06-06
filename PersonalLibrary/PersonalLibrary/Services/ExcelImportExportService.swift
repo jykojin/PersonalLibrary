@@ -469,7 +469,17 @@ actor ExcelImportExportService {
     }
 
     private func escapeField(_ field: String) -> String {
-        field.replacingOccurrences(of: "\t", with: " ")
+        Self.csvSafeField(field)
+    }
+
+    /// 导出字段安全化：制表符替换为空格；并对以 = + - @ 开头的字段前置单引号，
+    /// 防止用户输入（书名/笔记等）作为公式在 Excel/Numbers 打开时被执行（CSV 公式注入）。
+    static func csvSafeField(_ field: String) -> String {
+        let tabSafe = field.replacingOccurrences(of: "\t", with: " ")
+        if let first = tabSafe.first, "=+-@".contains(first) {
+            return "'" + tabSafe
+        }
+        return tabSafe
     }
 }
 

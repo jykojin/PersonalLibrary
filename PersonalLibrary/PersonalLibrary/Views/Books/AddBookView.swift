@@ -279,7 +279,7 @@ struct AddBookView: View {
             }
             .sheet(isPresented: $showWebSearch) {
                 CoverWebSearchView(bookTitle: title, bookAuthor: author) { imageData in
-                    coverImageData = imageData  // 已在 CoverWebSearchView 入口压成缩略图
+                    coverImageData = imageData  // 已在搜索页内部裁剪+压缩（§4.1）
                 }
             }
             .onChange(of: scannedISBN) { _, newValue in
