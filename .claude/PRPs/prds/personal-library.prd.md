@@ -1,6 +1,6 @@
 # PersonalLibrary (私人图书馆)
 
-> 注：本 PRD 是**回顾性产品文档** — 基于 v0.7 已实现状态整理而非前瞻规划。问题陈述、用户特征、成功指标都是事后归纳的假设，未经过结构化用户访谈验证。
+> 注：本 PRD 是**回顾性产品文档** — 基于 v0.83 已实现状态整理而非前瞻规划。问题陈述、用户特征、成功指标都是事后归纳的假设，未经过结构化用户访谈验证。
 
 ## Problem Statement
 
@@ -40,6 +40,7 @@ iOS 原生 app（SwiftUI + SwiftData），承担三类工作：
 - **DRM 内容播放** — 不读电子书内容（PDF/EPUB），只管理元数据
 - **手动标记电子书阅读进度** — 全靠微信读书同步，不接受脱离 WeRead 的手动维护
 - **图书推荐 / 算法发现** — 用户自己决定读什么
+- **微信账号登录体系** — 不做账号/OAuth；v0.83 已移除未完成的微信登录入口，数据归属设备本地 + iCloud
 
 ## Success Metrics
 
@@ -115,7 +116,7 @@ iOS 原生 app（SwiftUI + SwiftData），承担三类工作：
 
 ### MVP Scope
 
-> 已经超出 MVP，目前是 **v0.7** 的稳定版
+> 已经超出 MVP，目前是 **v0.83** 的稳定版
 
 最小验证版（已发布）：
 - 单本书添加 + 编辑
@@ -142,7 +143,7 @@ iOS 原生 app（SwiftUI + SwiftData），承担三类工作：
 
 ## Technical Approach
 
-**Feasibility**: 已实现（v0.7 已发布）
+**Feasibility**: 已实现（v0.83 已发布）
 
 ### Architecture Notes
 
@@ -183,14 +184,19 @@ iOS 原生 app（SwiftUI + SwiftData），承担三类工作：
 | 9 | 数据安全 | Keychain + 备份恢复 + iCloud | complete |
 | 10 | 性能优化 | DoubanRateLimiter + 并发 3 批量补全 | complete |
 | 11 | 版本管理 | 设置页显示版本号 + project.yml 占位 | complete |
+| 12 | 封面缩略图化 | CoverImageProcessor 统一压缩（≤800px），根治库膨胀/卡顿 | complete (v0.79) |
+| 13 | 封面体验 | 内置浏览器搜图（WKWebView 长按取图）+ 裁剪编辑器（缩放/裁剪/90° 旋转） | complete (v0.82) |
+| 14 | 安全加固 | SSRF（含数值 IP）/ CSV 注入 / HTTP 头注入 / pixel-bomb 防护 + 全量审计 | complete (v0.82) |
+| 15 | 健壮性与精简 | 容器创建失败容错启动（不闪退）+ 移除未完成的微信账号登录 | complete (v0.83) |
 
 ### Future Phases (TBD)
 
 | # | Phase | Description | Status |
 |---|-------|-------------|--------|
-| 12 | 后台任务 | BGProcessingTask 充电时唤醒补全 | deferred (low ROI) |
-| 13 | 数据导出标准格式 | JSON / Calibre OPDS | pending |
-| 14 | 阅读时间深度分析 | 按时段、按类别拆解 | pending |
+| 16 | 后台任务 | BGProcessingTask 充电时唤醒补全 | deferred (low ROI) |
+| 17 | 数据导出标准格式 | JSON / Calibre OPDS | pending |
+| 18 | 阅读时间深度分析 | 按时段、按类别拆解 | pending |
+| 19 | 大库性能 / 国际化 | body 重算优化、enum 中文 rawValue 迁移（见 PROJECT_NOTES 技术债） | pending |
 
 ---
 
@@ -207,6 +213,10 @@ iOS 原生 app（SwiftUI + SwiftData），承担三类工作：
 | 批量任务并发数 | 3 | 1 / 5 | 平衡速度与封禁风险 |
 | 取消机制 | withTaskCancellationHandler 桥接 detached | 共享变量 + isCancelled 轮询 | 标准 Swift 并发模式 |
 | 版本号管理 | project.yml MARKETING_VERSION 单源 | 散在多处 | xcodegen 自动注入 Info.plist |
+| 封面搜图实现 | 内置浏览器 WKWebView 长按取图 | 自己抓 URL 拼九宫格 | 相关性交给搜索引擎，规避防盗链与排序难题 |
+| 封面下载安全 | 域名/数值IP 规范化校验 + 限尺寸解码 | 仅 hasSuffix 白名单 | 防后缀冒充 SSRF 与 pixel-bomb OOM |
+| 微信账号登录 | 移除（保留微信读书 cookie 同步） | 做完 OAuth + 自建后端 | 功能未完成、与本地工具定位不符，同步已由 iCloud + 微信读书覆盖 |
+| 启动失败处理 | 降级内存安全模式 + 提示 | fatalError 闪退 | 不让用户误以为数据丢失，给备份/重试出路 |
 
 ---
 
@@ -229,5 +239,5 @@ iOS 原生 app（SwiftUI + SwiftData），承担三类工作：
 
 ---
 
-*Generated: 2026-05-30 (retrospective)*
-*Status: REFLECTIVE - documenting v0.7 as built, not pre-build planning*
+*Generated: 2026-05-30 (retrospective)，更新至 v0.83 (2026-06-06)*
+*Status: REFLECTIVE - documenting v0.83 as built, not pre-build planning*

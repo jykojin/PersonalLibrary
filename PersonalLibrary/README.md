@@ -1,7 +1,7 @@
 # PersonalLibrary (私人图书馆)
 
 > iOS 个人图书管理应用，帮助你追踪纸质书、电子书和有声书的阅读进度。
-> 当前版本: **v0.7**
+> 当前版本: **v0.83**
 
 ## 功能特性
 
@@ -20,6 +20,12 @@
 - **同步历史** — 查看每次同步的统计与结果
 - **限速保护** — 全局豆瓣 5 秒间隔避免 IP 封禁
 - **后台并发** — 批量补全 3 路并发，stop 按钮可即时取消
+
+### 封面管理
+- **多来源** — 网络搜索（内置浏览器 Google/百度/Bing 长按取图）/ 相册 / 拍照 / ISBN 自动下载
+- **内置浏览器搜图** — WKWebView 加载真实图片搜索页，长按图片确认后选用，相关性由搜索引擎负责
+- **裁剪编辑器** — 选定图片后可缩放、平移、自由比例裁剪、90° 旋转，确定后再设为封面
+- **统一缩略图化** — 所有来源的封面统一压成 ≤800px JPEG，避免大图内联导致数据库膨胀
 
 ### 阅读追踪
 - **状态机** — 想读 / 闲置 / 正在读 / 已读 / 弃读
@@ -50,7 +56,7 @@
 | 安全存储 | Keychain Services |
 | 网络 | URLSession (async/await) |
 | 并发 | Swift Concurrency (actors, TaskGroup) |
-| 测试 | Swift Testing framework (233+ tests) |
+| 测试 | Swift Testing framework (291+ tests) |
 
 ## 项目结构
 
@@ -74,14 +80,13 @@ PersonalLibrary/
 │   ├── ExcelImportExportService.swift  # XLSX 导入导出
 │   ├── BackupService.swift         # 数据库备份恢复
 │   ├── BookService.swift           # 共享操作（标签查找、图片下载）
-│   ├── StorageManager.swift        # SwiftData 容器
-│   ├── AuthService.swift           # 微信登录 OAuth
-│   ├── WeChatAuthManager.swift     # 微信 SDK 封装
+│   ├── CoverImageProcessor.swift   # 封面统一缩略图化（≤800px）
+│   ├── StorageManager.swift        # SwiftData 容器 + 容错启动兜底
 │   ├── KeychainService.swift       # 安全凭证存储
 │   ├── AppLogger.swift             # 三档日志接口
 │   └── FileLogger.swift            # 文件日志（rotation）
 ├── Views/
-│   ├── Books/                      # 列表/详情/编辑/添加/筛选/高级搜索
+│   ├── Books/                      # 列表/详情/编辑/添加/筛选/高级搜索 + 封面裁剪（CoverCropView/CoverCropGeometry）
 │   ├── Bookshelf/                  # 书架管理
 │   ├── Reading/                    # 阅读记录/统计
 │   ├── WeRead/                     # 同步页/导入页/登录/Skill 配置/同步历史
@@ -130,7 +135,7 @@ xcodebuild -scheme PersonalLibrary \
 
 ## 测试
 
-Swift Testing 框架，233+ 测试覆盖：
+Swift Testing 框架，291+ 测试覆盖：
 
 - 数据模型与枚举逻辑
 - 微信读书 Web/Skill 双源同步
@@ -140,7 +145,9 @@ Swift Testing 框架，233+ 测试覆盖：
 - 豆瓣限速器（DoubanRateLimiter）
 - Excel XLSX 导入导出（含字段往返）
 - 数据维护工具（繁转简、分隔符规范化）
-- 安全测试（路径遍历、SSRF、注入）
+- 封面裁剪几何（坐标映射、朝向烘焙、90° 旋转、限尺寸解码）
+- 容错启动（容器创建失败降级内存兜底）
+- 安全测试（SSRF 含数值 IP 编码、CSV 公式注入、HTTP 头注入、pixel-bomb、路径遍历）
 
 ## 安全设计
 
@@ -150,11 +157,16 @@ Swift Testing 框架，233+ 测试覆盖：
 - WKWebView 用非持久化 DataStore
 - 无硬编码密钥
 - 全局豆瓣速率限制器防 IP 封禁
+- 封面下载 SSRF 防护：仅 https + 阻断内网/本地/IPv6 ULA + 数值 IP 编码规范化校验
+- 封面字节限尺寸解码（≤2048px）防 pixel-bomb OOM
+- 下载请求头 sanitize（剥离 CRLF）防 HTTP 头注入
+- 数据导出对 `=+-@` 开头字段转义，防 CSV/公式注入
+- 启动容器创建失败降级内存安全模式（不闪退），提示用户备份/重试
 
 ## 配置
 
-微信读书功能可二选一：
-- **Web 扫码登录**：直接使用，需配置 `WeChatAuthManager.swift` 微信 AppID
+微信读书功能可二选一，均在 app 内完成，无需额外配置：
+- **Web 扫码登录**：内置 WKWebView 扫码登录微信读书，Cookie 存 Keychain
 - **Skill API**：在 app 内输入 Skill API Key
 
 ## License
