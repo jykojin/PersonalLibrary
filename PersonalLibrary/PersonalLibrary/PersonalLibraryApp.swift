@@ -5,26 +5,25 @@ import SwiftData
 struct PersonalLibraryApp: App {
     @Environment(\.scenePhase) private var scenePhase
     let modelContainer: ModelContainer
+    /// 启动时主容器创建失败的错误（非 nil 表示已进入内存安全模式）
+    private let startupError: Error?
 
     init() {
-        do {
-            modelContainer = try StorageManager.shared.createModelContainer()
-        } catch {
-            fatalError("无法创建数据容器: \(error.localizedDescription)")
+        // 失败不再 fatalError 闪退：降级为内存安全模式让 app 能起来，由 UI 提示用户
+        let result = StorageManager.makeContainerOrFallback()
+        modelContainer = result.container
+        startupError = result.startupError
+        // 仅在主容器正常时做封面迁移（安全模式下数据是临时内存，迁移无意义）
+        if startupError == nil {
+            StorageManager.shared.migrateOversizedCoversIfNeeded(modelContainer)
         }
-        // 一次性把历史超大/损坏封面压成缩略图（后台执行），根治库膨胀导致的卡顿与崩溃
-        StorageManager.shared.migrateOversizedCoversIfNeeded(modelContainer)
     }
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .onOpenURL { url in
-                    // 处理微信 OAuth 回调
-                    WeChatAuthManager.shared.handleOpenURL(url)
-                }
-                .task { migrateOldAddSource(); migrateWeReadBookshelf() }
-                .task { await backgroundCoverRefresh() }
+            ContentView(startupError: startupError)
+                .task { if startupError == nil { migrateOldAddSource(); migrateWeReadBookshelf() } }
+                .task { if startupError == nil { await backgroundCoverRefresh() } }
         }
         .modelContainer(modelContainer)
         .onChange(of: scenePhase) { _, newPhase in

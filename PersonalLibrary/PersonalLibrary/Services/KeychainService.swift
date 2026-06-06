@@ -69,9 +69,6 @@ struct KeychainService {
     /// 微信读书 Cookie
     static let wereadCookieKey = "com.personallibrary.weread.cookies"
 
-    /// 微信登录 Token
-    static let wechatTokenKey = "com.personallibrary.wechat.token"
-
     /// 微信读书 Skill API Key
     static let wereadApiKey = "com.personallibrary.weread.apikey"
 

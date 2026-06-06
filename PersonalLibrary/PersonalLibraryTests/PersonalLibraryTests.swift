@@ -371,6 +371,39 @@ struct StorageLocationTests {
     }
 }
 
+// MARK: - StorageManager 容错启动 Tests
+
+@Suite("StorageManager Fallback Tests")
+struct StorageManagerFallbackTests {
+
+    struct DummyError: Error {}
+
+    @Test("主容器创建成功：返回该容器，startupError 为 nil")
+    func successPath() throws {
+        let real = try StorageManager.shared.createModelContainer()
+        let result = StorageManager.makeContainerOrFallback { real }
+        #expect(result.startupError == nil)
+        // 返回的就是主容器，可正常建 context
+        let ctx = ModelContext(result.container)
+        #expect(ctx.insertedModelsArray.isEmpty)
+    }
+
+    @Test("主容器创建失败：返回可用的内存兜底容器，并带回错误")
+    func fallbackPath() throws {
+        let result = StorageManager.makeContainerOrFallback {
+            throw DummyError()
+        }
+        // 带回错误 → 让 UI 能提示进入安全模式
+        #expect(result.startupError != nil)
+        // 兜底容器仍可用：能插入并读回
+        let ctx = ModelContext(result.container)
+        let book = Book(title: "兜底测试", author: "作者")
+        ctx.insert(book)
+        let fetched = try ctx.fetch(FetchDescriptor<Book>())
+        #expect(fetched.contains { $0.title == "兜底测试" })
+    }
+}
+
 // MARK: - Excel Export Tests
 
 @Suite("Excel Export Tests")
@@ -2405,8 +2438,6 @@ struct SecurityTests {
         }
     }
 
-    // MARK: - WeChatAuthManager 安全
-
     // MARK: - SmartFill 数据结构测试
 
     @Test("LookupSourceStatus displayText 正确")
@@ -2524,21 +2555,6 @@ struct SecurityTests {
         #expect(result.hasAnyFill == false)
     }
 
-    @Test("WeChatAuthManager 不含 AppSecret 属性")
-    func noAppSecretInCode() throws {
-        // 通过反射验证 WeChatAuthManager 实例不含 secret 相关属性值
-        let manager = WeChatAuthManager.shared
-        let mirror = Mirror(reflecting: manager)
-        for child in mirror.children {
-            let label = child.label ?? ""
-            // 属性名不应包含 "secret"
-            #expect(!label.lowercased().contains("secret"), "不应有名为 secret 的属性: \(label)")
-            // 字符串值不应是实际的 secret（非占位符格式）
-            if let value = child.value as? String {
-                #expect(value == value, "属性 \(label) 存在")  // 占位
-            }
-        }
-    }
 }
 
 // MARK: - SmartFillResult Extended Fields Tests

@@ -24,11 +24,6 @@ struct ImportExportView: View {
 
     var body: some View {
         List {
-            // MARK: - 账户
-            Section("账户") {
-                ProfileView()
-            }
-
             // MARK: - 微信读书
             Section {
                 NavigationLink(destination: WeReadSyncView()) {

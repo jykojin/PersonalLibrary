@@ -76,6 +76,25 @@ final class StorageManager {
         }
     }
 
+    /// 启动用：创建主容器，失败时降级为内存兜底容器并带回错误（避免 app 启动闪退）。
+    /// - 正常：返回真实容器，startupError 为 nil。
+    /// - 失败（库损坏/磁盘满/迁移失败）：返回内存容器让 app 仍能启动进入"安全模式"，由 UI 提示用户。
+    /// `primary` 注入工厂便于单测强制失败路径。
+    static func makeContainerOrFallback(
+        primary: () throws -> ModelContainer = { try StorageManager.shared.createModelContainer() }
+    ) -> (container: ModelContainer, startupError: Error?) {
+        do {
+            return (try primary(), nil)
+        } catch {
+            AppLogger.error("主数据容器创建失败，降级为内存安全模式: \(error)", category: "Storage")
+            let schema = Schema([Book.self, ReadingRecord.self, Bookshelf.self, Tag.self, ImportRecord.self, SyncHistoryRecord.self])
+            let memConfig = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+            // 内存容器创建若再失败，已无可恢复手段，此处保留 fatalError 作为最后兜底
+            let fallback = try! ModelContainer(for: schema, configurations: [memConfig])
+            return (fallback, error)
+        }
+    }
+
     /// 一次性把历史超大/损坏的内联封面压成缩略图：缩小数据库、消除主线程 save 卡顿与看门狗崩溃。
     /// 后台分批执行，每批用独立 context 限制内存峰值；完成后置标志位，不再重复。
     func migrateOversizedCoversIfNeeded(_ container: ModelContainer) {
