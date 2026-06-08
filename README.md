@@ -105,26 +105,36 @@ PersonalLibrary/
 
 ### 步骤
 
+> 需要先安装 [XcodeGen](https://github.com/yonaskolb/XcodeGen)：`brew install xcodegen`
+
 ```bash
 # 1. 克隆仓库
 git clone https://github.com/jykojin/PersonalLibrary.git
-cd PersonalLibrary
+cd PersonalLibrary/PersonalLibrary
 
-# 2. 生成 Xcode 项目
-cd PersonalLibrary && xcodegen generate
+# 2. 配置签名（首次必做）
+#    复制示例配置，填入你自己的 Apple Developer Team ID 和 Bundle ID
+cp Config.xcconfig.example Config.xcconfig
+#    然后编辑 Config.xcconfig：
+#      DEVELOPMENT_TEAM = 你的 Team ID（Xcode → Settings → Accounts 可查）
+#      PRODUCT_BUNDLE_IDENTIFIER = com.yourname.PersonalLibrary
+#    （Config.xcconfig 已被 .gitignore 排除，不会提交）
 
-# 3. 构建（模拟器）
+# 3. 生成 Xcode 项目（.xcodeproj 是生成产物，不在仓库中）
+xcodegen generate
+
+# 4. 构建（模拟器）
 xcodebuild -scheme PersonalLibrary \
   -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
   -derivedDataPath /tmp/PersonalLibrary-DerivedData build
 
-# 4. 运行测试
+# 5. 运行测试
 xcodebuild -scheme PersonalLibrary \
   -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
   -derivedDataPath /tmp/PersonalLibrary-DerivedData test
 ```
 
-或直接用 Xcode 打开 `PersonalLibrary.xcodeproj`。
+生成后可直接用 Xcode 打开 `PersonalLibrary.xcodeproj`。
 
 ## 版本管理
 
@@ -171,4 +181,4 @@ Swift Testing 框架，291+ 测试覆盖：
 
 ## License
 
-Private project. All rights reserved.
+[MIT](LICENSE) © 2026 jykojin
