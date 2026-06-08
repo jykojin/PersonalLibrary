@@ -513,9 +513,10 @@ struct ExcelImportTests {
 
     @Test("导入私家书藏xlsx文件")
     func importFromXlsx() async throws {
+        // 本地放一个测试用 xlsx 到 /tmp/test_import.xlsx 即可运行此测试，
+        // 文件不存在时下方会自动跳过。
         let possiblePaths = [
-            "/tmp/test_import.xlsx",
-            "/Users/you/Downloads/私家书藏-完整书单_2.xlsx"
+            "/tmp/test_import.xlsx"
         ]
 
         var fileData: Data?

@@ -19,6 +19,9 @@ targets:
   PersonalLibrary:
     type: application
     platform: iOS
+    configFiles:
+      Debug: Config.xcconfig
+      Release: Config.xcconfig
     sources:
       - path: PersonalLibrary
         excludes:
@@ -64,8 +67,8 @@ targets:
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.PersonalLibrary
-        DEVELOPMENT_TEAM: YOUR_TEAM_ID
+        # PRODUCT_BUNDLE_IDENTIFIER 和 DEVELOPMENT_TEAM 由 Config.xcconfig 提供
+        # （见 Config.xcconfig.example，复制后填入自己的值）
         CURRENT_PROJECT_VERSION: 1
         MARKETING_VERSION: "0.83"
         CODE_SIGN_STYLE: Automatic

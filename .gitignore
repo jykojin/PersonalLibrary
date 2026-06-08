@@ -1,5 +1,7 @@
 # Xcode
 build/
+# .xcodeproj 由 xcodegen 从 project.yml 生成，不跟踪（含本地 Team ID）
+*.xcodeproj/
 DerivedData/
 *.xcuserstate
 xcuserdata/
@@ -23,6 +25,10 @@ Pods/
 
 # AI tool config
 CLAUDE.md
+
+# Local signing config (copy from Config.xcconfig.example)
+Config.xcconfig
+PersonalLibrary/Config.xcconfig
 
 # Temporary files
 *.tmp

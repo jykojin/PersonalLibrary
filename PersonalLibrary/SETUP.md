@@ -14,7 +14,7 @@
 2. 选择 **iOS** → **App** → Next
 3. 填写信息：
    - Product Name: `PersonalLibrary`
-   - Organization Identifier: `com.example`
+   - Organization Identifier: `com.example`（改成你自己的）
    - Interface: **SwiftUI**
    - Storage: **SwiftData**
    - Language: **Swift**

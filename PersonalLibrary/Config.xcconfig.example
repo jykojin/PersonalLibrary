@@ -1,0 +1,12 @@
+// Config.xcconfig.example —— 复制为 Config.xcconfig 后填入你自己的值
+//
+//   cp Config.xcconfig.example Config.xcconfig
+//
+// Config.xcconfig 已被 .gitignore 排除，不会提交。
+// 这两个值用于本地签名构建，fork 本项目后请改成你自己的。
+
+// 你的 Apple Developer Team ID（Xcode → Settings → Accounts 可查）
+DEVELOPMENT_TEAM = YOUR_TEAM_ID
+
+// App 的 Bundle Identifier，需全球唯一
+PRODUCT_BUNDLE_IDENTIFIER = com.example.PersonalLibrary
