@@ -121,60 +121,62 @@ actor ExcelImportExportService {
 
     // MARK: - Export
 
-    /// 导出所有书籍为 TSV 数据（UTF-8 BOM，Excel 兼容）
+    /// 把一本书转换为已转义的字段数组（顺序与 `columnHeaders` 一致）。
+    private func makeFields(for book: Book, index: Int, dateFormatter: DateFormatter) -> [String] {
+        let raw: [String] = [
+            String(index + 1),                                         // 序号
+            book.title,                                                // 书名
+            book.author,                                               // 作者
+            book.translator ?? "",                                     // 译者
+            book.publisher ?? "",                                      // 出版社
+            formatPublishDate(book.publishDate),                        // 出版年份
+            book.isbn ?? "",                                           // ISBN
+            book.price ?? "",                                          // 定价
+            book.totalPages > 0 ? String(book.totalPages) : "",        // 总页数
+            dateFormatter.string(from: book.addedDate),                // 加入时间
+            mapStatusToExport(book.status),                            // 阅读状态
+            book.finishedDate.map { dateFormatter.string(from: $0) } ?? "",  // 读完时间
+            book.bookshelf?.name ?? "",                                // 所在书架
+            (book.tags ?? []).map(\.name).joined(separator: " / "),     // 标签
+            book.bookDescription ?? "",                                // 图书简介
+            book.authorDescription ?? "",                              // 作者简介
+            book.notes ?? "",                                          // 备注
+            book.doubanURL ?? "",                                       // 豆瓣链接
+            book.coverImageURL ?? "",                                   // 封面链接
+            book.bookType.rawValue,                                    // 书籍类型
+            book.addSource.rawValue,                                   // 加入方式
+            book.rating.map { String($0) } ?? "",                      // 评分
+            book.currentPage > 0 ? String(book.currentPage) : "",      // 当前页码
+            book.isArchived ? "是" : "",                                 // 是否归档
+            book.wereadBookId ?? "",                                     // 微信读书ID
+            book.wereadProgress > 0 ? String(book.wereadProgress) : "", // 微信读书进度
+            book.wereadReadingHours > 0 ? String(format: "%.2f", book.wereadReadingHours) : "", // 微信读书阅读时长
+            book.startedReadingDate.map { dateFormatter.string(from: $0) } ?? "", // 开始阅读日期
+            book.statusChangedDate.map { dateFormatter.string(from: $0) } ?? "",  // 状态变更时间
+            book.isWereadUserImported ? "是" : "",                                // 用户导入书
+            book.isStartedReadingDateEstimated ? "是" : ""                        // 开始日期为估算
+        ]
+        // 沿用原有字段处理（制表符替换、CSV 公式注入防护）
+        return raw.map { escapeField($0) }
+    }
+
+    /// 导出所有书籍为 XLSX 数据（标准 Excel 格式，可被本服务的导入功能读回）
     func exportBooks(books: [Book]) throws -> Data {
-        var csvContent = "\u{FEFF}"  // BOM for Excel to detect UTF-8
-
-        // 写入表头
-        csvContent += Self.columnHeaders.joined(separator: "\t") + "\n"
-
-        // 写入数据行
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy-MM-dd HH:mm"
 
-        for (index, book) in books.enumerated() {
-            let fields: [String] = [
-                String(index + 1),                                         // 序号
-                book.title,                                                // 书名
-                book.author,                                               // 作者
-                book.translator ?? "",                                     // 译者
-                book.publisher ?? "",                                      // 出版社
-                formatPublishDate(book.publishDate),                        // 出版年份
-                book.isbn ?? "",                                           // ISBN
-                book.price ?? "",                                          // 定价
-                book.totalPages > 0 ? String(book.totalPages) : "",        // 总页数
-                dateFormatter.string(from: book.addedDate),                // 加入时间
-                mapStatusToExport(book.status),                            // 阅读状态
-                book.finishedDate.map { dateFormatter.string(from: $0) } ?? "",  // 读完时间
-                book.bookshelf?.name ?? "",                                // 所在书架
-                (book.tags ?? []).map(\.name).joined(separator: " / "),     // 标签
-                book.bookDescription ?? "",                                // 图书简介
-                book.authorDescription ?? "",                              // 作者简介
-                book.notes ?? "",                                          // 备注
-                book.doubanURL ?? "",                                       // 豆瓣链接
-                book.coverImageURL ?? "",                                   // 封面链接
-                book.bookType.rawValue,                                    // 书籍类型
-                book.addSource.rawValue,                                   // 加入方式
-                book.rating.map { String($0) } ?? "",                      // 评分
-                book.currentPage > 0 ? String(book.currentPage) : "",      // 当前页码
-                book.isArchived ? "是" : "",                                 // 是否归档
-                book.wereadBookId ?? "",                                     // 微信读书ID
-                book.wereadProgress > 0 ? String(book.wereadProgress) : "", // 微信读书进度
-                book.wereadReadingHours > 0 ? String(format: "%.2f", book.wereadReadingHours) : "", // 微信读书阅读时长
-                book.startedReadingDate.map { dateFormatter.string(from: $0) } ?? "", // 开始阅读日期
-                book.statusChangedDate.map { dateFormatter.string(from: $0) } ?? "",  // 状态变更时间
-                book.isWereadUserImported ? "是" : "",                                // 用户导入书
-                book.isStartedReadingDateEstimated ? "是" : ""                        // 开始日期为估算
-            ]
-            // 对每个字段进行转义（替换制表符为空格）
-            let escaped = fields.map { escapeField($0) }
-            csvContent += escaped.joined(separator: "\t") + "\n"
+        let rows = books.enumerated().map { index, book in
+            makeFields(for: book, index: index, dateFormatter: dateFormatter)
         }
 
-        guard let data = csvContent.data(using: .utf8) else {
+        // XLSX 写入隔离在 XLSXWriter（仅 import Objects2XLSX），避免与 CoreXLSX 的
+        // Row/Cell 类型在本文件冲突。
+        do {
+            return try XLSXWriter.write(headers: Self.columnHeaders, rows: rows, sheetName: "书单")
+        } catch {
+            AppLogger.error("XLSX 写入失败: \(error)", category: "ExcelExport")
             throw ExportError.encodingFailed
         }
-        return data
     }
 
     // MARK: - Private Helpers

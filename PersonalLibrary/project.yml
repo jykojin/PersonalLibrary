@@ -10,6 +10,9 @@ packages:
   CoreXLSX:
     url: https://github.com/CoreOffice/CoreXLSX
     from: "0.14.0"
+  Objects2XLSX:
+    url: https://github.com/fatbobman/Objects2XLSX
+    from: "1.3.2"
 
 settings:
   base:
@@ -28,6 +31,7 @@ targets:
           - "**/.DS_Store"
     dependencies:
       - package: CoreXLSX
+      - package: Objects2XLSX
     # iCloud entitlements 暂时禁用（免费开发者账号不支持）
     # 付费 Apple Developer 账号后可恢复：
     # entitlements:
@@ -70,7 +74,7 @@ targets:
         # PRODUCT_BUNDLE_IDENTIFIER 和 DEVELOPMENT_TEAM 由 Config.xcconfig 提供
         # （见 Config.xcconfig.example，复制后填入自己的值）
         CURRENT_PROJECT_VERSION: 1
-        MARKETING_VERSION: "0.56"
+        MARKETING_VERSION: "0.57"
         CODE_SIGN_STYLE: Automatic
         ENABLE_PREVIEWS: YES
         DEVELOPMENT_ASSET_PATHS: "\"PersonalLibrary/Preview Content\""

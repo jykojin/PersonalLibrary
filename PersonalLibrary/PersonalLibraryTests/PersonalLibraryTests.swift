@@ -409,31 +409,45 @@ struct StorageManagerFallbackTests {
 @Suite("Excel Export Tests")
 struct ExcelExportTests {
 
-    @Test("导出空列表生成只有表头的TSV")
+    /// 把导出的 xlsx 数据重新导入，返回导入后的书籍列表（用于往返验证）
+    @MainActor
+    private func roundTrip(_ books: [Book]) async throws -> [Book] {
+        let service = ExcelImportExportService()
+        let data = try await service.exportBooks(books: books)
+
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        _ = try await service.importBooks(data: data, modelContext: context)
+        return try context.fetch(FetchDescriptor<Book>())
+    }
+
+    @Test("导出空列表生成合法的 xlsx（仅表头）")
+    @MainActor
     func exportEmptyList() async throws {
         let service = ExcelImportExportService()
         let data = try await service.exportBooks(books: [])
 
-        // 验证 UTF-8 BOM (EF BB BF) 在原始数据中
-        #expect(data.count >= 3)
-        #expect(data[0] == 0xEF)
-        #expect(data[1] == 0xBB)
-        #expect(data[2] == 0xBF)
+        // 是合法的 xlsx（ZIP 魔数 PK\x03\x04）
+        #expect(data.count >= 4)
+        #expect(data[0] == 0x50)  // 'P'
+        #expect(data[1] == 0x4B)  // 'K'
 
-        // 验证表头（Swift 解码时会去掉 BOM）
-        let content = String(data: data, encoding: .utf8)!
-        let lines = content.components(separatedBy: "\n")
-        #expect(lines.count >= 1)
-        let header = lines[0].replacingOccurrences(of: "\u{FEFF}", with: "")
-        #expect(header.contains("书名"))
-        #expect(header.contains("作者"))
-        #expect(header.contains("ISBN"))
-        #expect(header.contains("阅读状态"))
+        // 只有表头、没有数据行时，导入端按既有逻辑抛 .noData
+        await #expect(throws: ImportError.noData) {
+            let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+            let config = ModelConfiguration(isStoredInMemoryOnly: true)
+            let container = try ModelContainer(for: schema, configurations: [config])
+            let context = ModelContext(container)
+            _ = try await service.importBooks(data: data, modelContext: context)
+        }
     }
 
-    @Test("导出包含书籍数据的TSV")
+    @Test("导出的书籍可被原样导入回来")
+    @MainActor
     func exportWithBooks() async throws {
-        let service = ExcelImportExportService()
         let book = Book(
             title: "三体",
             author: "刘慈欣",
@@ -444,31 +458,24 @@ struct ExcelExportTests {
         book.status = .finished
         book.finishedDate = Date()
 
-        let data = try await service.exportBooks(books: [book])
-        let content = String(data: data, encoding: .utf8)!
-
-        let lines = content.components(separatedBy: "\n")
-        #expect(lines.count >= 2)  // 表头 + 数据行
-
-        let dataLine = lines[1]
-        #expect(dataLine.contains("三体"))
-        #expect(dataLine.contains("刘慈欣"))
-        #expect(dataLine.contains("9787536692930"))
-        #expect(dataLine.contains("重庆出版社"))
-        #expect(dataLine.contains("已读"))
+        let imported = try await roundTrip([book])
+        #expect(imported.count == 1)
+        let r = try #require(imported.first)
+        #expect(r.title == "三体")
+        #expect(r.author == "刘慈欣")
+        #expect(r.isbn == "9787536692930")
+        #expect(r.publisher == "重庆出版社")
+        #expect(r.status == .finished)
     }
 
-    @Test("导出字段中的制表符被替换为空格")
+    @Test("字段中的制表符被替换为空格后往返保留")
+    @MainActor
     func exportEscapesTab() async throws {
-        let service = ExcelImportExportService()
         let book = Book(title: "标题\t含Tab", author: "作者")
 
-        let data = try await service.exportBooks(books: [book])
-        let content = String(data: data, encoding: .utf8)!
-
-        let lines = content.components(separatedBy: "\n")
-        let dataLine = lines[1]
-        #expect(dataLine.contains("标题 含Tab"))
+        let imported = try await roundTrip([book])
+        let r = try #require(imported.first)
+        #expect(r.title == "标题 含Tab")
     }
 
     @Test("columnHeaders 包含31列")
@@ -484,29 +491,25 @@ struct ExcelExportTests {
         #expect(ExcelImportExportService.columnHeaders[28] == "状态变更时间")
     }
 
-    @Test("阅读状态正确映射到导出字符串")
+    @Test("阅读状态往返保留")
+    @MainActor
     func statusMapping() async throws {
-        let service = ExcelImportExportService()
+        let statuses: [ReadingStatus] = [.idle, .reading, .finished, .wishlist, .dropped]
 
-        let statuses: [(ReadingStatus, String)] = [
-            (.idle, "闲置"),
-            (.reading, "正在读"),
-            (.finished, "已读"),
-            (.wishlist, "想读"),
-            (.dropped, "弃读")
-        ]
-
-        for (status, expected) in statuses {
+        for status in statuses {
             let book = Book(title: "测试", author: "测试")
             book.status = status
-            let data = try await service.exportBooks(books: [book])
-            let content = String(data: data, encoding: .utf8)!
-            #expect(content.contains(expected), "状态 \(status.rawValue) 应映射为 \(expected)")
+            let imported = try await roundTrip([book])
+            let r = try #require(imported.first)
+            #expect(r.status == status, "状态 \(status.rawValue) 往返后应保持一致")
         }
     }
 }
 
 // MARK: - Excel Import Tests (with file)
+
+/// 仅用于定位 test bundle，以读取打包进 bundle 的资源文件（如 sample.xlsx）。
+private final class SampleResourceLocator {}
 
 @Suite("Excel Import Tests")
 struct ExcelImportTests {
@@ -549,6 +552,38 @@ struct ExcelImportTests {
             #expect(!first.title.isEmpty)
             #expect(!first.author.isEmpty)
         }
+    }
+
+    @Test("导入仓库内 sample.xlsx（44 本有效书，尾部空行被正确跳过）")
+    func importSampleXlsx() async throws {
+        // sample.xlsx 作为资源打包进 test bundle（见 project.yml）
+        let url = try #require(
+            Bundle(for: SampleResourceLocator.self).url(forResource: "sample", withExtension: "xlsx"),
+            "test bundle 中找不到 sample.xlsx 资源"
+        )
+        let data = try Data(contentsOf: url)
+
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        let service = ExcelImportExportService()
+        let result = try await service.importBooks(data: data, modelContext: context)
+
+        // 文件含 44 本真实书籍 + 2761 行尾部空行（仅 AE 列空值）。
+        // 空行无书名应被跳过，不计入成功也不计入失败。
+        #expect(result.successCount == 44, "应导入 44 本，实际 \(result.successCount)，失败 \(result.failedCount)")
+        #expect(result.failedCount == 0, "不应有失败行，错误样例：\(result.errors.prefix(3))")
+
+        // 验证首本书字段（按加入时间排序，第一条是《权力与荣耀》）
+        let books = try context.fetch(FetchDescriptor<Book>())
+        let target = books.first { $0.title == "权力与荣耀" }
+        let first = try #require(target, "应能找到《权力与荣耀》")
+        #expect(first.author == "[英] 乔纳森·威尔逊")
+        #expect(first.translator == "董风云")
+        #expect(first.publisher == "社会科学文献出版社")
+        #expect(first.isbn == "9787522872995")
     }
 }
 
@@ -1369,6 +1404,7 @@ struct WeReadSyncLogicTests {
     }
 
     @Test("导出包含微信读书字段")
+    @MainActor
     func exportIncludesWereadFields() async throws {
         let service = ExcelImportExportService()
         let book = Book(title: "带微信读书ID的书", author: "作者")
@@ -1376,10 +1412,16 @@ struct WeReadSyncLogicTests {
         book.wereadProgress = 88
 
         let data = try await service.exportBooks(books: [book])
-        let content = String(data: data, encoding: .utf8)!
 
-        #expect(content.contains("wr_test_456"))
-        #expect(content.contains("88"))
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+        _ = try await service.importBooks(data: data, modelContext: context)
+
+        let imported = try #require(try context.fetch(FetchDescriptor<Book>()).first)
+        #expect(imported.wereadBookId == "wr_test_456")
+        #expect(imported.wereadProgress == 88)
     }
 }
 
@@ -3542,62 +3584,67 @@ struct BookNewFieldsTests {
 @Suite("Export New Fields Tests")
 struct ExportNewFieldsTests {
 
-    @Test("导出包含微信读书阅读时长")
-    func exportIncludesReadingHours() async throws {
+    /// 导出 → 导入往返，返回导入后的第一本书
+    @MainActor
+    private func roundTripFirst(_ book: Book) async throws -> Book {
         let service = ExcelImportExportService()
+        let data = try await service.exportBooks(books: [book])
+
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+        _ = try await service.importBooks(data: data, modelContext: context)
+
+        return try #require(try context.fetch(FetchDescriptor<Book>()).first)
+    }
+
+    @Test("导出包含微信读书阅读时长")
+    @MainActor
+    func exportIncludesReadingHours() async throws {
         let book = Book(title: "测试导出时长", author: "作者")
         book.wereadReadingHours = 12.5
 
-        let data = try await service.exportBooks(books: [book])
-        let content = String(data: data, encoding: .utf8)!
-
-        #expect(content.contains("12.50"))
+        let imported = try await roundTripFirst(book)
+        #expect(imported.wereadReadingHours == 12.5)
     }
 
     @Test("导出包含开始阅读日期")
+    @MainActor
     func exportIncludesStartedDate() async throws {
-        let service = ExcelImportExportService()
         let book = Book(title: "测试导出开始日期", author: "作者")
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm"
         book.startedReadingDate = formatter.date(from: "2024-03-15 10:30")
 
-        let data = try await service.exportBooks(books: [book])
-        let content = String(data: data, encoding: .utf8)!
-
-        #expect(content.contains("2024-03-15 10:30"))
+        let imported = try await roundTripFirst(book)
+        let d = try #require(imported.startedReadingDate)
+        #expect(formatter.string(from: d) == "2024-03-15 10:30")
     }
 
     @Test("导出包含状态变更时间")
+    @MainActor
     func exportIncludesStatusChangedDate() async throws {
-        let service = ExcelImportExportService()
         let book = Book(title: "测试导出状态时间", author: "作者")
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm"
         book.statusChangedDate = formatter.date(from: "2024-06-01 09:00")
 
-        let data = try await service.exportBooks(books: [book])
-        let content = String(data: data, encoding: .utf8)!
-
-        #expect(content.contains("2024-06-01 09:00"))
+        let imported = try await roundTripFirst(book)
+        let d = try #require(imported.statusChangedDate)
+        #expect(formatter.string(from: d) == "2024-06-01 09:00")
     }
 
-    @Test("导出空新字段不产生多余内容")
+    @Test("导出空新字段往返后仍为空")
+    @MainActor
     func exportEmptyNewFields() async throws {
-        let service = ExcelImportExportService()
         let book = Book(title: "无新字段", author: "作者")
         // wereadReadingHours = 0, startedReadingDate = nil, statusChangedDate = nil
 
-        let data = try await service.exportBooks(books: [book])
-        let content = String(data: data, encoding: .utf8)!
-        let lines = content.components(separatedBy: "\n")
-        let dataLine = lines[1]
-        let fields = dataLine.components(separatedBy: "\t")
-
-        // 最后三个字段应为空
-        #expect(fields[26] == "") // 微信读书阅读时长
-        #expect(fields[27] == "") // 开始阅读日期
-        #expect(fields[28] == "") // 状态变更时间
+        let imported = try await roundTripFirst(book)
+        #expect(imported.wereadReadingHours == 0)
+        #expect(imported.startedReadingDate == nil)
+        #expect(imported.statusChangedDate == nil)
     }
 }
 

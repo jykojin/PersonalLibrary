@@ -104,7 +104,7 @@ struct DataBackupView: View {
             } header: {
                 Text("书单")
             } footer: {
-                Text("支持 XLSX 格式导入，导出为 TSV 格式（Excel 可直接打开）")
+                Text("导入导出均为 XLSX 格式，导出的文件可被本应用重新导入")
             }
         }
         .navigationTitle("数据备份")
@@ -236,7 +236,7 @@ struct DataBackupView: View {
 
             let formatter = DateFormatter()
             formatter.dateFormat = "yyyyMMdd"
-            let fileName = "书单导出_\(formatter.string(from: Date())).tsv"
+            let fileName = "书单导出_\(formatter.string(from: Date())).xlsx"
             let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
             try data.write(to: tempURL)
 
