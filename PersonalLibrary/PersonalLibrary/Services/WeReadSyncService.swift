@@ -123,9 +123,15 @@ actor WeReadSyncService {
 
     /// 是否应该触发自动同步（已开启 + 距上次同步超过 1 小时 + 已登录）
     static func shouldAutoSync() -> Bool {
-        guard autoSyncEnabled else { return false }
-        guard let lastSync = lastSyncDate else { return true }
-        return Date().timeIntervalSince(lastSync) > syncInterval
+        shouldAutoSync(enabled: autoSyncEnabled, lastSync: lastSyncDate, now: Date())
+    }
+
+    /// 纯函数版本：仅依赖显式入参，不读取全局状态。
+    /// 便于在并行测试中无副作用地验证判定逻辑。
+    static func shouldAutoSync(enabled: Bool, lastSync: Date?, now: Date) -> Bool {
+        guard enabled else { return false }
+        guard let lastSync else { return true }
+        return now.timeIntervalSince(lastSync) > syncInterval
     }
 
     // MARK: - Sync Result
