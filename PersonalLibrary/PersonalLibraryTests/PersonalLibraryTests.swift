@@ -3113,31 +3113,38 @@ struct BackgroundContextPerformanceTests {
         // 模拟 @State var batchCancelled 的行为
         // 使用 actor 模拟主线程持有的状态
         actor CancelState {
-            var cancelled = false
+            private var cancelled = false
+            private var started = false
             func cancel() { cancelled = true }
             func isCancelled() -> Bool { cancelled }
+            func markStarted() { started = true }
+            func hasStarted() -> Bool { started }
         }
 
         let state = CancelState()
 
-        // 后台线程读取 cancel 状态
+        // 后台循环：跑到被取消为止，返回最终观察到的取消标志。
+        // 每轮 Task.yield() 让出线程，避免自旋饿死 canceller（不赌时序、不赌次数）。
         let task = Task.detached(priority: .utility) {
-            var iterations = 0
-            for _ in 0..<100 {
-                if await state.isCancelled() { break }
-                iterations += 1
-                try? await Task.sleep(for: .milliseconds(1))
+            await state.markStarted()
+            while await !state.isCancelled() {
+                await Task.yield()
             }
-            return iterations
+            return await state.isCancelled()
+        }
+
+        // 条件等待循环确实已开始（不依赖具体时间，避免时序 flaky）
+        while await !state.hasStarted() {
+            await Task.yield()
         }
 
         // 模拟用户点击停止
-        try? await Task.sleep(for: .milliseconds(20))
         await state.cancel()
 
-        let iterationsCompleted = await task.value
-        // 应该在 100 次之前停止
-        #expect(iterationsCompleted < 100)
+        // 循环只会在读到取消标志后退出，返回值必为 true，
+        // 证明一个任务里设置的标志可被另一个任务读取。
+        let observedCancellation = await task.value
+        #expect(observedCancellation == true)
     }
 
     @Test("CoverImageCache 并发安全 — 多线程同时读写不崩溃")
