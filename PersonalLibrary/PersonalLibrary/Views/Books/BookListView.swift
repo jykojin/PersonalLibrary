@@ -58,6 +58,8 @@ struct BookListView: View {
     @State private var bookForQuickTag: Book?
     // 标记已读后评分
     @State private var bookForRating: Book?
+    // 搬书架（滑动操作）
+    @State private var bookForMoveShelf: Book?
 
     // 缓存：避免每帧重算（relationship fault 是主线程 I/O）
     @State private var cachedShelfNames: [String] = ["我的藏书"]
@@ -172,6 +174,11 @@ struct BookListView: View {
             }
             .sheet(item: $bookForRating) { book in
                 MarkReadRatingView(book: book)
+            }
+            .sheet(item: $bookForMoveShelf) { book in
+                BatchMoveShelfView(books: [book]) {
+                    recomputeFilteredBooks()
+                }
             }
             .overlay {
                 if books.isEmpty {
@@ -472,6 +479,14 @@ struct BookListView: View {
                             Label("标签", systemImage: "tag")
                         }
                         .tint(.orange)
+                    }
+                    .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                        Button {
+                            bookForMoveShelf = book
+                        } label: {
+                            Label("搬书架", systemImage: "tray.and.arrow.down")
+                        }
+                        .tint(.blue)
                     }
                     .contextMenu {
                         Button {
