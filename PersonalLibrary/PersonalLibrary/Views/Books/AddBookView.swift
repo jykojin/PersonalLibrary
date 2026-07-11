@@ -44,9 +44,6 @@ struct AddBookView: View {
     // 书架 & 标签
     @State private var selectedBookshelf: Bookshelf?
     @State private var selectedTags: Set<String> = []  // 存标签名（与 EditBookView 一致），落库时按名查找或创建
-    @State private var showingNewTag = false
-    @State private var newTagName = ""
-    @State private var tagSearchText = ""
 
     private let lookupService = ISBNLookupService()
 
@@ -211,56 +208,7 @@ struct AddBookView: View {
 
                 // MARK: - 标签
                 Section("标签") {
-                    // 已选标签
-                    if !selectedTags.isEmpty {
-                        FlowLayout(spacing: 8) {
-                            ForEach(Array(selectedTags).sorted(), id: \.self) { tagName in
-                                TagChip(name: tagName, isSelected: true) {
-                                    selectedTags.remove(tagName)
-                                }
-                            }
-                        }
-                        .padding(.vertical, 4)
-                    }
-
-                    // 搜索现有标签
-                    HStack {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundStyle(.secondary)
-                        TextField("搜索标签", text: $tagSearchText)
-                    }
-
-                    // 搜索结果（仅输入时显示匹配项）
-                    if !tagSearchText.isEmpty {
-                        let matched = allTags.filter {
-                            $0.name.localizedCaseInsensitiveContains(tagSearchText)
-                            && !selectedTags.contains($0.name)
-                        }
-                        if matched.isEmpty {
-                            Button {
-                                newTagName = tagSearchText
-                                showingNewTag = true
-                            } label: {
-                                Label("创建「\(tagSearchText)」", systemImage: "plus.circle")
-                            }
-                        } else {
-                            FlowLayout(spacing: 8) {
-                                ForEach(matched) { tag in
-                                    TagChip(name: tag.name, isSelected: false) {
-                                        selectedTags.insert(tag.name)
-                                        tagSearchText = ""
-                                    }
-                                }
-                            }
-                            .padding(.vertical, 4)
-                        }
-                    }
-
-                    Button {
-                        showingNewTag = true
-                    } label: {
-                        Label("添加新标签", systemImage: "plus.circle")
-                    }
+                    TagSelectionEditor(selectedTags: $selectedTags)
                 }
             }
             .navigationTitle("添加新书")
@@ -294,11 +242,6 @@ struct AddBookView: View {
                 if let book = duplicateBook {
                     Text("该 ISBN 对应的书籍「\(book.title)」已存在于您的藏书中。")
                 }
-            }
-            .alert("新标签", isPresented: $showingNewTag) {
-                TextField("标签名称", text: $newTagName)
-                Button("取消", role: .cancel) { newTagName = "" }
-                Button("添加") { createNewTag() }
             }
         }
     }
@@ -502,16 +445,6 @@ struct AddBookView: View {
         }
     }
 
-    // MARK: - Tag Creation
-
-    private func createNewTag() {
-        let trimmed = newTagName.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return }
-        // 只记标签名（Set<String> 天然按名去重）；真正落库在 saveBook 的后台 context
-        // 按名查找或创建（避免往主 context 插孤儿标签 / 跨 context 竞态）。
-        selectedTags.insert(trimmed)
-        newTagName = ""
-    }
 }
 
 // MARK: - Tag Chip View
