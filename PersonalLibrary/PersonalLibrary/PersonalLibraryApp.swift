@@ -22,7 +22,7 @@ struct PersonalLibraryApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView(startupError: startupError)
-                .task { if startupError == nil { migrateOldAddSource(); migrateWeReadBookshelf() } }
+                .task { if startupError == nil { migrateOldAddSource(); migrateWeReadBookshelf(); mergeDuplicateTags() } }
                 .task { if startupError == nil { await backgroundCoverRefresh() } }
         }
         .modelContainer(modelContainer)
@@ -115,6 +115,19 @@ struct PersonalLibraryApp: App {
             AppLogger.error("微信读书书架迁移失败: \(error)", category: "Migration")
         }
 
+        UserDefaults.standard.set(true, forKey: migrationKey)
+    }
+
+    /// 一次性迁移：合并同名重复标签（历史遗留 + 早期 CloudKit 合并产生的重复）
+    @MainActor
+    private func mergeDuplicateTags() {
+        let migrationKey = "tag_dedup_migration_v1_done"
+        guard !UserDefaults.standard.bool(forKey: migrationKey) else { return }
+
+        let removed = TagMaintenance.mergeDuplicateTags(in: modelContainer.mainContext)
+        if removed > 0 {
+            AppLogger.info("已合并 \(removed) 个重复标签", category: "Migration")
+        }
         UserDefaults.standard.set(true, forKey: migrationKey)
     }
 
