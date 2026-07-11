@@ -51,8 +51,9 @@ class BookService {
     // MARK: - Shared Data Helpers
 
     /// 查找或创建标签（供 WeReadService / WeReadSyncService 等共用）
+    /// 按 trim 后的名字查找/创建，避免「签名」与「签名 」被当作两个标签。
     static func findOrCreateTag(name: String, modelContext: ModelContext) throws -> Tag {
-        let tagName = name
+        let tagName = name.trimmingCharacters(in: .whitespaces)
         var descriptor = FetchDescriptor<Tag>(
             predicate: #Predicate { $0.name == tagName }
         )
@@ -61,7 +62,7 @@ class BookService {
         if let existing = try modelContext.fetch(descriptor).first {
             return existing
         }
-        let tag = Tag(name: name)
+        let tag = Tag(name: tagName)
         modelContext.insert(tag)
         return tag
     }

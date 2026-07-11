@@ -4690,3 +4690,81 @@ struct BookServiceRobustnessTests {
         #expect(comps.minute == 0)
     }
 }
+
+// MARK: - Tag Maintenance Tests
+
+@Suite("Tag Maintenance Tests")
+struct TagMaintenanceTests {
+
+    @Test("合并同名重复标签：只剩一个且所有书都指向保留项")
+    func mergesDuplicates() throws {
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        let base = Date(timeIntervalSince1970: 1_000_000)
+        let t1 = PersonalLibrary.Tag(name: "签名"); t1.createdDate = base
+        let t2 = PersonalLibrary.Tag(name: "签名"); t2.createdDate = base.addingTimeInterval(10)
+        let t3 = PersonalLibrary.Tag(name: "签名"); t3.createdDate = base.addingTimeInterval(20)
+        context.insert(t1); context.insert(t2); context.insert(t3)
+
+        let b1 = Book(title: "书1", author: "A")
+        let b2 = Book(title: "书2", author: "B")
+        context.insert(b1); context.insert(b2)
+        b1.tags = [t2]
+        b2.tags = [t3]
+        try context.save()
+
+        let removed = TagMaintenance.mergeDuplicateTags(in: context)
+
+        #expect(removed == 2)
+        let tags = try context.fetch(FetchDescriptor<PersonalLibrary.Tag>())
+        #expect(tags.count == 1)
+        #expect(tags.first?.name == "签名")
+        #expect(tags.first?.createdDate == base)  // 保留最早创建的
+        #expect(b1.tags?.count == 1)
+        #expect(b2.tags?.count == 1)
+        #expect(b1.tags?.first?.persistentModelID == tags.first?.persistentModelID)
+        #expect(b2.tags?.first?.persistentModelID == tags.first?.persistentModelID)
+    }
+
+    @Test("带尾随空格的同名标签也被并入并规范化")
+    func mergesWhitespaceVariants() throws {
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        let base = Date(timeIntervalSince1970: 2_000_000)
+        let t1 = PersonalLibrary.Tag(name: "签名"); t1.createdDate = base
+        let t2 = PersonalLibrary.Tag(name: "签名 "); t2.createdDate = base.addingTimeInterval(10)
+        context.insert(t1); context.insert(t2)
+        try context.save()
+
+        let removed = TagMaintenance.mergeDuplicateTags(in: context)
+
+        #expect(removed == 1)
+        let tags = try context.fetch(FetchDescriptor<PersonalLibrary.Tag>())
+        #expect(tags.count == 1)
+        #expect(tags.first?.name == "签名")  // 规范化去掉尾随空格
+    }
+
+    @Test("无重复时不改动、返回 0")
+    func noDuplicatesReturnsZero() throws {
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        context.insert(PersonalLibrary.Tag(name: "签名"))
+        context.insert(PersonalLibrary.Tag(name: "绝版"))
+        try context.save()
+
+        let removed = TagMaintenance.mergeDuplicateTags(in: context)
+
+        #expect(removed == 0)
+        let tags = try context.fetch(FetchDescriptor<PersonalLibrary.Tag>())
+        #expect(tags.count == 2)
+    }
+}
