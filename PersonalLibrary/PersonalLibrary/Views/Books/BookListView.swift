@@ -797,44 +797,15 @@ struct StatusBadge: View {
 struct BatchTagView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
-    @Query private var existingTags: [Tag]
     let books: [Book]
     let onDone: () -> Void
     @State private var selectedTags: Set<String> = []
-    @State private var newTagName = ""
 
     var body: some View {
         NavigationStack {
-            List {
-                Section("新建标签") {
-                    HStack {
-                        TextField("输入标签名", text: $newTagName)
-                        Button("添加") {
-                            addNewTag()
-                        }
-                        .disabled(newTagName.trimmingCharacters(in: .whitespaces).isEmpty)
-                    }
-                }
-
-                Section("已有标签") {
-                    ForEach(existingTags) { tag in
-                        HStack {
-                            Text(tag.name)
-                            Spacer()
-                            if selectedTags.contains(tag.name) {
-                                Image(systemName: "checkmark")
-                                    .foregroundStyle(.orange)
-                            }
-                        }
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            if selectedTags.contains(tag.name) {
-                                selectedTags.remove(tag.name)
-                            } else {
-                                selectedTags.insert(tag.name)
-                            }
-                        }
-                    }
+            Form {
+                Section("标签") {
+                    TagSelectionEditor(selectedTags: $selectedTags)
                 }
             }
             .navigationTitle("为 \(books.count) 本书打标签")
@@ -851,18 +822,6 @@ struct BatchTagView: View {
                 }
             }
         }
-    }
-
-    private func addNewTag() {
-        let trimmed = newTagName.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return }
-        selectedTags.insert(trimmed)
-        // 如果标签不存在就创建
-        if !existingTags.contains(where: { $0.name == trimmed }) {
-            let tag = Tag(name: trimmed)
-            modelContext.insert(tag)
-        }
-        newTagName = ""
     }
 
     private func applyTags() {
