@@ -20,6 +20,7 @@ enum TagMaintenance {
         }
 
         var removed = 0
+        var changed = false
         for (trimmedName, tags) in groups {
             // 组内按创建时间升序，最早的作为 canonical
             let sorted = tags.sorted { $0.createdDate < $1.createdDate }
@@ -28,6 +29,7 @@ enum TagMaintenance {
             // 规范化 canonical 名称（去掉可能的尾随/前导空格）
             if canonical.name != trimmedName {
                 canonical.name = trimmedName
+                changed = true
             }
 
             // 组内只有一个就无需合并
@@ -44,10 +46,11 @@ enum TagMaintenance {
                 }
                 context.delete(dup)
                 removed += 1
+                changed = true
             }
         }
 
-        if removed > 0 {
+        if changed {
             try? context.save()
         }
         return removed

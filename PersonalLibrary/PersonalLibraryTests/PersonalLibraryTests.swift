@@ -4767,4 +4767,28 @@ struct TagMaintenanceTests {
         let tags = try context.fetch(FetchDescriptor<PersonalLibrary.Tag>())
         #expect(tags.count == 2)
     }
+
+    @Test("单个带尾随空格的标签被规范化并持久化")
+    func normalizesLoneWhitespaceTag() throws {
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        let tag = PersonalLibrary.Tag(name: "签名 ")
+        context.insert(tag)
+        try context.save()
+
+        let removed = TagMaintenance.mergeDuplicateTags(in: context)
+
+        // 没有删除任何标签（因为只有一个）
+        #expect(removed == 0)
+        // 标签仍然存在且名称被规范化
+        let tags = try context.fetch(FetchDescriptor<PersonalLibrary.Tag>())
+        #expect(tags.count == 1)
+        #expect(tags.first?.name == "签名")
+        // 验证持久化：重新fetch也应该得到规范化的名字
+        let refetched = try context.fetch(FetchDescriptor<PersonalLibrary.Tag>())
+        #expect(refetched.first?.name == "签名")
+    }
 }
