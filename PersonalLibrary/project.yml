@@ -74,7 +74,7 @@ targets:
         # PRODUCT_BUNDLE_IDENTIFIER 和 DEVELOPMENT_TEAM 由 Config.xcconfig 提供
         # （见 Config.xcconfig.example，复制后填入自己的值）
         CURRENT_PROJECT_VERSION: 1
-        MARKETING_VERSION: "0.57"
+        MARKETING_VERSION: "0.58"
         CODE_SIGN_STYLE: Automatic
         ENABLE_PREVIEWS: YES
         DEVELOPMENT_ASSET_PATHS: "\"PersonalLibrary/Preview Content\""
