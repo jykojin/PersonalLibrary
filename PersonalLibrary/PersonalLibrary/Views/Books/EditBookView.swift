@@ -9,7 +9,6 @@ struct EditBookView: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable var book: Book
     @Query(sort: \Bookshelf.sortOrder) private var bookshelves: [Bookshelf]
-    @Query private var allTags: [Tag]
 
     // 基本信息
     @State private var title: String = ""
@@ -36,7 +35,6 @@ struct EditBookView: View {
     // 书架与标签
     @State private var selectedShelf: Bookshelf?
     @State private var selectedTags: Set<String> = []
-    @State private var newTagName: String = ""
 
     // 封面
     @State private var coverData: Data?
@@ -322,67 +320,8 @@ struct EditBookView: View {
                 }
             }
 
-            // 已选标签
-            if !selectedTags.isEmpty {
-                FlowLayout(spacing: 6) {
-                    ForEach(Array(selectedTags).sorted(), id: \.self) { tagName in
-                        HStack(spacing: 2) {
-                            Text(tagName)
-                                .font(.caption)
-                            Button {
-                                selectedTags.remove(tagName)
-                            } label: {
-                                Image(systemName: "xmark")
-                                    .font(.system(size: 8, weight: .bold))
-                            }
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.orange.opacity(0.15))
-                        .foregroundStyle(.orange)
-                        .clipShape(Capsule())
-                    }
-                }
-            }
-
-            // 添加标签
-            HStack {
-                TextField("添加标签", text: $newTagName)
-                    .font(.subheadline)
-                Button("添加") {
-                    let trimmed = newTagName.trimmingCharacters(in: .whitespaces)
-                    if !trimmed.isEmpty {
-                        selectedTags.insert(trimmed)
-                        newTagName = ""
-                    }
-                }
-                .disabled(newTagName.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-
-            // 已有标签快捷选择
-            if !allTags.isEmpty {
-                DisclosureGroup("从已有标签选择") {
-                    FlowLayout(spacing: 6) {
-                        ForEach(allTags) { tag in
-                            let isSelected = selectedTags.contains(tag.name)
-                            Text(tag.name)
-                                .font(.caption)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(isSelected ? Color.orange.opacity(0.15) : Color(.systemGray6))
-                                .foregroundStyle(isSelected ? .orange : .secondary)
-                                .clipShape(Capsule())
-                                .onTapGesture {
-                                    if isSelected {
-                                        selectedTags.remove(tag.name)
-                                    } else {
-                                        selectedTags.insert(tag.name)
-                                    }
-                                }
-                        }
-                    }
-                }
-            }
+            // 标签
+            TagSelectionEditor(selectedTags: $selectedTags)
         }
     }
 
@@ -795,15 +734,11 @@ struct EditBookView: View {
             book.finishedDate = Date()
         }
 
-        // 更新标签
+        // 更新标签（走 findOrCreateTag：新鲜 fetch + trim，避免 stale @Query 造重复）
         var bookTags: [Tag] = []
         for tagName in selectedTags {
-            if let existing = allTags.first(where: { $0.name == tagName }) {
-                bookTags.append(existing)
-            } else {
-                let newTag = Tag(name: tagName)
-                modelContext.insert(newTag)
-                bookTags.append(newTag)
+            if let tag = try? BookService.findOrCreateTag(name: tagName, modelContext: modelContext) {
+                bookTags.append(tag)
             }
         }
         book.tags = bookTags
