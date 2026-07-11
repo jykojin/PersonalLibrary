@@ -1159,79 +1159,42 @@ struct MarkReadRatingView: View {
 struct QuickTagView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
-    @Query private var existingTags: [Tag]
     @Bindable var book: Book
-    @State private var newTagName = ""
+    @State private var selectedTags: Set<String> = []
 
     var body: some View {
         NavigationStack {
-            List {
-                Section("新建标签") {
-                    HStack {
-                        TextField("输入标签名", text: $newTagName)
-                        Button("添加") {
-                            addTag(name: newTagName)
-                        }
-                        .disabled(newTagName.trimmingCharacters(in: .whitespaces).isEmpty)
-                    }
-                }
-
-                Section("已有标签") {
-                    ForEach(existingTags) { tag in
-                        let hasTag = book.tags?.contains(where: { $0.persistentModelID == tag.persistentModelID }) == true
-                        HStack {
-                            Text(tag.name)
-                            Spacer()
-                            if hasTag {
-                                Image(systemName: "checkmark")
-                                    .foregroundStyle(.orange)
-                            }
-                        }
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            toggleTag(tag, hasTag: hasTag)
-                        }
-                    }
+            Form {
+                Section("标签") {
+                    TagSelectionEditor(selectedTags: $selectedTags)
                 }
             }
             .navigationTitle("为「\(book.title)」打标签")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { dismiss() }
+                    Button("完成") { commit() }
                 }
             }
-        }
-    }
-
-    private func addTag(name: String) {
-        let trimmed = name.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return }
-
-        var bookTags = book.tags ?? []
-        if !bookTags.contains(where: { $0.name == trimmed }) {
-            if let existing = existingTags.first(where: { $0.name == trimmed }) {
-                bookTags.append(existing)
-            } else {
-                let newTag = Tag(name: trimmed)
-                modelContext.insert(newTag)
-                bookTags.append(newTag)
+            .onAppear {
+                selectedTags = Set((book.tags ?? []).map(\.name))
             }
-            book.tags = bookTags
-            try? modelContext.save()
         }
-        newTagName = ""
     }
 
-    private func toggleTag(_ tag: Tag, hasTag: Bool) {
-        var bookTags = book.tags ?? []
-        if hasTag {
-            bookTags.removeAll { $0.persistentModelID == tag.persistentModelID }
-        } else {
-            bookTags.append(tag)
+    private func commit() {
+        var bookTags: [Tag] = []
+        for tagName in selectedTags {
+            if let tag = try? BookService.findOrCreateTag(name: tagName, modelContext: modelContext) {
+                bookTags.append(tag)
+            }
         }
         book.tags = bookTags
         try? modelContext.save()
+        dismiss()
     }
 }
 
