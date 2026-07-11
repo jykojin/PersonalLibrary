@@ -6,7 +6,6 @@ struct AddBookView: View {
     @Environment(\.dismiss) private var dismiss
 
     @Query(sort: \Bookshelf.sortOrder) private var bookshelves: [Bookshelf]
-    @Query(sort: \Tag.name) private var allTags: [Tag]
 
     // ISBN 扫描
     @State private var isbn = ""
