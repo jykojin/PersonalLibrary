@@ -2,7 +2,7 @@
 
 > 本文是面向开发者（及 AI 协作）的**知识沉淀**：当前功能全景、架构、关键设计决策与踩坑、版本演进。
 > 与其它文档分工：`README.md` 对外介绍、`SETUP.md` 建工程步骤、`CLAUDE.md` 协作纪律与权限。**本文不重复这些，只记"为什么这么做 / 坑在哪"。**
-> 最后更新：v0.62（git 最新 tag）。注：下方第 6 节里程碑沿用旧的开发编号（tag 序列曾重排，见 commit 7f7183e），与实际 tag 号不对应，仅作功能演进参考。
+> 最后更新：v0.63（git 最新 tag）。注：下方第 6 节里程碑沿用旧的开发编号（tag 序列曾重排，见 commit 7f7183e），与实际 tag 号不对应，仅作功能演进参考。
 
 ---
 
@@ -114,6 +114,11 @@ iOS 个人藏书管理 + 阅读进度跟踪 App。SwiftUI + SwiftData，iOS 17+�
 - `syncLockPreventsDoubleTrigger` 断言全局 `WeReadSyncService.isSyncing == false`，在并行全量跑时随机失败：Swift Testing 的 `.serialized` **只保证 suite 内串行，suite 之间仍并行**，别的 suite 正在 `sync()` 持锁时该断言就翻（碰这把锁的 8 个 suite 里它是唯一没加 `.serialized` 的）。而且它并未真正验证判定逻辑，只是读了个环境值。
 - 对策：照 `shouldAutoSync` 的既有做法抽纯函数 `shouldProceed(isSyncing:skipLockCheck:)`，**并让 `sync()` 的实际 guard 走它** —— 保证被测的就是生产用的判定，而不是一个平行实现。
 - **通则：测判定逻辑就抽纯函数 + 显式入参；断言全局可变状态的环境值必然 flaky。**
+- 后续复查（v0.63）纠正了上面的归因：**真正的隐患不是那把同步锁** —— 20 处 `sync()` 里 19 处传了 `skipLockCheck: true`，压根不碰锁。跨 suite 污染源实际是两个：
+  - **`AppLogger.currentMode`**（UserDefaults 支撑的进程级全局）：3 个用例改全局模式 + 断言共享 `FileLogger` 的**整文件内容**。改模式会非确定性影响并行 suite 的日志行为；`.verbose` 期间并行 suite 涌出 perf/debug，叠加 2MB 轮转可能把断言要找的 marker 挤出文件。→ 抽 `shouldLog(level:mode:)` / `shouldLogPerf(mode:)`，`log()`/`perf()` 的 guard 走它们，用例改为纯函数真值表。
+  - **`syncWithoutLogin`**：唯一不传 `skipLockCheck` 的调用，且删共享 Keychain 的 `wereadCookieKey`。→ 给已有的 `MockWeReadDataSource` 加可配置 `connected`，用"未连接的 mock"表达未登录，不碰 Keychain 与锁。
+- **通则：判断 flaky 根因时，先统计"到底哪些调用真的碰了那个全局态"，别凭 `.serialized` 标记推断。** 标记的存在往往只说明有人怀疑过，不代表它是真凶（这里 7 个 suite 的标记都不是必需的）。
+- **通则：UserDefaults 支撑的属性就是进程级全局态**，测试改它等于改整个测试进程的行为，`.serialized` 无法约束（该 trait 只管 suite 内）。
 
 ### 4.11 其它约定
 - 版本号三处同步（详见 CLAUDE.md）：`project.yml` 的 `MARKETING_VERSION` → `xcodegen generate` → `git tag`。`Info.plist` 用 `$(MARKETING_VERSION)` 占位，勿手改。
