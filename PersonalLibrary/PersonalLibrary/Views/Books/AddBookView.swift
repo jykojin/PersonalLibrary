@@ -15,6 +15,8 @@ struct AddBookView: View {
     @State private var lookupError: String?
     @State private var duplicateBook: Book?
     @State private var showDuplicateAlert = false
+    /// 同 ISBN 已有其它载体版本时的温和提示（不拦截添加）
+    @State private var otherEditionHint: String?
 
     // 智能补全
     @State private var isSmartFilling = false
@@ -83,6 +85,13 @@ struct AddBookView: View {
                         Text(error)
                             .font(.caption)
                             .foregroundStyle(.red)
+                    }
+
+                    // 同 ISBN 已有其它载体版本：只提示，不拦截
+                    if let hint = otherEditionHint {
+                        Label(hint, systemImage: "info.circle")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
                     }
                 }
 
@@ -155,6 +164,8 @@ struct AddBookView: View {
                             Text(type.rawValue).tag(type)
                         }
                     }
+                    // 改类型后原提示可能已不适用（如从纸质书改成电子书），先清掉
+                    .onChange(of: bookType) { _, _ in otherEditionHint = nil }
 
                     Picker("阅读状态", selection: $readingStatus) {
                         ForEach(ReadingStatus.allCases, id: \.self) { status in
@@ -250,12 +261,22 @@ struct AddBookView: View {
     private func performLookup(isbn: String) async {
         guard !isbn.isEmpty else { return }
 
-        // ISBN 去重检查
-        let existing = ISBNDuplicateChecker.findExisting(isbn: isbn, in: modelContext)
+        // ISBN 去重检查：只有"同 ISBN + 同载体"才算重复。
+        // 同一本书的纸质版与电子版是两本书（常见于实体书 + 微信读书电子版都收），
+        // 不能让已有的电子书拦住纸质书的添加。
+        let existing = ISBNDuplicateChecker.findExisting(isbn: isbn, bookType: bookType, in: modelContext)
         if let existing {
             duplicateBook = existing
             showDuplicateAlert = true
             return
+        }
+
+        // 存在其它载体的版本 → 放行，但温和提示一下
+        let otherEditions = ISBNDuplicateChecker.findOtherEditions(isbn: isbn, excluding: bookType, in: modelContext)
+        if let other = otherEditions.first {
+            otherEditionHint = "你已有这本书的\(other.bookType.rawValue)版「\(other.title)」，本次将新增\(bookType.rawValue)。"
+        } else {
+            otherEditionHint = nil
         }
 
         isLookingUp = true

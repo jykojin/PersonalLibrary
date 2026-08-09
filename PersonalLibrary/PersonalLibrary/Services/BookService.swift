@@ -116,30 +116,37 @@ enum ISBNDuplicateChecker {
     }
 
     /// 查找本地是否已有相同 ISBN 的书籍
+    /// - Parameter bookType: 限定载体。同一 ISBN 的纸质书与电子书是两本不同的书
+    ///   （常见于"实体书 + 微信读书电子版都收"），传入类型可避免电子书拦住纸质书的添加。
+    ///   传 nil 表示不限载体（保持旧行为）。
     /// - Returns: 已有的书籍，如果没找到返回 nil
     @MainActor
-    static func findExisting(isbn: String, in context: ModelContext) -> Book? {
-        let cleaned = cleanISBN(isbn)
-        guard !cleaned.isEmpty else { return nil }
-
-        // 先用精确匹配快速查（大多数情况 ISBN 格式一致）
-        let isbnStr = isbn
-        var exactDescriptor = FetchDescriptor<Book>(
-            predicate: #Predicate { $0.isbn == isbnStr }
-        )
-        exactDescriptor.fetchLimit = 1
-        if let match = try? context.fetch(exactDescriptor).first {
-            return match
+    static func findExisting(isbn: String, bookType: BookType? = nil, in context: ModelContext) -> Book? {
+        matchingBooks(isbn: isbn, in: context).first { book in
+            guard let bookType else { return true }
+            return book.bookType == bookType
         }
+    }
 
-        // 精确匹配失败，做清理后的模糊匹配（处理连字符等格式差异）
+    /// 查找同 ISBN 但载体不同的版本（用于"你已有电子书版"这类温和提示）。
+    @MainActor
+    static func findOtherEditions(isbn: String, excluding bookType: BookType, in context: ModelContext) -> [Book] {
+        matchingBooks(isbn: isbn, in: context).filter { $0.bookType != bookType }
+    }
+
+    /// 取出所有 ISBN 匹配的书（已做连字符等格式归一化）
+    @MainActor
+    private static func matchingBooks(isbn: String, in context: ModelContext) -> [Book] {
+        let cleaned = cleanISBN(isbn)
+        guard !cleaned.isEmpty else { return [] }
+
         var descriptor = FetchDescriptor<Book>(
             predicate: #Predicate { $0.isbn != nil }
         )
         descriptor.fetchLimit = 500  // 保护性上限
-        guard let books = try? context.fetch(descriptor) else { return nil }
+        guard let books = try? context.fetch(descriptor) else { return [] }
 
-        return books.first { book in
+        return books.filter { book in
             guard let bookISBN = book.isbn else { return false }
             return cleanISBN(bookISBN) == cleaned
         }
