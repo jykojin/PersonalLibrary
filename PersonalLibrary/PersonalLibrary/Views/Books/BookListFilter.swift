@@ -36,7 +36,15 @@ enum BookListFilter {
         }
     }
 
+    /// 纸质书筛选是否生效。归档视图（已取消收藏）忽略它：那里的用途是
+    /// "找回某本已取消收藏的书"，按载体预筛只会把要找的书藏起来（归档里电子书占多数）。
+    static func appliesPaperOnly(paperOnly: Bool, archivedScope: Bool) -> Bool {
+        paperOnly && !archivedScope
+    }
+
     /// 完整链路：范围 → 纸质书筛选 → 文字匹配。
+    /// 与 `BookListView.recomputeFilteredBooks` 共用同一批判定函数（`scopedBooks` /
+    /// `appliesPaperOnly` / `matches`），避免生产与测试各有一套逻辑。
     static func apply(
         books: [Book],
         archivedScope: Bool,
@@ -46,9 +54,7 @@ enum BookListFilter {
     ) -> [Book] {
         var result = scopedBooks(books, archivedScope: archivedScope)
 
-        // 归档视图忽略纸质书筛选：这里的用途是"找回某本已取消收藏的书"，
-        // 按载体预筛只会把要找的书藏起来（归档里电子书占多数）。
-        if paperOnly && !archivedScope {
+        if appliesPaperOnly(paperOnly: paperOnly, archivedScope: archivedScope) {
             result = result.filter { $0.bookType == .paper }
         }
 

@@ -51,6 +51,13 @@ final class BackupService {
 
     private init() {}
 
+    /// SQLite WAL 边车文件路径（`<file>-wal`）。备份与恢复共用同一推导规则，
+    /// 避免只备份不恢复导致 WAL 里未合并的改动静默丢失。
+    static func walSidecarURL(for url: URL) -> URL {
+        url.deletingLastPathComponent()
+            .appendingPathComponent(url.lastPathComponent + "-wal")
+    }
+
     // MARK: - Public
 
     /// 创建备份，返回备份文件 URL（用于分享面板）
@@ -85,10 +92,11 @@ final class BackupService {
             throw BackupError.backupFailed(error.localizedDescription)
         }
 
-        // 同时复制 WAL 文件（如果存在），合并到主备份中
-        let walURL = dbURL.deletingLastPathComponent().appendingPathComponent("\(dbFileName)-wal")
+        // 同时复制 WAL 文件（如果存在）：WAL 里可能有尚未合并进主库的改动，
+        // 只备份主文件会丢掉这部分。恢复时由 restoreBackup 一并复制回去。
+        let walURL = Self.walSidecarURL(for: dbURL)
         if FileManager.default.fileExists(atPath: walURL.path) {
-            let walDest = backupDir.appendingPathComponent("\(backupFileName)-wal")
+            let walDest = Self.walSidecarURL(for: destinationURL)
             try? FileManager.default.copyItem(at: walURL, to: walDest)
         }
 
@@ -130,6 +138,16 @@ final class BackupService {
 
                 // 复制备份文件到数据库位置
                 try fm.copyItem(at: sourceURL, to: safeURL)
+
+                // 一并恢复 WAL 边车文件：备份时写出了 `<name>.plbackup-wal`，
+                // 若不复制回来，WAL 里未合并进主库的改动就会静默丢失。
+                // 用户只分享/挑选了主文件时该文件不存在，跳过即可（主库自身是完整的）。
+                let sourceWAL = Self.walSidecarURL(for: sourceURL)
+                if fm.fileExists(atPath: sourceWAL.path) {
+                    let destWAL = Self.walSidecarURL(for: safeURL)
+                    try? fm.removeItem(at: destWAL)
+                    try? fm.copyItem(at: sourceWAL, to: destWAL)
+                }
             } catch {
                 restoreError = error
             }
@@ -172,9 +190,7 @@ final class BackupService {
         try FileManager.default.removeItem(at: backup.url)
 
         // 也删除关联的 WAL 文件
-        let walURL = backup.url.deletingLastPathComponent()
-            .appendingPathComponent(backup.url.lastPathComponent + "-wal")
-        try? FileManager.default.removeItem(at: walURL)
+        try? FileManager.default.removeItem(at: Self.walSidecarURL(for: backup.url))
     }
 
     // MARK: - Private

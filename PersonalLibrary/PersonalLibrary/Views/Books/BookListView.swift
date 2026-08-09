@@ -298,45 +298,20 @@ struct BookListView: View {
             }
         }
 
-        // 归档视图忽略纸质书筛选：这里的用途是"找回某本已取消收藏的书"，
-        // 按载体预筛只会把要找的书藏起来（归档里电子书占多数）。
-        if paperOnly && !archivedScope && selectedShelf == "我的藏书" {
+        // 纸质书筛选的"归档视图忽略"规则由 BookListFilter 统一判定（与测试同源）；
+        // 书架维度是首页特有的，故额外要求当前在「我的藏书」。
+        if BookListFilter.appliesPaperOnly(paperOnly: paperOnly, archivedScope: archivedScope),
+           selectedShelf == "我的藏书" {
             result = result.filter { $0.bookType == .paper }
         }
 
         if !searchText.isEmpty {
             let query = searchText
-            result = result.filter { book in
-                switch searchScope {
-                case .all:
-                    return matchesGlobal(book: book, query: query)
-                case .title:
-                    return book.title.localizedCaseInsensitiveContains(query)
-                case .author:
-                    return book.author.localizedCaseInsensitiveContains(query)
-                case .tag:
-                    return book.tags?.contains(where: { $0.name.localizedCaseInsensitiveContains(query) }) == true
-                case .publisher:
-                    return book.publisher?.localizedCaseInsensitiveContains(query) == true
-                case .shelf:
-                    return book.bookshelf?.name.localizedCaseInsensitiveContains(query) == true
-                }
-            }
+            // 走 BookListFilter 的同一份匹配实现，避免生产与测试各有一套逻辑
+            result = result.filter { BookListFilter.matches(book: $0, query: query, scope: searchScope) }
         }
 
         cachedFilteredBooks = result
-    }
-
-    /// 全局搜索：匹配书名、作者、出版社、标签、书架、ISBN
-    private func matchesGlobal(book: Book, query: String) -> Bool {
-        if book.title.localizedCaseInsensitiveContains(query) { return true }
-        if book.author.localizedCaseInsensitiveContains(query) { return true }
-        if book.publisher?.localizedCaseInsensitiveContains(query) == true { return true }
-        if book.isbn?.localizedCaseInsensitiveContains(query) == true { return true }
-        if book.bookshelf?.name.localizedCaseInsensitiveContains(query) == true { return true }
-        if book.tags?.contains(where: { $0.name.localizedCaseInsensitiveContains(query) }) == true { return true }
-        if book.translator?.localizedCaseInsensitiveContains(query) == true { return true }
-        return false
     }
 
     // MARK: - 搜索栏

@@ -5071,3 +5071,26 @@ struct ISBNDuplicateLargeLibraryTests {
         #expect(ISBNDuplicateChecker.findExisting(isbn: "9799999999999", bookType: .paper, in: context) == nil)
     }
 }
+
+// MARK: - 备份 WAL 边车文件 Tests
+
+/// 备份会额外写出 `<name>.plbackup-wal`（createBackup），但恢复时若不一并复制回
+/// `PersonalLibrary.store-wal`，WAL 里尚未合并进主库的改动就会静默丢失。
+@Suite("Backup WAL Sidecar Tests")
+struct BackupWALSidecarTests {
+
+    @Test("备份文件能推导出对应的 -wal 边车路径")
+    func derivesSidecarFromBackup() {
+        let backup = URL(fileURLWithPath: "/tmp/PersonalLibrary_20260809_091829.plbackup")
+        let sidecar = BackupService.walSidecarURL(for: backup)
+        #expect(sidecar.lastPathComponent == "PersonalLibrary_20260809_091829.plbackup-wal")
+        #expect(sidecar.deletingLastPathComponent().path == backup.deletingLastPathComponent().path)
+    }
+
+    @Test("数据库文件能推导出对应的 -wal 目标路径")
+    func derivesSidecarFromStore() {
+        let store = URL(fileURLWithPath: "/var/mobile/Library/Application Support/PersonalLibrary.store")
+        let sidecar = BackupService.walSidecarURL(for: store)
+        #expect(sidecar.lastPathComponent == "PersonalLibrary.store-wal")
+    }
+}
