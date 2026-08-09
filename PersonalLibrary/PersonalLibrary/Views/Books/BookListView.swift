@@ -298,7 +298,9 @@ struct BookListView: View {
             }
         }
 
-        if paperOnly && (archivedScope || selectedShelf == "我的藏书") {
+        // 归档视图忽略纸质书筛选：这里的用途是"找回某本已取消收藏的书"，
+        // 按载体预筛只会把要找的书藏起来（归档里电子书占多数）。
+        if paperOnly && !archivedScope && selectedShelf == "我的藏书" {
             result = result.filter { $0.bookType == .paper }
         }
 

@@ -4843,8 +4843,22 @@ struct BookListFilterArchivedScopeTests {
             books: makeBooks(), archivedScope: true, paperOnly: true,
             searchText: "", searchScope: .all
         )
+        // 归档视图忽略纸质书筛选：这是"找回某本取消收藏的书"的场景，
+        // 按载体预筛只会把要找的书藏起来（电子书占归档的多数）。
+        #expect(result.count == 3)
+        #expect(result.allSatisfy { $0.isArchived })
+        #expect(result.contains { $0.bookType == .ebook }, "归档视图不应滤掉电子书")
+    }
+
+    @Test("归档范围 + 纸质书筛选 + 文字搜索：仍能搜到电子书")
+    func archivedScopeIgnoresPaperOnlyWhenSearching() {
+        let result = BookListFilter.apply(
+            books: makeBooks(), archivedScope: true, paperOnly: true,
+            searchText: "曹操", searchScope: .title
+        )
+        // 「曹操」(纸质) 和「曹操的谋略」(电子) 都应命中
         #expect(result.count == 2)
-        #expect(result.allSatisfy { $0.isArchived && $0.bookType == .paper })
+        #expect(result.contains { $0.bookType == .ebook })
     }
 
     @Test("普通范围：排除已归档的书（回归保护）")

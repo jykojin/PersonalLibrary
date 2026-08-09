@@ -2,7 +2,7 @@
 
 > 本文是面向开发者（及 AI 协作）的**知识沉淀**：当前功能全景、架构、关键设计决策与踩坑、版本演进。
 > 与其它文档分工：`README.md` 对外介绍、`SETUP.md` 建工程步骤、`CLAUDE.md` 协作纪律与权限。**本文不重复这些，只记"为什么这么做 / 坑在哪"。**
-> 最后更新：v0.57（git 最新 tag）。注：下方第 6 节里程碑沿用旧的开发编号（tag 序列曾重排，见 commit 7f7183e），与实际 tag 号不对应，仅作功能演进参考。
+> 最后更新：v0.60（git 最新 tag）。注：下方第 6 节里程碑沿用旧的开发编号（tag 序列曾重排，见 commit 7f7183e），与实际 tag 号不对应，仅作功能演进参考。
 
 ---
 
@@ -82,7 +82,35 @@ iOS 个人藏书管理 + 阅读进度跟踪 App。SwiftUI + SwiftData，iOS 17+�
 - **豆瓣限流**：`DoubanRateLimiter`（等待上限 30s，避免陈旧预约卡死）+ 分源延迟日志。
 - 批量补全节流：与 WeRead 同步 QPS 对齐（顺序 + 2s 间隔），曾因并发/burst 导致发热，最终回退到稳的方案。
 
-### 4.7 其它约定
+### 4.7 「一次性结果」不能承载「持续筛选范围」⚠️
+
+- 症状（v0.60 修）：高级搜索勾「已取消收藏的书」拿到结果后，在首页搜索框输入文字，**已归档的书一本也搜不出来**。
+- 根因：范围只靠一次性的 `advancedSearchResults: [Book]?` 表达，而 `recomputeFilteredBooks` 的每个分支都无条件 `filter { !$0.isArchived }`。`onChange(of: searchText)` 清掉该数组后，范围**静默退回「未归档」**，于是输入文字变成在未归档集合里匹配。
+- 对策：范围提升为持续状态 `@State archivedScope`（由 `AdvancedSearchView` 回调一并传回）；`searchText` 变化只丢弃一次性结果、**保留范围**；切书架才视为离开。
+- **通则：凡是"视图当前在看哪个集合"这类语义，必须用独立的状态变量表达，不能用某次查询的结果数组兼任** —— 结果数组会被各种 `onChange` 正常清理，范围却会跟着一起丢。
+- 附带教训（同一 bug 的第二层）：条幅原先只在 `advancedSearchResults != nil` 时显示，一输入文字就消失 → 用户既看不出当前范围、也没有退出出口。**特殊范围态必须常驻可见且可退出。**
+- 排查方法论沉淀：先用 Core Data 变更日志（`ACHANGE.ZCOLUMNS` 位图 ↔ `ZBOOK` 列序）确认**写入侧无辜**（`isArchived` 写入事件数与归档书数 1:1、`ZBOOK` 零 delete），再回头查读取侧，避免了在写入路径上白挖。多代备份横比（归档数只增不减）也是有效的排除手段。
+
+### 4.8 去重判定必须带 `bookType` 维度 ⚠️
+
+- 症状（v0.60 修）：库里已有某 ISBN 的**电子书**（微信读书导入）时，扫同一本书的**纸质版**被判「ISBN 重复」，直接 `return`，纸质书加不进去。
+- 根因：`ISBNDuplicateChecker.findExisting` 只比 ISBN、不看载体。而"实体书 + 微信读书电子版都收"是常态用法 —— 库里实测已有 **69 组**同 ISBN 跨载体并存，全是经 Excel 导入/微信读书同步进来的，**唯独扫码这条路被堵死**。
+- 讽刺的是 `WeReadSyncService.findExistingBook` 早就按 `bookType` 区分并注明「防止电子书和纸质书混淆」—— **同一个语义在两条路径上实现不一致**，同步路径想到了，扫码路径没有。
+- 对策：`findExisting` 增可选 `bookType`（默认 `nil` 保持旧行为），只有"同 ISBN + 同载体"才算重复；新增 `findOtherEditions` 用于"你已有电子书版"的温和提示（**放行不拦截**）。
+- **通则：ISBN 在本库不是唯一键，`(isbn, bookType)` 才是。** 新增任何按 ISBN 查重/匹配的逻辑，先问一句"跨载体怎么办"。
+
+### 4.9 筛选条件叠加会把要找的东西藏起来
+
+- 归档视图（已取消收藏）**忽略** `paperOnly` 纸质书筛选。原因：归档里电子书占多数（实测 15 电子 / 10 纸质），而该视图的用途是"找回某一本具体的书"，按载体预筛只会让用户以为书丢了（真实案例：《惊呆了！哲学这么好》是电子书，开着纸质书筛选就永远看不到）。
+- **通则：回收站/找回类视图，少叠加隐式筛选。** 若坚持叠加，必须在 UI 上显式说明"N 本被隐藏"，否则就是静默丢结果。
+
+### 4.10 全局静态状态的测试要用纯函数
+
+- `syncLockPreventsDoubleTrigger` 断言全局 `WeReadSyncService.isSyncing == false`，在并行全量跑时随机失败：Swift Testing 的 `.serialized` **只保证 suite 内串行，suite 之间仍并行**，别的 suite 正在 `sync()` 持锁时该断言就翻（碰这把锁的 8 个 suite 里它是唯一没加 `.serialized` 的）。而且它并未真正验证判定逻辑，只是读了个环境值。
+- 对策：照 `shouldAutoSync` 的既有做法抽纯函数 `shouldProceed(isSyncing:skipLockCheck:)`，**并让 `sync()` 的实际 guard 走它** —— 保证被测的就是生产用的判定，而不是一个平行实现。
+- **通则：测判定逻辑就抽纯函数 + 显式入参；断言全局可变状态的环境值必然 flaky。**
+
+### 4.11 其它约定
 - 版本号三处同步（详见 CLAUDE.md）：`project.yml` 的 `MARKETING_VERSION` → `xcodegen generate` → `git tag`。`Info.plist` 用 `$(MARKETING_VERSION)` 占位，勿手改。
 - 所有 `#Preview` 用 `inMemory: true` 容器。
 - 阅读状态机：unread/idle → reading → finished（或 paused/dropped）；记录阅读会自动更新 `currentPage` 并可能自动转状态。
@@ -112,6 +140,13 @@ iOS 个人藏书管理 + 阅读进度跟踪 App。SwiftUI + SwiftData，iOS 17+�
 - **v0.79**：**详情页备注卡顿根治 + 封面缩略图化 + 一次性迁移**（库内封面 139MB→75MB，消除看门狗崩溃/内存压力）。
 - **v0.80**：上述两功能合并上线。
 - **v0.81**：加入日期并入阅读时间线（纯展示）。
+
+> 以下按实际 tag 号（tag 序列已于 commit 7f7183e 重排对齐）：
+
+- **v0.57**：数据备份导出改为真正的 XLSX（Objects2XLSX）。
+- **v0.58**：标签去重（启动一次性合并同名标签）+ 四处打标签 UI 统一为 `TagSelectionEditor`。
+- **v0.59**：**首页搜索保留「已取消收藏」范围**（见 4.7）。
+- **v0.60**：**扫码添加不再被同 ISBN 的其它载体拦住**（见 4.8）+ 归档视图忽略纸质书筛选（见 4.9）+ 同步锁测试 flaky 修复（见 4.10）。
 
 ---
 
