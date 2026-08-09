@@ -9,8 +9,10 @@ struct AdvancedSearchView: View {
     @Query(sort: \Bookshelf.name) private var bookshelves: [Bookshelf]
     @Query private var allTags: [Tag]
 
-    /// 搜索结果回调：传回匹配的书籍，关闭搜索页回到藏书页展示
-    var onSearchResults: (([Book]) -> Void)?
+    /// 搜索结果回调：传回匹配的书籍 + 是否处于「已取消收藏」范围，
+    /// 关闭搜索页回到藏书页展示。范围要一起传回，否则首页再输入文字时
+    /// 会退回「未归档」基准集合，导致已取消收藏的书一本也搜不出来。
+    var onSearchResults: (([Book], Bool) -> Void)?
 
     // 文本条件
     @State private var titleQuery = ""
@@ -224,7 +226,7 @@ struct AdvancedSearchView: View {
                     Button("搜索") {
                         hasSearched = true
                         if let callback = onSearchResults {
-                            callback(results)
+                            callback(results, showArchived)
                             dismiss()
                         }
                     }
