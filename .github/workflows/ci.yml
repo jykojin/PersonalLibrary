@@ -1,10 +1,22 @@
 name: CI
 
+# macOS runner 计费倍率是 Linux 的 10×，所以：
+# - push 只在 main 与 tag 上跑（功能分支靠 PR 触发，避免同一批改动跑两遍）
+# - 纯文档改动跳过（不影响构建产物）
 on:
   push:
     branches: [main]
+    tags: ["v*"]
+    paths-ignore: ["**/*.md", LICENSE, .gitignore]
   pull_request:
     branches: [main]
+    paths-ignore: ["**/*.md", LICENSE, .gitignore]
+  workflow_dispatch:   # 允许手动触发（排查 CI 本身时很有用）
+
+# 新推送取消同分支仍在跑的旧任务，避免叠加消耗
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-and-test:
@@ -21,14 +33,27 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      # Config.xcconfig 含 Team ID / Bundle ID，被 .gitignore 排除，干净 checkout
+      # 里不存在 → xcodegen 会因 "invalid config file path" 直接失败。
+      # CI 不做真机签名，用 example 生成一份即可。
+      - name: Prepare Config.xcconfig
+        run: |
+          if [ ! -f Config.xcconfig ]; then
+            cp Config.xcconfig.example Config.xcconfig
+            sed -i '' 's/^DEVELOPMENT_TEAM.*/DEVELOPMENT_TEAM =/' Config.xcconfig
+            sed -i '' 's|^PRODUCT_BUNDLE_IDENTIFIER.*|PRODUCT_BUNDLE_IDENTIFIER = com.example.PersonalLibrary|' Config.xcconfig
+          fi
+
       - name: Generate Xcode project
         run: xcodegen generate
 
+      # 模拟器构建关闭签名，避免 CI 无证书导致失败
       - name: Build
         run: |
           xcodebuild -scheme PersonalLibrary \
             -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
             -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
             build
 
       - name: Test
@@ -37,6 +62,7 @@ jobs:
             -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
             -derivedDataPath DerivedData \
             -resultBundlePath TestResults.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
             test
 
       - name: Upload test results
