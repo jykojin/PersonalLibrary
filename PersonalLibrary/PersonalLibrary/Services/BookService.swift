@@ -134,21 +134,40 @@ enum ISBNDuplicateChecker {
         matchingBooks(isbn: isbn, in: context).filter { $0.bookType != bookType }
     }
 
-    /// 取出所有 ISBN 匹配的书（已做连字符等格式归一化）
+    /// 取出所有 ISBN 匹配的书（已做连字符等格式归一化）。
+    ///
+    /// ⚠️ 绝不能用「捞一批到内存再过滤」的写法：曾用 `fetchLimit = 500` 全表捞取，
+    /// 而真实库有 2742 本带 ISBN 的书 → 位次靠后的 ~82% 扫码时查不到重复，
+    /// 导致已存在的书被重复添加（真实案例：《我已经没有烦恼了》排在最末）。
+    /// 匹配必须下推到数据库 predicate，不受任何条数上限影响。
     @MainActor
     private static func matchingBooks(isbn: String, in context: ModelContext) -> [Book] {
         let cleaned = cleanISBN(isbn)
         guard !cleaned.isEmpty else { return [] }
 
-        var descriptor = FetchDescriptor<Book>(
-            predicate: #Predicate { $0.isbn != nil }
-        )
-        descriptor.fetchLimit = 500  // 保护性上限
-        guard let books = try? context.fetch(descriptor) else { return [] }
-
-        return books.filter { book in
-            guard let bookISBN = book.isbn else { return false }
-            return cleanISBN(bookISBN) == cleaned
+        // 库里 ISBN 的写法可能带连字符/空格，扫出来的是纯数字（或反之）。
+        // 用「纯数字」和「原始输入」两种形式各查一次，覆盖绝大多数情况。
+        var seen = Set<PersistentIdentifier>()
+        var result: [Book] = []
+        for candidate in Set([cleaned, isbn]) {
+            let descriptor = FetchDescriptor<Book>(
+                predicate: #Predicate { $0.isbn == candidate }
+            )
+            for book in (try? context.fetch(descriptor)) ?? [] where seen.insert(book.persistentModelID).inserted {
+                result.append(book)
+            }
         }
+
+        // 仍没命中时，才做一次归一化兜底（处理库里存了连字符、而查询值是纯数字这类差异）。
+        // 不设条数上限——正确性优先于这条冷路径的开销。
+        if result.isEmpty {
+            let all = (try? context.fetch(FetchDescriptor<Book>(predicate: #Predicate { $0.isbn != nil }))) ?? []
+            result = all.filter { book in
+                guard let bookISBN = book.isbn else { return false }
+                return cleanISBN(bookISBN) == cleaned
+            }
+        }
+
+        return result
     }
 }

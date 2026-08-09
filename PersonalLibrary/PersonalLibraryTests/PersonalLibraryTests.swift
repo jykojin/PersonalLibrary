@@ -4987,3 +4987,87 @@ struct SyncLockDecisionTests {
         #expect(WeReadSyncService.shouldProceed(isSyncing: false, skipLockCheck: true) == true)
     }
 }
+
+// MARK: - ISBN 查重大库边界 Tests
+
+/// 回归防护：findExisting 曾用 fetchLimit=500 捞全表再内存过滤，
+/// 导致位次在 500 之后的书（真实库 2742 本有 ISBN，占 82%）扫码时查不到重复。
+/// 这些用例必须造出超过该上限的数据量，把目标书放在最后。
+@Suite("ISBN Duplicate Large Library Tests")
+struct ISBNDuplicateLargeLibraryTests {
+
+    private func makeContext() throws -> ModelContext {
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        return ModelContext(try ModelContainer(for: schema, configurations: [config]))
+    }
+
+    /// 插入 count 本填充书（ISBN 各不相同），再把目标书插到最后
+    private func seed(_ context: ModelContext, filler: Int, target: Book) throws {
+        for i in 0..<filler {
+            // 13 位、与目标不冲突的 ISBN
+            let isbn = String(format: "97811%08d", i)
+            context.insert(Book(title: "填充书\(i)", author: "作者", isbn: isbn, bookType: .paper))
+        }
+        context.insert(target)
+        try context.save()
+    }
+
+    @Test("大库中位次靠后的书仍能被查重拦住（真实案例：我已经没有烦恼了）")
+    @MainActor
+    func findsDuplicateBeyondFetchLimit() throws {
+        let context = try makeContext()
+        let isbn = "9787573503497"
+        let target = Book(title: "我已经没有烦恼了", author: "[日]田中正人", isbn: isbn, bookType: .paper)
+        try seed(context, filler: 2800, target: target)
+
+        let found = ISBNDuplicateChecker.findExisting(isbn: isbn, bookType: .paper, in: context)
+        #expect(found != nil, "位次超过 fetchLimit 的书必须仍能查到，否则会被重复添加")
+        #expect(found?.title == "我已经没有烦恼了")
+    }
+
+    @Test("大库中不限载体查重也不受位次影响")
+    @MainActor
+    func findsDuplicateBeyondLimitWithoutTypeFilter() throws {
+        let context = try makeContext()
+        let isbn = "9787573503497"
+        let target = Book(title: "我已经没有烦恼了", author: "[日]田中正人", isbn: isbn, bookType: .paper)
+        try seed(context, filler: 2800, target: target)
+
+        #expect(ISBNDuplicateChecker.findExisting(isbn: isbn, in: context) != nil)
+    }
+
+    @Test("大库中连字符格式差异仍能匹配")
+    @MainActor
+    func matchesHyphenatedISBNInLargeLibrary() throws {
+        let context = try makeContext()
+        let target = Book(title: "我已经没有烦恼了", author: "[日]田中正人", isbn: "978-7-5735-0349-7", bookType: .paper)
+        try seed(context, filler: 2800, target: target)
+
+        let found = ISBNDuplicateChecker.findExisting(isbn: "9787573503497", bookType: .paper, in: context)
+        #expect(found != nil, "库里存的是带连字符的 ISBN，扫出来的是纯数字，必须能对上")
+    }
+
+    @Test("大库中跨载体提示也不受位次影响")
+    @MainActor
+    func findsOtherEditionsBeyondLimit() throws {
+        let context = try makeContext()
+        let isbn = "9787544291538"
+        let target = Book(title: "惊呆了！哲学这么好", author: "[日]田中正人", isbn: isbn, bookType: .ebook)
+        try seed(context, filler: 2800, target: target)
+
+        let others = ISBNDuplicateChecker.findOtherEditions(isbn: isbn, excluding: .paper, in: context)
+        #expect(others.count == 1)
+        #expect(others.first?.bookType == .ebook)
+    }
+
+    @Test("大库中不存在的 ISBN 仍正确返回 nil")
+    @MainActor
+    func noFalsePositiveInLargeLibrary() throws {
+        let context = try makeContext()
+        let target = Book(title: "我已经没有烦恼了", author: "[日]田中正人", isbn: "9787573503497", bookType: .paper)
+        try seed(context, filler: 2800, target: target)
+
+        #expect(ISBNDuplicateChecker.findExisting(isbn: "9799999999999", bookType: .paper, in: context) == nil)
+    }
+}
