@@ -51,6 +51,10 @@ struct BookListView: View {
     // 高级搜索结果
     @State private var advancedSearchResults: [Book]?
 
+    /// 「已取消收藏」范围：由高级搜索带回，是持续状态而非一次性结果。
+    /// 首页输入文字后仍要在已归档的书里搜，所以不能随 advancedSearchResults 一起清掉。
+    @State private var archivedScope = false
+
     // 纸质书筛选（默认开启，持久化）
     @AppStorage("bookList_paperOnly") private var paperOnly = true
 
@@ -84,8 +88,12 @@ struct BookListView: View {
                 searchBar
 
                 // 高级搜索结果提示条（仅搜索态显示，提供一键清除）
+                // 归档范围下也要一直显示，否则输入文字后条幅消失、用户无从得知
+                // 当前看的是「已取消收藏」，也没有出口退回正常藏书。
                 if let advResults = advancedSearchResults {
                     advancedSearchBanner(count: advResults.count)
+                } else if archivedScope {
+                    advancedSearchBanner(count: filteredBooks.count)
                 }
 
                 // 书架切换栏
@@ -145,7 +153,8 @@ struct BookListView: View {
                 AddBookView()
             }
             .sheet(isPresented: $showAdvancedSearch) {
-                AdvancedSearchView { results in
+                AdvancedSearchView { results, isArchivedScope in
+                    archivedScope = isArchivedScope
                     advancedSearchResults = results
                 }
             }
@@ -190,16 +199,21 @@ struct BookListView: View {
                 }
             }
             .onChange(of: selectedShelf) { _, _ in
+                // 切书架 = 明确离开归档范围
+                archivedScope = false
                 advancedSearchResults = nil
                 recomputeFilteredBooks()
             }
             .onChange(of: searchText) { _, _ in
+                // 只丢弃一次性的高级搜索结果，保留 archivedScope，
+                // 这样输入文字是在已取消收藏的书里继续筛选，而不是退回未归档。
                 advancedSearchResults = nil
                 recomputeFilteredBooks()
             }
             .onChange(of: searchScope) { _, _ in recomputeFilteredBooks() }
             .onChange(of: paperOnly) { _, _ in recomputeFilteredBooks() }
             .onChange(of: advancedSearchResults) { _, _ in recomputeFilteredBooks() }
+            .onChange(of: archivedScope) { _, _ in recomputeFilteredBooks() }
             .onChange(of: books.count) { _, _ in
                 recomputeShelfNames()
                 recomputeFilteredBooks()
@@ -264,7 +278,10 @@ struct BookListView: View {
 
         var result: [Book]
 
-        if selectedShelf == "我的藏书" {
+        if archivedScope {
+            // 「已取消收藏」范围：跨书架看全部已归档的书，再走纸质书筛选与文字匹配
+            result = BookListFilter.scopedBooks(books, archivedScope: true)
+        } else if selectedShelf == "我的藏书" {
             result = books.filter { !$0.isArchived }
         } else if selectedShelf == "微信读书" {
             result = books.filter { book in
@@ -281,7 +298,7 @@ struct BookListView: View {
             }
         }
 
-        if paperOnly && selectedShelf == "我的藏书" {
+        if paperOnly && (archivedScope || selectedShelf == "我的藏书") {
             result = result.filter { $0.bookType == .paper }
         }
 
@@ -370,12 +387,13 @@ struct BookListView: View {
     // 高级搜索结果提示条：左侧标明当前是搜索结果，右侧一键清除回到全部藏书
     private func advancedSearchBanner(count: Int) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: "slider.horizontal.3")
+            Image(systemName: archivedScope ? "heart.slash" : "slider.horizontal.3")
                 .font(.caption)
-            Text("高级搜索结果（\(count) 本）")
+            Text(archivedScope ? "已取消收藏（\(count) 本）" : "高级搜索结果（\(count) 本）")
                 .font(.subheadline)
             Spacer()
             Button {
+                archivedScope = false
                 advancedSearchResults = nil
                 recomputeFilteredBooks()
             } label: {

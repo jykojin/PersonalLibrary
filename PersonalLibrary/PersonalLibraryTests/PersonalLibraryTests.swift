@@ -4792,3 +4792,70 @@ struct TagMaintenanceTests {
         #expect(refetched.first?.name == "签名")
     }
 }
+
+// MARK: - 首页归档范围搜索 Tests
+
+/// 复现并锁定 bug：高级搜索勾选「已取消收藏的书」后，在首页搜索框输入文字
+/// 会让范围静默退回「未归档」，导致已取消收藏的书一本也搜不出来。
+@Suite("BookListFilter Archived Scope Tests")
+struct BookListFilterArchivedScopeTests {
+
+    /// 构造：2 本已归档纸质书 + 1 本已归档电子书 + 1 本未归档纸质书（同名关键词）
+    private func makeBooks() -> [Book] {
+        let archivedPaper1 = Book(title: "曹操", author: "易中天", bookType: .paper)
+        archivedPaper1.isArchived = true
+
+        let archivedPaper2 = Book(title: "论历史", author: "霍布斯鲍姆", bookType: .paper)
+        archivedPaper2.isArchived = true
+
+        let archivedEbook = Book(title: "曹操的谋略", author: "某作者", bookType: .ebook)
+        archivedEbook.isArchived = true
+
+        let activePaper = Book(title: "曹操全传", author: "另一作者", bookType: .paper)
+
+        return [archivedPaper1, archivedPaper2, archivedEbook, activePaper]
+    }
+
+    @Test("归档范围：不搜索时返回全部已归档的书")
+    func archivedScopeWithoutQuery() {
+        let result = BookListFilter.apply(
+            books: makeBooks(), archivedScope: true, paperOnly: false,
+            searchText: "", searchScope: .all
+        )
+        #expect(result.count == 3)
+        #expect(result.allSatisfy { $0.isArchived })
+    }
+
+    @Test("归档范围 + 文字搜索：应在已归档的书里搜，而不是退回未归档")
+    func archivedScopeWithQuery() {
+        let result = BookListFilter.apply(
+            books: makeBooks(), archivedScope: true, paperOnly: false,
+            searchText: "曹操", searchScope: .title
+        )
+        // 应命中「曹操」(纸质,已归档) 和「曹操的谋略」(电子,已归档)
+        #expect(result.count == 2)
+        #expect(result.allSatisfy { $0.isArchived })
+        // 绝不能把未归档的「曹操全传」搜出来
+        #expect(!result.contains { $0.title == "曹操全传" })
+    }
+
+    @Test("归档范围 + 纸质书筛选：paperOnly 照常生效")
+    func archivedScopeRespectsPaperOnly() {
+        let result = BookListFilter.apply(
+            books: makeBooks(), archivedScope: true, paperOnly: true,
+            searchText: "", searchScope: .all
+        )
+        #expect(result.count == 2)
+        #expect(result.allSatisfy { $0.isArchived && $0.bookType == .paper })
+    }
+
+    @Test("普通范围：排除已归档的书（回归保护）")
+    func normalScopeExcludesArchived() {
+        let result = BookListFilter.apply(
+            books: makeBooks(), archivedScope: false, paperOnly: false,
+            searchText: "曹操", searchScope: .title
+        )
+        #expect(result.count == 1)
+        #expect(result.first?.title == "曹操全传")
+    }
+}
