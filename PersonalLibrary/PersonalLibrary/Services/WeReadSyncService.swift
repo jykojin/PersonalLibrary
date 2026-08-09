@@ -37,6 +37,12 @@ actor WeReadSyncService {
         progressLock.unlock()
     }
 
+    /// 纯函数版本：是否放行本次同步。仅依赖显式入参，不读取全局状态。
+    /// 便于在并行测试中无副作用地验证判定逻辑（与 shouldAutoSync 同样的做法）。
+    static func shouldProceed(isSyncing: Bool, skipLockCheck: Bool) -> Bool {
+        skipLockCheck || !isSyncing
+    }
+
     /// 仅供测试使用：重置同步锁状态
     static func resetSyncLockForTesting() {
         setSyncing(false)
@@ -191,7 +197,7 @@ actor WeReadSyncService {
 
         // 0. 防止重复触发：如果已有同步在运行，直接返回
         if !skipLockCheck {
-            guard !Self.isSyncing else {
+            guard Self.shouldProceed(isSyncing: Self.isSyncing, skipLockCheck: skipLockCheck) else {
                 AppLogger.warning("[SYNC-LOCK] 被锁拦住，当前已有 sync 在运行", category: "WeReadSync")
                 result.error = "同步正在进行中，请稍候"
                 return result

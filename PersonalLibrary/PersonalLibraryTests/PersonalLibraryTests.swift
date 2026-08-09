@@ -1479,11 +1479,9 @@ struct WeReadUserImportedTests {
         #expect(book3.wereadEnrichedDate != nil)  // 纸质书不受影响
     }
 
-    @Test("isSyncing 防止重复同步")
-    func syncLockPreventsDoubleTrigger() async throws {
-        // 验证 isSyncing 静态属性默认为 false
-        #expect(WeReadSyncService.isSyncing == false)
-    }
+    // 注：原「isSyncing 防止重复同步」用例断言的是全局静态 isSyncing 的环境值，
+    // 会被并行运行的其它 suite（正在 sync 持锁）干扰而随机失败，且并未真正验证
+    // 判定逻辑。已改为 SyncLockDecisionTests 里的纯函数用例。
 }
 
 // MARK: - WeRead Sync Update Strategy Tests
@@ -4948,5 +4946,30 @@ struct ISBNDuplicateCrossTypeTests {
 
         let others = ISBNDuplicateChecker.findOtherEditions(isbn: isbn, excluding: .paper, in: context)
         #expect(others.count == 1)
+    }
+}
+
+// MARK: - 同步锁判定（并行安全）Tests
+
+/// `isSyncing` 是全局静态状态，直接断言它的环境值会被并行 suite 干扰
+/// （Swift Testing 的 .serialized 只在 suite 内串行，suite 之间仍并行）。
+/// 参照 shouldAutoSync 的既有做法，用纯函数表达判定逻辑，测试不碰全局状态。
+@Suite("Sync Lock Decision Tests")
+struct SyncLockDecisionTests {
+
+    @Test("已有同步在跑时不放行")
+    func blocksWhenAlreadySyncing() {
+        #expect(WeReadSyncService.shouldProceed(isSyncing: true, skipLockCheck: false) == false)
+    }
+
+    @Test("没有同步在跑时放行")
+    func proceedsWhenIdle() {
+        #expect(WeReadSyncService.shouldProceed(isSyncing: false, skipLockCheck: false) == true)
+    }
+
+    @Test("skipLockCheck 绕过锁（内部调用场景）")
+    func skipLockCheckBypassesLock() {
+        #expect(WeReadSyncService.shouldProceed(isSyncing: true, skipLockCheck: true) == true)
+        #expect(WeReadSyncService.shouldProceed(isSyncing: false, skipLockCheck: true) == true)
     }
 }
