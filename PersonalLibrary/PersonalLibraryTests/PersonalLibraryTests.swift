@@ -4859,3 +4859,94 @@ struct BookListFilterArchivedScopeTests {
         #expect(result.first?.title == "曹操全传")
     }
 }
+
+// MARK: - 扫码添加：同 ISBN 不同载体 Tests
+
+/// 复现并锁定 bug：库里已有某 ISBN 的电子书时，扫同一本书的纸质版
+/// 会被判为「ISBN 重复」而无法添加。同 ISBN 不同载体应视为不同的书。
+@Suite("ISBN Duplicate Cross-Type Tests")
+struct ISBNDuplicateCrossTypeTests {
+
+    private func makeContext() throws -> ModelContext {
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        return ModelContext(try ModelContainer(for: schema, configurations: [config]))
+    }
+
+    /// 真实案例：《惊呆了！哲学这么好》ISBN 9787544291538 已有电子书（微信读书导入）
+    private let isbn = "9787544291538"
+
+    @Test("已有电子书时，扫纸质书不算重复（可以添加）")
+    @MainActor
+    func paperNotBlockedByExistingEbook() throws {
+        let context = try makeContext()
+        let ebook = Book(title: "惊呆了！哲学这么好", author: "[日]田中正人", isbn: isbn, bookType: .ebook)
+        context.insert(ebook)
+        try context.save()
+
+        let blocker = ISBNDuplicateChecker.findExisting(isbn: isbn, bookType: .paper, in: context)
+        #expect(blocker == nil, "同 ISBN 的电子书不应拦住纸质书的添加")
+    }
+
+    @Test("已有纸质书时，扫纸质书仍算重复（防真正的重复录入）")
+    @MainActor
+    func paperBlockedBySamePaper() throws {
+        let context = try makeContext()
+        let paper = Book(title: "惊呆了！哲学这么好", author: "[日]田中正人", isbn: isbn, bookType: .paper)
+        context.insert(paper)
+        try context.save()
+
+        let blocker = ISBNDuplicateChecker.findExisting(isbn: isbn, bookType: .paper, in: context)
+        #expect(blocker != nil)
+        #expect(blocker?.bookType == .paper)
+    }
+
+    @Test("不传 bookType 时保持旧行为：任意载体都算重复")
+    @MainActor
+    func nilBookTypeMatchesAnyType() throws {
+        let context = try makeContext()
+        let ebook = Book(title: "惊呆了！哲学这么好", author: "[日]田中正人", isbn: isbn, bookType: .ebook)
+        context.insert(ebook)
+        try context.save()
+
+        let found = ISBNDuplicateChecker.findExisting(isbn: isbn, in: context)
+        #expect(found != nil)
+    }
+
+    @Test("能查出其它载体版本，用于温和提示")
+    @MainActor
+    func findsOtherEditionsForHint() throws {
+        let context = try makeContext()
+        let ebook = Book(title: "惊呆了！哲学这么好", author: "[日]田中正人", isbn: isbn, bookType: .ebook)
+        context.insert(ebook)
+        try context.save()
+
+        let others = ISBNDuplicateChecker.findOtherEditions(isbn: isbn, excluding: .paper, in: context)
+        #expect(others.count == 1)
+        #expect(others.first?.bookType == .ebook)
+    }
+
+    @Test("没有其它载体版本时提示为空")
+    @MainActor
+    func noOtherEditionsWhenOnlySameType() throws {
+        let context = try makeContext()
+        let paper = Book(title: "惊呆了！哲学这么好", author: "[日]田中正人", isbn: isbn, bookType: .paper)
+        context.insert(paper)
+        try context.save()
+
+        let others = ISBNDuplicateChecker.findOtherEditions(isbn: isbn, excluding: .paper, in: context)
+        #expect(others.isEmpty)
+    }
+
+    @Test("其它载体查找同样支持连字符 ISBN")
+    @MainActor
+    func otherEditionsMatchWithHyphens() throws {
+        let context = try makeContext()
+        let ebook = Book(title: "惊呆了！哲学这么好", author: "[日]田中正人", isbn: "978-7-5442-9153-8", bookType: .ebook)
+        context.insert(ebook)
+        try context.save()
+
+        let others = ISBNDuplicateChecker.findOtherEditions(isbn: isbn, excluding: .paper, in: context)
+        #expect(others.count == 1)
+    }
+}
