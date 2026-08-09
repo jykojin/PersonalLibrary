@@ -71,12 +71,25 @@ enum AppLogger {
     ///   - message: 日志内容
     ///   - level: 日志级别（默认 .info）
     ///   - category: 分类标签（如 "Migration", "CoverFetch", "WeReadSync"）
+    ///
+    /// 纯函数版本：给定级别与模式，是否应记录。仅依赖显式入参，不读取全局状态，
+    /// 便于在并行测试中无副作用地验证过滤逻辑（与 shouldAutoSync / shouldProceed 同样的做法）。
+    static func shouldLog(level: Level, mode: Mode) -> Bool {
+        switch mode {
+        case .off: return false
+        case .normal: return level >= .warning
+        case .verbose: return true
+        }
+    }
+
+    /// 纯函数版本：perf 日志是否应记录（仅 verbose）。
+    static func shouldLogPerf(mode: Mode) -> Bool {
+        mode == .verbose
+    }
+
     static func log(_ message: String, level: Level = .info, category: String = "General") {
         let mode = currentMode
-        guard mode != .off else { return }
-
-        // normal 模式只记录 warning+
-        if mode == .normal && level < .warning { return }
+        guard shouldLog(level: level, mode: mode) else { return }
 
         let formatted = "[\(category)] \(message)"
 
@@ -108,7 +121,7 @@ enum AppLogger {
 
     /// 性能日志 — 仅在 verbose 模式下记录
     static func perf(_ message: String, category: String = "Perf") {
-        guard currentMode == .verbose else { return }
+        guard shouldLogPerf(mode: currentMode) else { return }
         let formatted = "[PERF][\(category)] \(message)"
         #if DEBUG
         print(formatted)

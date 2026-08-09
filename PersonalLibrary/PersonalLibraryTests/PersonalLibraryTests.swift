@@ -1325,20 +1325,21 @@ struct WeReadSyncLogicTests {
 
     @Test("未登录时同步返回错误")
     func syncWithoutLogin() async throws {
-        WeReadSyncService.resetSyncLockForTesting()
         let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [config])
         let context = ModelContext(container)
 
-        // 确保未登录（清除 Keychain）
-        KeychainService.delete(key: KeychainService.wereadCookieKey)
-
-        let syncService = WeReadSyncService()
-        let result = await syncService.sync(modelContext: context)
+        // 用未连接的 mock 表达"未登录"，不删共享 Keychain、也不占用全局同步锁：
+        // 两者都是进程级状态，会影响并行运行的其它 suite。
+        let mock = MockWeReadDataSource()
+        await mock.setConnected(false)
+        let syncService = WeReadSyncService(provider: mock)
+        let result = await syncService.sync(container: container, skipLockCheck: true)
 
         #expect(result.error == "未连接微信读书")
         #expect(result.hasChanges == false)
+        _ = context
     }
 
     @Test("Book 新增 wereadBookId 字段")
@@ -1594,13 +1595,16 @@ actor MockWeReadDataSource: WeReadDataSource {
     var notebookCounts: [String: Int]?  // nil = 不支持 notebooks（Web 模式行为）
     var enrichCallCount = 0
     var bookmarkCallCount = 0
+    /// 可配置连接状态：让"未连接"场景无需删共享 Keychain 即可测试
+    var connected = true
 
     func setBooks(_ items: [WeReadImportItem]) { books = items }
     func setEnrichResults(_ results: [String: WeReadEnrichResult]) { enrichResults = results }
     func setBookmarks(_ bm: [String: [WeReadBookmark]]) { bookmarkResults = bm }
     func setNotebookCounts(_ counts: [String: Int]?) { notebookCounts = counts }
+    func setConnected(_ value: Bool) { connected = value }
 
-    func isConnected() -> Bool { true }
+    func isConnected() -> Bool { connected }
     func disconnect() {}
 
     func fetchAllBooks() async throws -> [WeReadImportItem] {
@@ -3413,60 +3417,12 @@ struct AppLoggerTests {
         #expect(AppLogger.Mode.off.displayName == "关闭")
     }
 
-    @Test("AppLogger off 模式不写文件")
-    func offModeSkipsWrite() {
-        // 直接测试 log 方法的 guard 逻辑：off 时不调用 FileLogger
-        let saved = AppLogger.currentMode
-        defer { AppLogger.currentMode = saved }
-
-        AppLogger.currentMode = .off
-        let marker = "SHOULD_NOT_APPEAR_\(UUID().uuidString)"
-        // 用 FileLogger 直接写一个 before marker 确保时序正确
-        FileLogger.shared.log("BEFORE_\(marker)")
-        Thread.sleep(forTimeInterval: 0.05)
-
-        AppLogger.info(marker, category: "Test")
-        AppLogger.warning(marker, category: "Test")
-        AppLogger.error(marker, category: "Test")
-        Thread.sleep(forTimeInterval: 0.15)
-
-        let content = FileLogger.shared.mergedContent()
-        // before marker 应该在，但实际 marker 通过 AppLogger 的不应该在
-        #expect(content.contains("BEFORE_\(marker)"))
-        // off 模式：info/warning/error 都不该出现（通过 [INFO]/[WARN]/[ERROR] 前缀过滤）
-        #expect(!content.contains("[INFO] [Test] \(marker)"))
-        #expect(!content.contains("[WARN] [Test] \(marker)"))
-        #expect(!content.contains("[ERROR] [Test] \(marker)"))
-    }
-
-    @Test("AppLogger verbose 模式写 debug 级别")
-    func verboseModeWritesDebug() {
-        let saved = AppLogger.currentMode
-        defer { AppLogger.currentMode = saved }
-
-        AppLogger.currentMode = .verbose
-        let marker = "VERBOSE_DEBUG_\(UUID().uuidString)"
-        AppLogger.debug(marker, category: "Test")
-        Thread.sleep(forTimeInterval: 0.15)
-        let content = FileLogger.shared.mergedContent()
-        #expect(content.contains(marker))
-    }
-
-    @Test("AppLogger normal 模式跳过 info 但写 warning")
-    func normalModeFilters() {
-        let saved = AppLogger.currentMode
-        defer { AppLogger.currentMode = saved }
-
-        AppLogger.currentMode = .normal
-        let infoMarker = "NORMAL_INFO_\(UUID().uuidString)"
-        let warnMarker = "NORMAL_WARN_\(UUID().uuidString)"
-        AppLogger.info(infoMarker, category: "Test")
-        AppLogger.warning(warnMarker, category: "Test")
-        Thread.sleep(forTimeInterval: 0.15)
-        let content = FileLogger.shared.mergedContent()
-        #expect(!content.contains(infoMarker))
-        #expect(content.contains(warnMarker))
-    }
+    // 注：原三个用例（off/verbose/normal 模式过滤）会改全局 AppLogger.currentMode
+    // 并断言共享 FileLogger 的整文件内容。currentMode 由 UserDefaults 支撑、是进程级
+    // 全局状态，而 .serialized 只保证 suite 内串行、suite 之间仍并行：
+    //   - 改全局模式会非确定性地影响并行 suite 的日志行为；
+    //   - .verbose 期间并行 suite 涌出 perf/debug，叠加 2MB 轮转可能把 marker 挤出文件。
+    // 过滤逻辑已改由 AppLoggerLevelDecisionTests 用纯函数验证（不碰全局状态）。
 }
 
 // MARK: - New Fields Tests (startedReadingDate, wereadEnrichedDate, export/import)
@@ -5092,5 +5048,47 @@ struct BackupWALSidecarTests {
         let store = URL(fileURLWithPath: "/var/mobile/Library/Application Support/PersonalLibrary.store")
         let sidecar = BackupService.walSidecarURL(for: store)
         #expect(sidecar.lastPathComponent == "PersonalLibrary.store-wal")
+    }
+}
+
+// MARK: - 日志级别判定（并行安全）Tests
+
+/// `AppLogger.currentMode` 由 UserDefaults 支撑、是进程级全局状态。
+/// 原有的模式过滤测试要「改全局模式 + 往共享 FileLogger 写 + 断言整个日志文件内容」，
+/// 而 Swift Testing 的 .serialized 只保证 suite 内串行、suite 之间仍并行：
+///   - 改全局模式会非确定性地影响并行 suite 的日志行为；
+///   - .verbose 期间并行 suite 涌出 perf/debug，叠加 2MB 轮转可能把 marker 挤出文件。
+/// 参照 shouldAutoSync / shouldProceed 的既有做法，用纯函数表达判定逻辑。
+@Suite("AppLogger Level Decision Tests")
+struct AppLoggerLevelDecisionTests {
+
+    @Test("off 模式丢弃所有级别")
+    func offDropsEverything() {
+        for level in [AppLogger.Level.debug, .info, .warning, .error] {
+            #expect(AppLogger.shouldLog(level: level, mode: .off) == false)
+        }
+        #expect(AppLogger.shouldLogPerf(mode: .off) == false)
+    }
+
+    @Test("normal 模式只记 warning 及以上")
+    func normalKeepsWarningAndAbove() {
+        #expect(AppLogger.shouldLog(level: .debug, mode: .normal) == false)
+        #expect(AppLogger.shouldLog(level: .info, mode: .normal) == false)
+        #expect(AppLogger.shouldLog(level: .warning, mode: .normal) == true)
+        #expect(AppLogger.shouldLog(level: .error, mode: .normal) == true)
+    }
+
+    @Test("verbose 模式记录全部级别")
+    func verboseKeepsEverything() {
+        for level in [AppLogger.Level.debug, .info, .warning, .error] {
+            #expect(AppLogger.shouldLog(level: level, mode: .verbose) == true)
+        }
+    }
+
+    @Test("perf 仅在 verbose 模式记录")
+    func perfOnlyInVerbose() {
+        #expect(AppLogger.shouldLogPerf(mode: .verbose) == true)
+        #expect(AppLogger.shouldLogPerf(mode: .normal) == false)
+        #expect(AppLogger.shouldLogPerf(mode: .off) == false)
     }
 }
