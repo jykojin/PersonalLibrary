@@ -171,3 +171,37 @@ iOS 个人藏书管理 + 阅读进度跟踪 App。SwiftUI + SwiftData，iOS 17+�
 
 - **大列表 body 内重算（性能，低优先）**：`AdvancedSearchView.results` 与 `StatisticsView` 的 `totalPagesRead`/`totalMinutesRead` 在 body 求值时过滤/求和全量数据。当前库规模（~2300 本）实测无感（recompute ~16ms），统计主体已做后台缓存。待藏书量上万、出现可感卡顿时，再把 `results` 改为 `@State + onChange` 触发、把两个小计入缓存。属预防性优化（YAGNI），暂不动。
 - **enum 中文 rawValue 存库（国际化前置，中风险迁移）**：`BookType`/`ReadingStatus`/`AddSource` 用中文 rawValue（"正在读"/"纸质书"）直接作为 SwiftData 持久化 key。`AddSource` 已有一次兼容补丁（"导入"→"文件导入"）。只要不改字面就不影响运行；一旦要改文案或做多语言，需写数据迁移把存量中文值转为稳定英文 key + 加 `displayName` 显示层。迁移高风险（改错会损坏存量藏书状态），留待真有国际化需求时专项设计。
+
+---
+
+## 9. 修复追踪表（v0.59–v0.63，2026-08-09/10）
+
+一轮集中排查修掉的 6 个问题。每行给出 **症状 → 版本 → commit → 根因 → 防护测试**，
+细节见第 4 节对应小节。查历史时从这张表入手，比翻 git log 快。
+
+| # | 症状（用户可见） | 版本 | commit | 根因一句话 | 防护测试 | 详情 |
+|---|---|---|---|---|---|---|
+| 1 | 高级搜索勾「已取消收藏」后，一在首页输入文字就一本都搜不到 | v0.59 | `6a7bbb6` | 范围只靠一次性结果数组承载，`onChange(of: searchText)` 清掉它时范围一起丢 | `BookListFilterArchivedScopeTests` | 4.7 |
+| 2 | 已有电子书时扫同一本书的纸质版，被判「ISBN 重复」加不进去 | v0.60 | `bab432a` | 去重只比 ISBN、不看 `bookType`（库里实测 69 组同 ISBN 跨载体并存） | `ISBNDuplicateCrossTypeTests` | 4.8 |
+| 3 | 已取消收藏的电子书在归档视图里看不到（以为书丢了） | v0.61 | `7f2ed34` | `paperOnly` 在归档视图仍生效，而归档里电子书占多数（15 电子/10 纸质） | `BookListFilterArchivedScopeTests` | 4.9 |
+| 4 | **已存在的书又被重复添加**（《我已经没有烦恼了》）| v0.62 | `5bb722a` | ⚠️ #2 的回归：合并查重分支时只留下带 `fetchLimit=500` 的那条，2742 本里位次靠后的 ~82% 不参与比对 | `ISBNDuplicateLargeLibraryTests`（填充 2800 本、目标放最末） | 4.8 |
+| 5 | 从备份恢复后，最近的改动没了 | v0.63 | `d483691` | 备份写出了 `.plbackup-wal`，恢复却从不读回 → WAL 里未 checkpoint 的改动静默丢失 | `BackupWALSidecarTests` | — |
+| 6 | 全量测试偶发失败（非用户可见） | v0.60 / v0.63 | `0880221` `4b03a8e` | 测试断言/改写进程级全局态（`isSyncing`、`AppLogger.currentMode`、共享 Keychain），`.serialized` 只管 suite 内 | `SyncLockDecisionTests`、`AppLoggerLevelDecisionTests` | 4.10 |
+
+同轮的工程改进（非用户可见 bug）：
+
+- **`d483691`** 消除生产/测试双份筛选逻辑：`BookListFilter.apply`/`matches` 原先只有测试在调用，生产 `BookListView` 用自己的一套 —— 测试全绿也不保证生产正确。现已统一走同一批判定函数。
+- **`0c3531b`** CI 自 2026-05-25 起失败并被手动禁用，查出**两个独立故障**：① GitHub 账单/额度（job 压根没启动，需在 Billing & plans 处理，代码改不了）；② `Config.xcconfig` 被 gitignore 排除，干净 checkout 上 `xcodegen` 直接失败 —— **这个坑同时影响任何 fork 本项目的人**。已修 ②，并加 `paths-ignore`/tag 限定/`concurrency`/`workflow_dispatch` 降低 macOS runner（10× 计费）消耗。
+
+### 遗留事项（下次接手先看这里）
+
+- [ ] **GitHub 账单未处理** → CI 仍处 `disabled_manually`。修好账单后 `gh workflow enable CI && gh workflow run CI` 验证。
+- [ ] **重复数据未清理**：v0.60–v0.62 期间手动扫码添加的书可能有重复（已知《我已经没有烦恼了》）。⚠️ **不要按 ISBN 批量清理** —— 套书各卷共用 ISBN（张居正第二/三/四卷、曾国藩 1/2/3、余罪单册与全集），必须连书名一起比。建议手工删。
+- [ ] `PersonalLibraryUITests` 仍只有启动 smoke test，本轮的 UI 路径验证靠临时脚手架（已删）。若要长期防护「归档范围 + 输入文字」这类交互，需要补正式 UI 测试。
+
+### 本轮沉淀的排查手法（可复用）
+
+- **先证"写入侧无辜"再查读取侧**：用 Core Data 变更日志定位字段位图（`ACHANGE.ZCOLUMNS` ↔ `PRAGMA table_info(ZBOOK)` 列序），统计某字段的写入事件数与当前行数是否 1:1、有无 delete 记录。问题 #1 靠这招排除了写入路径，没白挖。
+- **多代备份横比**：同一字段在几代 `.plbackup` 里的计数趋势（只增/有减）能快速判断是"丢数据"还是"没写进去"。
+- **灌真实数据到模拟器走查**：`xcrun simctl get_app_container` 拿沙盒路径 → 覆盖 `PersonalLibrary.store` → 跑 XCUITest 驱动真实 UI。问题 #1 的修复就是这样在 2872 本真实数据上确认的。
+- **上限类 bug 必须造超限数据**：问题 #4 躲过旧测试的唯一原因是测试只插 1–2 本书。凡代码里有常量上限，测试数据量就必须越过它。
