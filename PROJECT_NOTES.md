@@ -174,7 +174,7 @@ iOS 个人藏书管理 + 阅读进度跟踪 App。SwiftUI + SwiftData，iOS 17+�
 
 ---
 
-## 9. 修复追踪表（v0.59–v0.63，2026-08-09/10）
+## 9. 修复追踪表（v0.59–v0.64，2026-08-09 ~ 08-13）
 
 一轮集中排查修掉的 6 个问题。每行给出 **症状 → 版本 → commit → 根因 → 防护测试**，
 细节见第 4 节对应小节。查历史时从这张表入手，比翻 git log 快。
@@ -187,16 +187,59 @@ iOS 个人藏书管理 + 阅读进度跟踪 App。SwiftUI + SwiftData，iOS 17+�
 | 4 | **已存在的书又被重复添加**（《我已经没有烦恼了》）| v0.62 | `5bb722a` | ⚠️ #2 的回归：合并查重分支时只留下带 `fetchLimit=500` 的那条，2742 本里位次靠后的 ~82% 不参与比对 | `ISBNDuplicateLargeLibraryTests`（填充 2800 本、目标放最末） | 4.8 |
 | 5 | 从备份恢复后，最近的改动没了 | v0.63 | `d483691` | 备份写出了 `.plbackup-wal`，恢复却从不读回 → WAL 里未 checkpoint 的改动静默丢失 | `BackupWALSidecarTests` | — |
 | 6 | 全量测试偶发失败（非用户可见） | v0.60 / v0.63 | `0880221` `4b03a8e` | 测试断言/改写进程级全局态（`isSyncing`、`AppLogger.currentMode`、共享 Keychain），`.serialized` 只管 suite 内 | `SyncLockDecisionTests`、`AppLoggerLevelDecisionTests` | 4.10 |
+| 7 | 导出的书单里空字段全都显示成 `"34"`（ISBN／总页数／微信读书ID 等） | v0.64 | — | ⚠️ **误报，App 无 bug**：App 写出的是真正的空串 `<si><t></t></si>`；那份 xlsx 被外部工具改写时，把空串换成了它自己的 sharedString 索引号 —— 31 列布局下空串正好落在索引 34，于是显示 "34" | `空字段往返后仍为空`、`批量导出时空字段依然全空` | 9.1 |
 
 同轮的工程改进（非用户可见 bug）：
 
 - **`d483691`** 消除生产/测试双份筛选逻辑：`BookListFilter.apply`/`matches` 原先只有测试在调用，生产 `BookListView` 用自己的一套 —— 测试全绿也不保证生产正确。现已统一走同一批判定函数。
 - **`0c3531b`** CI 自 2026-05-25 起失败并被手动禁用，查出**两个独立故障**：① GitHub 账单/额度（job 压根没启动，需在 Billing & plans 处理，代码改不了）；② `Config.xcconfig` 被 gitignore 排除，干净 checkout 上 `xcodegen` 直接失败 —— **这个坑同时影响任何 fork 本项目的人**。已修 ②，并加 `paths-ignore`/tag 限定/`concurrency`/`workflow_dispatch` 降低 macOS runner（10× 计费）消耗。
 
+### v0.64 新增功能（非 bug 修复，2026-08-13）
+
+`343b671` **「AI介绍」字段 + 一次性回填**。用户在 App 外为每本书整理了一段结构化介绍，
+放在旧导出 xlsx 的最后一列（AF）。
+
+- `Book.bookIntroduction`（optional → SwiftData 轻量迁移，`Schema` 未改，无 migration plan）
+- 详情页只读展示（复用 `descriptionSection`），编辑页「描述」区可编辑
+- 随包资源 `Resources/BookIntroductionSeed.json`（2853 条 / 3.33 MB）+ `BookIntroductionSeeder`：
+  首启按 **微信读书ID → ISBN → 书名+作者** 顺序匹配，命中多本就都写，**只补空值、绝不新增书**，
+  `UserDefaults` 键 `book_introduction_seed_v1_done` 保证只跑一次
+- **真机实测**：`seed 2853 条，更新 2854 本，未匹配 0 条`（更新数 > 条数是因为一对重复书共用同一 ISBN 键）
+- Excel 第 32 列（AF）表头为「AI介绍」，导入端保留旧表头「书籍介绍」兜底，
+  否则 0.64 之前导出的文件会静默丢这一列
+
+### 9.1 「34」误报的排查经过（别再挖第二遍）
+
+现象：用户那份 `书单导出_20260812_含书籍介绍.xlsx` 里，所有空字段读出来都是字符串 `"34"`
+（127 行的 ISBN、2328 行的微信读书ID 等）。最初误判为 `XLSXWriter`／Objects2XLSX 写空串的 bug。
+
+**结论：不是 App 产生的。** 判据（按 TDD 先写复现测试 → 没复现 → 再 dump 原始 XML 对证）：
+
+| | 空单元格指向的 sharedString |
+|---|---|
+| 当场新导出（32 列） | `[35] <si><t></t></si>` ← 真正的空串 |
+| 用户那份（31 列） | `[34] <si><t>34</t></si>` ← 文本就是 "34" |
+
+31 列布局下空串落在索引 34，加一列后后移到 35 —— 索引与假值完全对应，说明是**导出之后**
+某个改写工具把空串替换成了自身索引；该文件 `docProps` 显示最后由 Microsoft Excel for Mac
+于 2026-08-12 16:32Z 保存。
+
+**真实规模复验**（2853 本 × 32 列，9755 条 sharedString）：解析条数 == 声明 `uniqueCount`；
+「文本 == 自身索引」的条目 **0 条**；空串以唯一一条空文本正确存在；17 个本该全空的列 × 2853 行
+出现的非空值 **0 个**。
+
+**复现手法**（以后要再验就照这个来）：写个临时 `@Suite` 调 `exportBooks` 把 xlsx 落到 `/tmp`，
+再用 python 解 `xl/sharedStrings.xml`（注意 `<si/>` 自闭合标签也要计入，否则索引整体错位，
+我第一次就是这么误判的）+ `xl/worksheets/sheet1.xml`，检查上面三个特征。
+
+seed 生成脚本已把 `"34"` 当空值过滤，所以那些假 ISBN／假微信读书ID 没有进入匹配逻辑。
+
 ### 遗留事项（下次接手先看这里）
 
 - [ ] **GitHub 账单未处理** → CI 仍处 `disabled_manually`。修好账单后 `gh workflow enable CI && gh workflow run CI` 验证。
 - [ ] **重复数据未清理**：v0.60–v0.62 期间手动扫码添加的书可能有重复（已知《我已经没有烦恼了》）。⚠️ **不要按 ISBN 批量清理** —— 套书各卷共用 ISBN（张居正第二/三/四卷、曾国藩 1/2/3、余罪单册与全集），必须连书名一起比。建议手工删。
+- [ ] **`BookIntroductionSeed.json`（3.33 MB）回填完成后可删**：真机已确认 2853 条全部落库，该资源只在首启用一次。删除时要连 `BookIntroductionSeeder.seedURL()` 的调用与两条依赖它的测试（`随包 seed 资源存在且可解析`、`用随包真实 seed 回填`）一起处理，否则 CI 会红。
+- [ ] **旧表头兜底何时可以去掉**：`ExcelImportExportService.legacyIntroHeader`（「书籍介绍」）只为读 0.64 之前的导出文件而存在，等确认不再需要导入历史文件即可删。
 - [ ] `PersonalLibraryUITests` 仍只有启动 smoke test，本轮的 UI 路径验证靠临时脚手架（已删）。若要长期防护「归档范围 + 输入文字」这类交互，需要补正式 UI 测试。
 
 ### 本轮沉淀的排查手法（可复用）
