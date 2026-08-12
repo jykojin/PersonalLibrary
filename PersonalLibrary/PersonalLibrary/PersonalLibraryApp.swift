@@ -22,7 +22,7 @@ struct PersonalLibraryApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView(startupError: startupError)
-                .task { if startupError == nil { migrateOldAddSource(); migrateWeReadBookshelf(); mergeDuplicateTags() } }
+                .task { if startupError == nil { migrateOldAddSource(); migrateWeReadBookshelf(); mergeDuplicateTags(); seedBookIntroductions() } }
                 .task { if startupError == nil { await backgroundCoverRefresh() } }
         }
         .modelContainer(modelContainer)
@@ -128,6 +128,36 @@ struct PersonalLibraryApp: App {
         if removed > 0 {
             AppLogger.info("已合并 \(removed) 个重复标签", category: "Migration")
         }
+        UserDefaults.standard.set(true, forKey: migrationKey)
+    }
+
+    /// 一次性回填：把随包 seed 里的「书籍介绍」写进已有书籍（只补空的，不新增书）
+    @MainActor
+    private func seedBookIntroductions() {
+        let migrationKey = "book_introduction_seed_v1_done"
+        guard !UserDefaults.standard.bool(forKey: migrationKey) else { return }
+
+        guard let url = BookIntroductionSeeder.seedURL() else {
+            AppLogger.error("找不到 \(BookIntroductionSeeder.resourceName).json，书籍介绍回填跳过", category: "Migration")
+            return  // 不置标记：资源缺失是构建问题，修好后下次启动重试
+        }
+
+        do {
+            let entries = try BookIntroductionSeeder.decode(Data(contentsOf: url))
+            let context = modelContainer.mainContext
+            let result = BookIntroductionSeeder.backfill(entries, into: context)
+            if result.updated > 0 {
+                try context.save()
+            }
+            AppLogger.info(
+                "书籍介绍回填：seed \(entries.count) 条，更新 \(result.updated) 本，未匹配 \(result.unmatched) 条",
+                category: "Migration"
+            )
+        } catch {
+            AppLogger.error("书籍介绍回填失败: \(error)", category: "Migration")
+            return  // 不置标记，下次启动重试
+        }
+
         UserDefaults.standard.set(true, forKey: migrationKey)
     }
 

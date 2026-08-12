@@ -58,6 +58,7 @@ final class Book {
     // 描述信息
     var bookDescription: String?  // 书籍简介
     var authorDescription: String?  // 作者简介
+    var bookIntroduction: String?  // 书籍介绍（外部整理的完整介绍，比 bookDescription 长）
 
     // 封面（externalStorage: 大数据存外部文件，不内联 SQLite，避免 query 时加载）
     @Attribute(.externalStorage) var coverImageData: Data?

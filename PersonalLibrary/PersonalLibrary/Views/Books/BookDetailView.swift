@@ -27,6 +27,11 @@ struct BookDetailView: View {
                 // 书籍基本信息
                 bookInfoSection
 
+                // AI介绍
+                if let intro = book.bookIntroduction, !intro.isEmpty {
+                    descriptionSection(title: "AI介绍", text: intro)
+                }
+
                 // 书籍简介
                 if let desc = book.bookDescription, !desc.isEmpty {
                     descriptionSection(title: "书籍简介", text: desc)

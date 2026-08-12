@@ -93,6 +93,17 @@ struct BookModelTests {
         #expect(book.finishedDate == nil)
     }
 
+    @Test("新建书籍的书籍介绍默认为 nil，可读写")
+    func bookIntroductionDefaultsToNil() {
+        let book = Book(title: "测试", author: "测试")
+        #expect(book.bookIntroduction == nil)
+
+        book.bookIntroduction = "《测试》是由测试创作或编著的作品。"
+        #expect(book.bookIntroduction == "《测试》是由测试创作或编著的作品。")
+        // 与已有的短简介是两个独立字段
+        #expect(book.bookDescription == nil)
+    }
+
     @Test("新建书籍默认阅读时长为0")
     func newBookReadingHoursIsZero() {
         let book = Book(title: "测试", author: "测试")
@@ -478,9 +489,48 @@ struct ExcelExportTests {
         #expect(r.title == "标题 含Tab")
     }
 
-    @Test("columnHeaders 包含31列")
+    @Test("AI介绍往返保留")
+    @MainActor
+    func bookIntroductionRoundTrip() async throws {
+        let book = Book(title: "欧洲史话", author: "枫落白衣", isbn: "9787000000002")
+        book.bookIntroduction = "《欧洲史话》是由枫落白衣创作或编著的历史著作。\n\n内容概览\n略。"
+
+        let imported = try await roundTrip([book])
+        let r = try #require(imported.first)
+        #expect(r.bookIntroduction == book.bookIntroduction)
+    }
+
+    @Test("空字段往返后仍为空（不被写成占位字符串）")
+    @MainActor
+    func emptyFieldsStayEmpty() async throws {
+        // 只有书名和作者，其余全空 —— 导出再导回来不应凭空出现内容
+        let book = Book(title: "只有书名", author: "只有作者")
+
+        let imported = try await roundTrip([book])
+        let r = try #require(imported.first)
+        #expect(r.translator == nil, "译者应为空，实际 \(String(describing: r.translator))")
+        #expect(r.publisher == nil, "出版社应为空，实际 \(String(describing: r.publisher))")
+        #expect(r.isbn == nil, "ISBN 应为空，实际 \(String(describing: r.isbn))")
+        #expect(r.price == nil, "定价应为空，实际 \(String(describing: r.price))")
+        #expect(r.totalPages == 0, "总页数应为 0，实际 \(r.totalPages)")
+        #expect(r.publishDate == nil, "出版年份应为空")
+        #expect(r.bookDescription == nil, "图书简介应为空，实际 \(String(describing: r.bookDescription))")
+        #expect(r.authorDescription == nil, "作者简介应为空")
+        #expect(r.notes == nil, "备注应为空")
+        #expect(r.doubanURL == nil, "豆瓣链接应为空")
+        #expect(r.bookIntroduction == nil, "书籍介绍应为空，实际 \(String(describing: r.bookIntroduction))")
+        #expect(r.rating == nil, "评分应为空，实际 \(String(describing: r.rating))")
+        #expect(r.wereadBookId == nil, "微信读书ID应为空，实际 \(String(describing: r.wereadBookId))")
+        #expect(r.wereadProgress == 0, "微信读书进度应为 0，实际 \(r.wereadProgress)")
+        #expect(r.isArchived == false, "不应被标记为归档")
+        #expect(r.isWereadUserImported == false, "不应被标记为用户导入书")
+    }
+
+    @Test("columnHeaders 包含32列")
     func columnHeadersCount() {
-        #expect(ExcelImportExportService.columnHeaders.count == 31)
+        #expect(ExcelImportExportService.columnHeaders.count == 32)
+        // 第 32 列（索引 31）= AF 列，与外部整理 AI介绍 时用的列序一致
+        #expect(ExcelImportExportService.columnHeaders[31] == "AI介绍")
         #expect(ExcelImportExportService.columnHeaders[0] == "序号")
         #expect(ExcelImportExportService.columnHeaders[1] == "书名")
         #expect(ExcelImportExportService.columnHeaders[17] == "豆瓣链接")
@@ -584,6 +634,30 @@ struct ExcelImportTests {
         #expect(first.translator == "董风云")
         #expect(first.publisher == "社会科学文献出版社")
         #expect(first.isbn == "9787522872995")
+    }
+
+    @Test("旧表头「书籍介绍」的导出文件仍能导入（0.64 改名前生成的文件）")
+    @MainActor
+    func legacyIntroHeaderStillImported() async throws {
+        // 造一份 0.64 之前的导出：第 32 列表头叫「书籍介绍」而不是「AI介绍」
+        var legacyHeaders = ExcelImportExportService.columnHeaders
+        legacyHeaders[31] = "书籍介绍"
+        var row = [String](repeating: "", count: legacyHeaders.count)
+        row[1] = "旧格式书"
+        row[2] = "旧格式作者"
+        row[31] = "旧表头里的介绍"
+        let data = try XLSXWriter.write(headers: legacyHeaders, rows: [row], sheetName: "书单")
+
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        _ = try await ExcelImportExportService().importBooks(data: data, modelContext: context)
+
+        let books = try context.fetch(FetchDescriptor<Book>())
+        let book = try #require(books.first { $0.title == "旧格式书" }, "应导入到《旧格式书》")
+        #expect(book.bookIntroduction == "旧表头里的介绍")
     }
 }
 
@@ -5090,5 +5164,207 @@ struct AppLoggerLevelDecisionTests {
         #expect(AppLogger.shouldLogPerf(mode: .verbose) == true)
         #expect(AppLogger.shouldLogPerf(mode: .normal) == false)
         #expect(AppLogger.shouldLogPerf(mode: .off) == false)
+    }
+}
+
+// MARK: - BookIntroduction Seed Tests
+
+@Suite("BookIntroduction Seed Tests")
+struct BookIntroductionSeedTests {
+
+    private func makeContext() throws -> ModelContext {
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        return ModelContext(container)
+    }
+
+    private func entry(
+        title: String? = nil, author: String? = nil, isbn: String? = nil,
+        wereadId: String? = nil, intro: String
+    ) -> BookIntroductionSeeder.SeedEntry {
+        BookIntroductionSeeder.SeedEntry(
+            title: title, author: author, isbn: isbn, wereadId: wereadId, intro: intro
+        )
+    }
+
+    @Test("按微信读书ID匹配并写入，其他字段不动")
+    func matchByWereadId() throws {
+        let context = try makeContext()
+        let book = Book(title: "欧洲史话", author: "枫落白衣")
+        book.wereadBookId = "3110069640"
+        context.insert(book)
+
+        let result = BookIntroductionSeeder.backfill(
+            [entry(title: "改过的书名", author: "改过的作者", wereadId: "3110069640", intro: "介绍A")],
+            into: context
+        )
+
+        #expect(result.updated == 1)
+        #expect(result.unmatched == 0)
+        #expect(book.bookIntroduction == "介绍A")
+        #expect(book.title == "欧洲史话")
+        #expect(book.author == "枫落白衣")
+    }
+
+    @Test("缺微信读书ID时按 ISBN 匹配")
+    func matchByISBN() throws {
+        let context = try makeContext()
+        let book = Book(title: "三体", author: "刘慈欣", isbn: "9787536692930")
+        context.insert(book)
+
+        let result = BookIntroductionSeeder.backfill(
+            [entry(title: "三体", isbn: "9787536692930", intro: "介绍B")],
+            into: context
+        )
+
+        #expect(result.updated == 1)
+        #expect(book.bookIntroduction == "介绍B")
+    }
+
+    @Test("微信读书ID 优先于 ISBN")
+    func wereadIdTakesPriorityOverISBN() throws {
+        let context = try makeContext()
+        let byId = Book(title: "甲", author: "作者甲")
+        byId.wereadBookId = "999"
+        let byISBN = Book(title: "乙", author: "作者乙", isbn: "9787000000000")
+        context.insert(byId)
+        context.insert(byISBN)
+
+        let result = BookIntroductionSeeder.backfill(
+            [entry(isbn: "9787000000000", wereadId: "999", intro: "介绍C")],
+            into: context
+        )
+
+        #expect(result.updated == 1)
+        #expect(byId.bookIntroduction == "介绍C")
+        #expect(byISBN.bookIntroduction == nil)
+    }
+
+    @Test("ISBN 和微信读书ID 都缺时按 书名+作者 兜底匹配（trim 空格）")
+    func matchByTitleAndAuthor() throws {
+        let context = try makeContext()
+        let book = Book(title: "活着", author: "余华")
+        context.insert(book)
+
+        let result = BookIntroductionSeeder.backfill(
+            [entry(title: "  活着 ", author: " 余华", intro: "介绍D")],
+            into: context
+        )
+
+        #expect(result.updated == 1)
+        #expect(book.bookIntroduction == "介绍D")
+    }
+
+    @Test("已有非空书籍介绍不被覆盖（重复执行安全）")
+    func doesNotOverwriteExisting() throws {
+        let context = try makeContext()
+        let book = Book(title: "活着", author: "余华", isbn: "9787506365437")
+        book.bookIntroduction = "我手改过的介绍"
+        context.insert(book)
+
+        let result = BookIntroductionSeeder.backfill(
+            [entry(title: "活着", author: "余华", isbn: "9787506365437", intro: "seed 里的介绍")],
+            into: context
+        )
+
+        #expect(result.updated == 0)
+        #expect(result.unmatched == 0)
+        #expect(book.bookIntroduction == "我手改过的介绍")
+    }
+
+    @Test("同 ISBN 的重复书两本都写入")
+    func writesToAllDuplicates() throws {
+        let context = try makeContext()
+        let first = Book(title: "风起陇西", author: "马伯庸", isbn: "9787544291538")
+        let second = Book(title: "风起陇西", author: "马伯庸", isbn: "9787544291538")
+        context.insert(first)
+        context.insert(second)
+
+        let result = BookIntroductionSeeder.backfill(
+            [entry(isbn: "9787544291538", intro: "介绍E")],
+            into: context
+        )
+
+        #expect(result.updated == 2)
+        #expect(first.bookIntroduction == "介绍E")
+        #expect(second.bookIntroduction == "介绍E")
+    }
+
+    @Test("匹配不上时计入 unmatched，绝不新增书籍")
+    func unmatchedNeverInsertsBooks() throws {
+        let context = try makeContext()
+        let book = Book(title: "活着", author: "余华")
+        context.insert(book)
+
+        let result = BookIntroductionSeeder.backfill(
+            [entry(title: "库里没有这本", author: "无名", isbn: "9780000000000", wereadId: "no-such-id", intro: "介绍F")],
+            into: context
+        )
+
+        #expect(result.updated == 0)
+        #expect(result.unmatched == 1)
+        #expect(try context.fetch(FetchDescriptor<Book>()).count == 1)
+        #expect(book.bookIntroduction == nil)
+    }
+
+    @Test("decode 容忍缺失的 isbn / wereadId / author 字段")
+    func decodeTolerantOfMissingKeys() throws {
+        let json = """
+        [{"title":"甲","author":"乙","intro":"介绍1"},\
+        {"title":"丙","isbn":"9787000000000","wereadId":"123","intro":"介绍2"}]
+        """
+        let entries = try BookIntroductionSeeder.decode(Data(json.utf8))
+
+        #expect(entries.count == 2)
+        #expect(entries[0].isbn == nil)
+        #expect(entries[0].wereadId == nil)
+        #expect(entries[0].intro == "介绍1")
+        #expect(entries[1].author == nil)
+        #expect(entries[1].isbn == "9787000000000")
+        #expect(entries[1].wereadId == "123")
+    }
+
+    @Test("用随包真实 seed 回填：微信读书ID 与 ISBN 两级键都能命中，且不动无关书")
+    func realSeedBackfillsMatchingBooks() throws {
+        let url = try #require(BookIntroductionSeeder.seedURL())
+        let entries = try BookIntroductionSeeder.decode(Data(contentsOf: url))
+
+        // 从真实 seed 里动态挑样本，避免把用户数据硬编码进测试
+        let viaWeread = try #require(entries.first { $0.wereadId != nil })
+        let viaISBN = try #require(entries.first { $0.wereadId == nil && $0.isbn != nil })
+
+        let context = try makeContext()
+        let wereadBook = Book(title: "书名故意不一致A", author: "作者故意不一致A")
+        wereadBook.wereadBookId = viaWeread.wereadId
+        let isbnBook = Book(title: "书名故意不一致B", author: "作者故意不一致B", isbn: viaISBN.isbn)
+        let unrelated = Book(title: "seed 里没有的书", author: "无人")
+        context.insert(wereadBook)
+        context.insert(isbnBook)
+        context.insert(unrelated)
+
+        let result = BookIntroductionSeeder.backfill(entries, into: context)
+
+        #expect(wereadBook.bookIntroduction == viaWeread.intro)
+        #expect(isbnBook.bookIntroduction == viaISBN.intro)
+        #expect(unrelated.bookIntroduction == nil)
+        #expect(result.updated == 2)
+        #expect(result.unmatched > 0, "库里只有 3 本，绝大多数 seed 条目应为未匹配")
+        #expect(try context.fetch(FetchDescriptor<Book>()).count == 3, "回填不得新增书籍")
+    }
+
+    @Test("随包 seed 资源存在且可解析，条目都带介绍和至少一个匹配键")
+    func bundledSeedResourceIsValid() throws {
+        let url = try #require(
+            BookIntroductionSeeder.seedURL(),
+            "app bundle 中找不到 BookIntroductionSeed.json"
+        )
+        let entries = try BookIntroductionSeeder.decode(Data(contentsOf: url))
+
+        #expect(entries.count > 2000, "seed 条数异常：\(entries.count)")
+        #expect(entries.allSatisfy { !$0.intro.isEmpty })
+        #expect(entries.allSatisfy { $0.wereadId != nil || $0.isbn != nil || $0.title != nil })
+        // 生成脚本已把导出里的 "34" 空值占位过滤掉
+        #expect(entries.allSatisfy { $0.isbn != "34" && $0.wereadId != "34" })
     }
 }

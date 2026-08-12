@@ -4,7 +4,7 @@ import SwiftData
 
 /// Excel 导入导出服务
 /// 支持导入/导出格式：序号, 书名, 作者, 译者, 出版社, 出版年份, ISBN, 定价, 总页数,
-/// 加入时间, 阅读状态, 读完时间, 所在书架, 标签, 图书简介, 作者简介, 备注, 豆瓣链接
+/// 加入时间, 阅读状态, 读完时间, 所在书架, 标签, 图书简介, 作者简介, 备注, 豆瓣链接, ..., AI介绍
 actor ExcelImportExportService {
 
     // MARK: - Column Mapping
@@ -17,8 +17,12 @@ actor ExcelImportExportService {
         "封面链接", "书籍类型", "加入方式", "评分", "当前页码", "是否归档",
         "微信读书ID", "微信读书进度", "微信读书阅读时长",
         "开始阅读日期", "状态变更时间",
-        "用户导入书", "开始日期为估算"
+        "用户导入书", "开始日期为估算",
+        "AI介绍"
     ]
+
+    /// 「AI介绍」列的旧表头（0.64 之前叫「书籍介绍」），导入时一并识别，避免旧导出文件丢这一列
+    private static let legacyIntroHeader = "书籍介绍"
 
     // MARK: - Import
 
@@ -154,7 +158,8 @@ actor ExcelImportExportService {
             book.startedReadingDate.map { dateFormatter.string(from: $0) } ?? "", // 开始阅读日期
             book.statusChangedDate.map { dateFormatter.string(from: $0) } ?? "",  // 状态变更时间
             book.isWereadUserImported ? "是" : "",                                // 用户导入书
-            book.isStartedReadingDateEstimated ? "是" : ""                        // 开始日期为估算
+            book.isStartedReadingDateEstimated ? "是" : "",                       // 开始日期为估算
+            book.bookIntroduction ?? ""                                          // 书籍介绍
         ]
         // 沿用原有字段处理（制表符替换、CSV 公式注入防护）
         return raw.map { escapeField($0) }
@@ -247,6 +252,8 @@ actor ExcelImportExportService {
         let isbn = columnMap["ISBN"].flatMap { getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }
         let priceStr = columnMap["定价"].flatMap { getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }
         let pagesStr = columnMap["总页数"].flatMap { getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }
+        let introCol = columnMap["AI介绍"] ?? columnMap[Self.legacyIntroHeader]
+        let bookIntro = introCol.flatMap { getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }
         let bookDesc = columnMap["图书简介"].flatMap { getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }
         let authorDesc = columnMap["作者简介"].flatMap { getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }
         let notes = columnMap["备注"].flatMap { getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }
@@ -275,6 +282,7 @@ actor ExcelImportExportService {
             coverImageURL: finalCoverURL
         )
         book.notes = notes
+        book.bookIntroduction = bookIntro
 
         // 书籍类型
         if let typeStr = columnMap["书籍类型"].flatMap({ getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }) {

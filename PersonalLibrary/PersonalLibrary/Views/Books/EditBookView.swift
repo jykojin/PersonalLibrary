@@ -28,6 +28,7 @@ struct EditBookView: View {
     @State private var rating: Int = 0
 
     // 描述
+    @State private var bookIntroduction: String = ""
     @State private var bookDescription: String = ""
     @State private var authorDescription: String = ""
     @State private var notes: String = ""
@@ -283,6 +284,14 @@ struct EditBookView: View {
     private var descriptionSection: some View {
         Section("描述") {
             VStack(alignment: .leading, spacing: 4) {
+                Text("AI介绍")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextEditor(text: $bookIntroduction)
+                    .frame(minHeight: 100)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
                 Text("书籍简介")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -358,6 +367,7 @@ struct EditBookView: View {
         bookType = book.bookType
         status = book.status
         rating = book.rating ?? 0
+        bookIntroduction = book.bookIntroduction ?? ""
         bookDescription = book.bookDescription ?? ""
         authorDescription = book.authorDescription ?? ""
         notes = book.notes ?? ""
@@ -720,6 +730,7 @@ struct EditBookView: View {
             book.statusChangedDate = Date()
         }
         book.rating = rating > 0 ? rating : nil
+        book.bookIntroduction = bookIntroduction.isEmpty ? nil : bookIntroduction
         book.bookDescription = bookDescription.isEmpty ? nil : bookDescription
         book.authorDescription = authorDescription.isEmpty ? nil : authorDescription
         book.notes = notes.isEmpty ? nil : notes
