@@ -526,6 +526,43 @@ struct ExcelExportTests {
         #expect(r.isWereadUserImported == false, "不应被标记为用户导入书")
     }
 
+    @Test("批量导出时空字段依然全空（防 sharedString 索引错位）")
+    @MainActor
+    func emptyFieldsStayEmptyAtScale() async throws {
+        // 单本书的 sharedString 表很小，索引错位类问题可能只在表变大后暴露。
+        // 这里造 200 本、奇数本全空，让字符串表规模上去再验一遍。
+        var books: [Book] = []
+        for i in 0..<200 {
+            if i % 2 == 0 {
+                books.append(Book(title: "有值书\(i)", author: "作者\(i)",
+                                  isbn: "97870\(String(format: "%08d", i))",
+                                  publisher: "出版社\(i % 20)", totalPages: 100 + i))
+            } else {
+                books.append(Book(title: "全空书\(i)", author: "作者\(i)"))
+            }
+        }
+
+        let imported = try await roundTrip(books)
+        #expect(imported.count == 200)
+
+        let blanks = imported.filter { $0.title.hasPrefix("全空书") }
+        #expect(blanks.count == 100, "应有 100 本全空书")
+        for book in blanks {
+            #expect(book.isbn == nil, "\(book.title) 的 ISBN 应为空，实际 \(String(describing: book.isbn))")
+            #expect(book.publisher == nil, "\(book.title) 的出版社应为空，实际 \(String(describing: book.publisher))")
+            #expect(book.totalPages == 0, "\(book.title) 的总页数应为 0，实际 \(book.totalPages)")
+            #expect(book.translator == nil, "\(book.title) 的译者应为空")
+            #expect(book.price == nil, "\(book.title) 的定价应为空")
+            #expect(book.bookIntroduction == nil, "\(book.title) 的 AI介绍 应为空")
+            #expect(book.wereadBookId == nil, "\(book.title) 的微信读书ID应为空")
+            #expect(book.rating == nil, "\(book.title) 的评分应为空")
+        }
+        // 有值的那半边不能被串到
+        let filled = try #require(imported.first { $0.title == "有值书0" })
+        #expect(filled.isbn == "9787000000000")
+        #expect(filled.publisher == "出版社0")
+    }
+
     @Test("columnHeaders 包含32列")
     func columnHeadersCount() {
         #expect(ExcelImportExportService.columnHeaders.count == 32)
