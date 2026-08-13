@@ -499,7 +499,7 @@ struct EditBookView: View {
             // - 平台书（isWereadUserImported=false）：不搜外部源，只用微信读书+本地
             var externalFilled = false
             AppLogger.warning("performSmartFill: bookDesc.isEmpty=\(bookDescription.isEmpty), authorDesc.isEmpty=\(authorDescription.isEmpty), isbn=\(isbn), title=\(title), author=\(author), isUserImported=\(book.isWereadUserImported)", category: "EditBook")
-            let shouldSearchExternal = book.isWereadUserImported && (bookDescription.isEmpty || authorDescription.isEmpty)
+            let shouldSearchExternal = book.isWereadUserImported && (Book.descriptionNeedsRefresh(bookDescription) || Book.descriptionNeedsRefresh(authorDescription))
             if shouldSearchExternal {
                 autoFillMessage = "正在从外部数据源补全描述..."
                 AppLogger.warning("performSmartFill: calling ISBNLookupService.smartFill for external sources...", category: "EditBook")
@@ -514,8 +514,8 @@ struct EditBookView: View {
                     needsPublishDate: false,
                     needsTranslator: false,
                     needsAuthor: false,
-                    needsBookDesc: bookDescription.isEmpty,
-                    needsAuthorDesc: authorDescription.isEmpty
+                    needsBookDesc: Book.descriptionNeedsRefresh(bookDescription),
+                    needsAuthorDesc: Book.descriptionNeedsRefresh(authorDescription)
                 )
                 AppLogger.warning("performSmartFill: external result bookDesc=\(extResult.bookDescription != nil), authorDesc=\(extResult.authorDescription != nil)", category: "EditBook")
                 if let d = extResult.bookDescription { bookDescription = d; externalFilled = true }
@@ -527,7 +527,7 @@ struct EditBookView: View {
             // 构建结果
             var statuses: [(name: String, status: LookupSourceStatus)] = []
             statuses.append(("微信读书", book.wereadEnrichedDate != nil ? .found : .notFound))
-            if !authorDescription.isEmpty {
+            if !Book.descriptionNeedsRefresh(authorDescription) {  // 截断的简介不进共享缓存，避免扩散到别的书
                 statuses.append(("本地书库", .found))
             }
             if externalFilled {
@@ -538,7 +538,7 @@ struct EditBookView: View {
         }
 
         // 非微信读书的书：走 ISBN 外部源
-        var needsAuthorDesc = authorDescription.isEmpty
+        var needsAuthorDesc = Book.descriptionNeedsRefresh(authorDescription)
 
         // 优先从本地数据库查找同名作者的简介
         if needsAuthorDesc && !author.isEmpty && author != "未知作者" {
@@ -560,7 +560,7 @@ struct EditBookView: View {
             needsPublishDate: publishDate == nil,
             needsTranslator: translator.isEmpty,
             needsAuthor: author.isEmpty || author == "未知作者",
-            needsBookDesc: bookDescription.isEmpty,
+            needsBookDesc: Book.descriptionNeedsRefresh(bookDescription),
             needsAuthorDesc: needsAuthorDesc
         )
 

@@ -5533,3 +5533,112 @@ struct IntroductionImportTests {
         #expect(try context.fetch(FetchDescriptor<Book>()).count == 1)
     }
 }
+
+// MARK: - 豆瓣简介折叠版 Tests
+
+@Suite("豆瓣简介折叠版 Tests")
+struct DoubanCollapsedIntroTests {
+
+    /// 仿真豆瓣页面：短版（带 (展开全部) 锚点）+ 完整版（all hidden）同时存在
+    private let htmlWithBoth = """
+    <div class="related_info">
+    <h2><i class="">内容简介</i>  · · · · · ·</h2>
+    <div id="link-report">
+      <span class="short">
+        <div class="intro">
+          <p>短版第一段</p>
+          <p>短版被截断了…生存性的"朱<a href="javascript:;" class="j a_show_full">(展开全部)</a></p>
+        </div>
+      </span>
+      <span class="all hidden">
+        <div class="intro">
+          <p>完整第一段</p>
+          <p>完整第二段，一直写到最后一个字，没有任何截断。</p>
+        </div>
+      </span>
+    </div>
+    <h2><i class="">作者简介</i>  · · · · · ·</h2>
+    <div class="indent">
+      <span class="short">
+        <div class="intro"><p>作者短版…<a class="j a_show_full">(展开全部)</a></p></div>
+      </span>
+      <span class="all hidden">
+        <div class="intro"><p>作者完整简介，包含出生年份与代表作品。</p></div>
+      </span>
+    </div>
+    </div>
+    """
+
+    /// 只有短版、没有 all hidden 的页面（豆瓣对短简介就是这样）
+    private let htmlShortOnly = """
+    <h2><i class="">内容简介</i></h2>
+    <div id="link-report">
+      <span class="short"><div class="intro"><p>这本书的简介本来就很短，一句话说完。</p></div></span>
+    </div>
+    """
+
+    @Test("内容简介取完整版，不含折叠标记与短版内容")
+    func extractsFullBookDescription() throws {
+        let text = try #require(DoubanDescriptionFetcher.extractBookDescription(from: htmlWithBoth))
+        #expect(text.contains("完整第一段"))
+        #expect(text.contains("完整第二段，一直写到最后一个字，没有任何截断。"))
+        #expect(!text.contains("展开全部"), "不应带折叠标记，实际：\(text)")
+        #expect(!text.contains("短版"), "不应取到短版内容，实际：\(text)")
+    }
+
+    @Test("作者简介取完整版，不含折叠标记")
+    func extractsFullAuthorDescription() throws {
+        let text = try #require(DoubanDescriptionFetcher.extractAuthorDescription(from: htmlWithBoth))
+        #expect(text.contains("作者完整简介，包含出生年份与代表作品。"))
+        #expect(!text.contains("展开全部"))
+        #expect(!text.contains("作者短版"))
+    }
+
+    @Test("页面只有短版时取短版（本来就完整）")
+    func fallsBackToShortWhenNoFullVersion() throws {
+        let text = try #require(DoubanDescriptionFetcher.extractBookDescription(from: htmlShortOnly))
+        #expect(text == "这本书的简介本来就很短，一句话说完。")
+    }
+
+    @Test("descriptionNeedsRefresh：空、含折叠标记都算需要重抓")
+    func refreshPredicate() {
+        #expect(Book.descriptionNeedsRefresh(nil) == true)
+        #expect(Book.descriptionNeedsRefresh("") == true)
+        #expect(Book.descriptionNeedsRefresh("这是一段完整的简介。") == false)
+        #expect(Book.descriptionNeedsRefresh("被截断的简介…\n(展开全部)") == true)
+    }
+
+    @Test("hasCollapsedIntro 只认折叠残留，不把空简介算进去")
+    func collapsedIntroPredicateIsNarrow() {
+        let truncated = Book(title: "折叠", author: "A")
+        truncated.bookDescription = "被截断…\n(展开全部)"
+        #expect(truncated.hasCollapsedIntro == true)
+
+        let emptyDesc = Book(title: "没简介", author: "B")
+        #expect(emptyDesc.needsBookDescriptionRefresh == true, "空简介仍算需要抓")
+        #expect(emptyDesc.hasCollapsedIntro == false, "但不该被一次性重置拖回队列")
+
+        let authorTruncated = Book(title: "作者折叠", author: "C")
+        authorTruncated.bookDescription = "正常的图书简介。"
+        authorTruncated.authorDescription = "作者被截断…(展开全部)"
+        #expect(authorTruncated.hasCollapsedIntro == true)
+
+        let clean = Book(title: "都正常", author: "D")
+        clean.bookDescription = "正常图书简介。"
+        clean.authorDescription = "正常作者简介。"
+        #expect(clean.hasCollapsedIntro == false)
+    }
+
+    @Test("其他字段齐全、仅简介被截断的书仍算需要补全")
+    func truncatedDescriptionCountsAsNeedingEnrichment() {
+        let book = Book(
+            title: "朱砂掌", author: "郑执",
+            publisher: "出版社", publishDate: Date(), totalPages: 300, price: "¥59.00",
+            bookDescription: "编辑推荐…生存性的\"朱...\n(展开全部)",
+            authorDescription: "郑执，作家，导演，编剧。"
+        )
+        #expect(book.needsBookDescriptionRefresh == true)
+        #expect(book.needsAuthorDescriptionRefresh == false)
+        #expect(book.needsEnrichment == true, "仅简介被截断也应进补全队列")
+    }
+}

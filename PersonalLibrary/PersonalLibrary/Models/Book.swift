@@ -149,15 +149,34 @@ final class Book {
         return "微信读书累计 \(String(format: "%.1f", wereadReadingHours)) 小时"
     }
 
-    /// 是否需要外部源数据补全（缺出版社/页数/定价/出版日期/简介/作者简介任一）
+    /// 豆瓣折叠版简介的残留标记。命中说明当初只抓到了 `<span class="short">` 里的截断正文，
+    /// 完整正文在 `<span class="all hidden">` 节点里没被取到，需要重新抓。
+    static let collapsedIntroMarker = "展开全部"
+
+    /// 简介是否需要（重新）抓取：为空，或是豆瓣折叠版残留
+    static func descriptionNeedsRefresh(_ text: String?) -> Bool {
+        guard let text, !text.isEmpty else { return true }
+        return text.contains(collapsedIntroMarker)
+    }
+
+    var needsBookDescriptionRefresh: Bool { Self.descriptionNeedsRefresh(bookDescription) }
+    var needsAuthorDescriptionRefresh: Bool { Self.descriptionNeedsRefresh(authorDescription) }
+
+    /// 简介确实是豆瓣折叠版残留（区别于"简介本来就是空的"）。
+    /// 一次性重置只该认这一类，否则会把"补全过但豆瓣本来就没简介"的书也拖回队列。
+    var hasCollapsedIntro: Bool {
+        (bookDescription ?? "").contains(Self.collapsedIntroMarker)
+            || (authorDescription ?? "").contains(Self.collapsedIntroMarker)
+    }
+
+    /// 是否需要外部源数据补全（缺出版社/页数/定价/出版日期/简介/作者简介任一；
+    /// 简介被豆瓣折叠版截断也算"缺"）
     var needsEnrichment: Bool {
         let missingPublisher = publisher == nil || publisher?.isEmpty == true
         let missingPages = totalPages == 0
         let missingPrice = price == nil || price?.isEmpty == true
         let missingPublishDate = publishDate == nil
-        let missingBookDesc = bookDescription == nil || bookDescription?.isEmpty == true
-        let missingAuthorDesc = authorDescription == nil || authorDescription?.isEmpty == true
         return missingPublisher || missingPages || missingPrice || missingPublishDate
-            || missingBookDesc || missingAuthorDesc
+            || needsBookDescriptionRefresh || needsAuthorDescriptionRefresh
     }
 }

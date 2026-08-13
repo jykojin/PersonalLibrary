@@ -22,7 +22,7 @@ struct PersonalLibraryApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView(startupError: startupError)
-                .task { if startupError == nil { migrateOldAddSource(); migrateWeReadBookshelf(); mergeDuplicateTags(); seedBookIntroductions() } }
+                .task { if startupError == nil { migrateOldAddSource(); migrateWeReadBookshelf(); mergeDuplicateTags(); seedBookIntroductions(); resetEnrichmentForCollapsedIntros() } }
                 .task { if startupError == nil { await backgroundCoverRefresh() } }
         }
         .modelContainer(modelContainer)
@@ -155,6 +155,39 @@ struct PersonalLibraryApp: App {
             )
         } catch {
             AppLogger.error("书籍介绍回填失败: \(error)", category: "Migration")
+            return  // 不置标记，下次启动重试
+        }
+
+        UserDefaults.standard.set(true, forKey: migrationKey)
+    }
+
+    /// 一次性：把简介被豆瓣折叠版截断的书的 `lastEnrichmentDate` 清空。
+    ///
+    /// 批量补全的候选过滤是 `needsEnrichment && lastEnrichmentDate == nil`，
+    /// 而这些书当初正是被批量补全处理过才拿到截断正文的（`lastEnrichmentDate` 非 nil），
+    /// 不清空就永远重新入不了队。只改这一个时间戳，不动简介正文。
+    @MainActor
+    private func resetEnrichmentForCollapsedIntros() {
+        let migrationKey = "collapsed_intro_enrichment_reset_v1_done"
+        guard !UserDefaults.standard.bool(forKey: migrationKey) else { return }
+
+        let context = modelContainer.mainContext
+        do {
+            let allBooks = try context.fetch(FetchDescriptor<Book>())
+            // 只认折叠版残留：用 needs*Refresh 会把"简介本来就是空"的书也拖回队列
+            let stale = allBooks.filter { $0.lastEnrichmentDate != nil && $0.hasCollapsedIntro }
+            for book in stale {
+                book.lastEnrichmentDate = nil
+            }
+            if !stale.isEmpty {
+                try context.save()
+                AppLogger.info(
+                    "已把 \(stale.count) 本简介被折叠截断的书重新标记为待补全（去 数据维护 → 批量补全 重抓）",
+                    category: "Migration"
+                )
+            }
+        } catch {
+            AppLogger.error("折叠简介重置失败: \(error)", category: "Migration")
             return  // 不置标记，下次启动重试
         }
 

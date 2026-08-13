@@ -52,13 +52,13 @@ struct DoubanDescriptionFetcher {
     private func fetchDescriptionFromDoubanISBN(isbn: String) async -> String? {
         guard let url = URL(string: "https://book.douban.com/isbn/\(isbn)/") else { return nil }
         guard let html = await fetchHTML(url: url) else { return nil }
-        return extractBookDescription(from: html)
+        return Self.extractBookDescription(from: html)
     }
 
     private func fetchAuthorDescFromDoubanISBN(isbn: String) async -> String? {
         guard let url = URL(string: "https://book.douban.com/isbn/\(isbn)/") else { return nil }
         guard let html = await fetchHTML(url: url) else { return nil }
-        return extractAuthorDescription(from: html)
+        return Self.extractAuthorDescription(from: html)
     }
 
     private func searchDoubanBookURL(title: String) async -> URL? {
@@ -102,9 +102,9 @@ struct DoubanDescriptionFetcher {
         guard let html = await fetchHTML(url: url) else { return nil }
         switch type {
         case .book:
-            return extractBookDescription(from: html)
+            return Self.extractBookDescription(from: html)
         case .author:
-            return extractAuthorDescription(from: html)
+            return Self.extractAuthorDescription(from: html)
         }
     }
 
@@ -129,7 +129,10 @@ struct DoubanDescriptionFetcher {
         return String(data: data, encoding: .utf8)
     }
 
-    private func extractBookDescription(from html: String) -> String? {
+    /// 从豆瓣页面 HTML 提取内容简介。优先取 `<span class="all hidden">` 里的完整正文，
+    /// 只有页面没有该节点时才退回短版 —— 短版尾部会带 `(展开全部)` 锚点文本。
+    /// 全 app 唯一的豆瓣简介解析实现，`ISBNLookupService` 也调这里（曾因两套实现不一致导致存了截断正文）。
+    static func extractBookDescription(from html: String) -> String? {
         guard let introStart = html.range(of: "内容简介") else { return nil }
         let afterIntro = String(html[introStart.upperBound...])
 
@@ -156,7 +159,8 @@ struct DoubanDescriptionFetcher {
         return cleanHTML(introContent)
     }
 
-    private func extractAuthorDescription(from html: String) -> String? {
+    /// 同上，作者简介。
+    static func extractAuthorDescription(from html: String) -> String? {
         guard let introStart = html.range(of: "作者简介") else { return nil }
         let afterIntro = String(html[introStart.upperBound...])
 
@@ -183,7 +187,7 @@ struct DoubanDescriptionFetcher {
         return cleanHTML(introContent)
     }
 
-    private func cleanHTML(_ html: String) -> String? {
+    static func cleanHTML(_ html: String) -> String? {
         let text = html.replacingOccurrences(of: "<[^>]{0,1000}>", with: "\n", options: .regularExpression)
             .components(separatedBy: "\n")
             .map { $0.trimmingCharacters(in: .whitespaces) }

@@ -185,10 +185,10 @@ actor ISBNLookupService {
         }
 
         // 简介
-        let bookDescription = extractDoubanDescription(from: html)
+        let bookDescription = DoubanDescriptionFetcher.extractBookDescription(from: html)
 
         // 作者简介
-        let authorDescription = extractDoubanAuthorDescription(from: html)
+        let authorDescription = DoubanDescriptionFetcher.extractAuthorDescription(from: html)
 
         // 豆瓣链接（最终跳转的 URL）
         let doubanURL = response.url?.absoluteString
@@ -248,46 +248,6 @@ actor ISBNLookupService {
         }
 
         return authors.isEmpty ? nil : authors.joined(separator: ", ")
-    }
-
-    private func extractDoubanDescription(from html: String) -> String? {
-        // 找书籍简介 — 在 "内容简介" 后面的 intro div
-        guard let introStart = html.range(of: "内容简介") else { return nil }
-        let afterIntro = String(html[introStart.upperBound...])
-
-        // 找到 class="intro" 的 div
-        guard let divStart = afterIntro.range(of: #"<div class="intro">"#) else { return nil }
-        let afterDiv = String(afterIntro[divStart.upperBound...])
-        guard let divEnd = afterDiv.range(of: "</div>") else { return nil }
-        let content = String(afterDiv[..<divEnd.lowerBound])
-
-        // 去掉 HTML 标签，保留文本
-        let text = content.replacingOccurrences(of: "<[^>]{0,1000}>", with: "\n", options: .regularExpression)
-            .components(separatedBy: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n")
-
-        return text.isEmpty ? nil : text
-    }
-
-    private func extractDoubanAuthorDescription(from html: String) -> String? {
-        // 找作者简介
-        guard let introStart = html.range(of: "作者简介") else { return nil }
-        let afterIntro = String(html[introStart.upperBound...])
-
-        guard let divStart = afterIntro.range(of: #"<div class="intro">"#) else { return nil }
-        let afterDiv = String(afterIntro[divStart.upperBound...])
-        guard let divEnd = afterDiv.range(of: "</div>") else { return nil }
-        let content = String(afterDiv[..<divEnd.lowerBound])
-
-        let text = content.replacingOccurrences(of: "<[^>]{0,1000}>", with: "\n", options: .regularExpression)
-            .components(separatedBy: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n")
-
-        return text.isEmpty ? nil : text
     }
 
     // MARK: - Open Library API

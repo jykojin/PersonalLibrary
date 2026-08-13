@@ -668,8 +668,8 @@ struct DataMaintenanceView: View {
                     needsPublishDate: book.publishDate == nil,
                     needsTranslator: (book.translator ?? "").isEmpty,
                     needsAuthor: book.author.isEmpty || book.author == "未知作者",
-                    needsBookDesc: (book.bookDescription ?? "").isEmpty,
-                    needsAuthorDesc: (book.authorDescription ?? "").isEmpty
+                    needsBookDesc: book.needsBookDescriptionRefresh,
+                    needsAuthorDesc: book.needsAuthorDescriptionRefresh
                 )
                 let tFill1 = CFAbsoluteTimeGetCurrent()
                 AppLogger.perf("\(label)[\(index+1)/\(totalCount)] \(title) | smartFill:\(Int((tFill1-tFill0)*1000))ms filled:\(result.hasAnyFill)", category: "BatchEnrich")
