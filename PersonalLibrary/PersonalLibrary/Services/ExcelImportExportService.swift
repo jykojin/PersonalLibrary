@@ -123,6 +123,84 @@ actor ExcelImportExportService {
         return ImportResult(successCount: successCount, failedCount: failedCount, errors: errors)
     }
 
+    // MARK: - AI介绍 回填（只读该列，不新增书籍）
+
+    /// 从 XLSX 文件里只提取「AI介绍」列 + 匹配键，供 `BookIntroductionSeeder.backfill` 回填已有书籍。
+    func parseIntroductionEntries(from fileURL: URL) throws -> [BookIntroductionSeeder.SeedEntry] {
+        let didStartAccess = fileURL.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccess {
+                fileURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        guard let data = try? Data(contentsOf: fileURL) else {
+            throw ImportError.cannotAccessFile
+        }
+        return try parseIntroductionEntries(data: data)
+    }
+
+    /// 同上，直接吃 XLSX 数据。
+    /// 只读 书名/作者/ISBN/微信读书ID/AI介绍 五列；介绍为空或一个匹配键都没有的行直接跳过。
+    func parseIntroductionEntries(data: Data) throws -> [BookIntroductionSeeder.SeedEntry] {
+        guard data.count <= 10_000_000 else {
+            throw ImportError.invalidFormat
+        }
+
+        let xlsxFile: XLSXFile
+        do {
+            xlsxFile = try XLSXFile(data: data)
+        } catch {
+            AppLogger.error("XLSXFile(data:) failed: \(error)", category: "IntroImport")
+            throw ImportError.invalidFormat
+        }
+
+        let sharedStrings = try xlsxFile.parseSharedStrings()
+        guard let firstPath = try xlsxFile.parseWorksheetPaths().first else {
+            throw ImportError.noWorksheet
+        }
+        let worksheet = try xlsxFile.parseWorksheet(at: firstPath)
+        guard let rows = worksheet.data?.rows, rows.count > 1 else {
+            throw ImportError.noData
+        }
+
+        let columnMap = buildColumnMap(headerRow: rows[0], sharedStrings: sharedStrings)
+        guard let introCol = columnMap["AI介绍"] ?? columnMap[Self.legacyIntroHeader] else {
+            throw ImportError.noData  // 文件里没有这一列，等于没数据可回填
+        }
+
+        var entries: [BookIntroductionSeeder.SeedEntry] = []
+        for rowIndex in 1..<rows.count {
+            let row = rows[rowIndex]
+            func value(_ header: String) -> String? {
+                columnMap[header].flatMap { getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }
+            }
+
+            guard let intro = getCellValue(row: row, columnIndex: introCol, sharedStrings: sharedStrings) else {
+                continue  // 该行没填介绍
+            }
+            let title = value("书名")
+            let isbn = value("ISBN")
+            let wereadId = value("微信读书ID")
+            guard title != nil || isbn != nil || wereadId != nil else {
+                continue  // 一个匹配键都没有，无从对应到书
+            }
+
+            entries.append(
+                BookIntroductionSeeder.SeedEntry(
+                    title: title,
+                    author: value("作者"),
+                    isbn: isbn,
+                    wereadId: wereadId,
+                    // 与 seed 资源保持一致的换行写法，避免同一段文字两种形态
+                    intro: intro.replacingOccurrences(of: "\r\n", with: "\n")
+                        .replacingOccurrences(of: "\r", with: "\n")
+                )
+            )
+        }
+        return entries
+    }
+
     // MARK: - Export
 
     /// 把一本书转换为已转义的字段数组（顺序与 `columnHeaders` 一致）。

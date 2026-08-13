@@ -5405,3 +5405,131 @@ struct BookIntroductionSeedTests {
         #expect(entries.allSatisfy { $0.isbn != "34" && $0.wereadId != "34" })
     }
 }
+
+// MARK: - AI介绍 导入回填 Tests
+
+@Suite("AI介绍 导入回填 Tests")
+struct IntroductionImportTests {
+
+    private func makeContext() throws -> ModelContext {
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        return ModelContext(container)
+    }
+
+    /// 按导出表头造一份 xlsx。spec = (书名, 作者, ISBN, 微信读书ID, AI介绍)
+    private func makeXLSX(
+        _ specs: [(String, String, String, String, String)],
+        introHeader: String = "AI介绍"
+    ) throws -> Data {
+        var headers = ExcelImportExportService.columnHeaders
+        headers[31] = introHeader
+        let rows: [[String]] = specs.map { spec in
+            var r = [String](repeating: "", count: headers.count)
+            r[1] = spec.0   // 书名
+            r[2] = spec.1   // 作者
+            r[6] = spec.2   // ISBN
+            r[24] = spec.3  // 微信读书ID
+            r[31] = spec.4  // AI介绍
+            return r
+        }
+        return try XLSXWriter.write(headers: headers, rows: rows, sheetName: "书单")
+    }
+
+    @Test("解析后按 ISBN 回填已有书，且不新增任何书籍")
+    @MainActor
+    func backfillsExistingBookAndInsertsNothing() async throws {
+        let context = try makeContext()
+        let existing = Book(title: "活着", author: "余华", isbn: "9787506365437")
+        context.insert(existing)
+
+        let data = try makeXLSX([("活着", "余华", "9787506365437", "", "《活着》的 AI介绍")])
+        let entries = try await ExcelImportExportService().parseIntroductionEntries(data: data)
+        #expect(entries.count == 1)
+
+        let result = BookIntroductionSeeder.backfill(entries, into: context)
+        #expect(result.updated == 1)
+        #expect(result.unmatched == 0)
+        #expect(existing.bookIntroduction == "《活着》的 AI介绍")
+        #expect(try context.fetch(FetchDescriptor<Book>()).count == 1, "回填不得新增书籍")
+    }
+
+    @Test("微信读书ID 也能作为匹配键解析出来")
+    @MainActor
+    func parsesWereadIdKey() async throws {
+        let context = try makeContext()
+        let existing = Book(title: "书名不一致", author: "作者不一致")
+        existing.wereadBookId = "3110069640"
+        context.insert(existing)
+
+        let data = try makeXLSX([("欧洲史话", "枫落白衣", "", "3110069640", "有声书的 AI介绍")])
+        let entries = try await ExcelImportExportService().parseIntroductionEntries(data: data)
+        let entry = try #require(entries.first)
+        #expect(entry.wereadId == "3110069640")
+
+        let result = BookIntroductionSeeder.backfill(entries, into: context)
+        #expect(result.updated == 1)
+        #expect(existing.bookIntroduction == "有声书的 AI介绍")
+    }
+
+    @Test("旧表头「书籍介绍」的文件同样能解析")
+    @MainActor
+    func parsesLegacyHeader() async throws {
+        let data = try makeXLSX([("活着", "余华", "9787506365437", "", "旧表头的介绍")], introHeader: "书籍介绍")
+        let entries = try await ExcelImportExportService().parseIntroductionEntries(data: data)
+        let entry = try #require(entries.first)
+        #expect(entry.intro == "旧表头的介绍")
+    }
+
+    @Test("AI介绍 为空的行被跳过")
+    @MainActor
+    func skipsRowsWithoutIntro() async throws {
+        let data = try makeXLSX([
+            ("有介绍的书", "作者A", "9787000000001", "", "介绍正文"),
+            ("没介绍的书", "作者B", "9787000000002", "", "")
+        ])
+        let entries = try await ExcelImportExportService().parseIntroductionEntries(data: data)
+        #expect(entries.count == 1)
+        #expect(entries.first?.title == "有介绍的书")
+    }
+
+    @Test("书名/ISBN/微信读书ID 全空的行被跳过（无匹配键）")
+    @MainActor
+    func skipsRowsWithoutAnyKey() async throws {
+        let data = try makeXLSX([("", "", "", "", "孤立的介绍，无从匹配")])
+        let entries = try await ExcelImportExportService().parseIntroductionEntries(data: data)
+        #expect(entries.isEmpty)
+    }
+
+    @Test("介绍里的 CRLF 归一为 LF")
+    @MainActor
+    func normalizesLineEndings() async throws {
+        let data = try makeXLSX([("活着", "余华", "9787506365437", "", "第一行\r\n\r\n第二行")])
+        let entries = try await ExcelImportExportService().parseIntroductionEntries(data: data)
+        let entry = try #require(entries.first)
+        #expect(entry.intro == "第一行\n\n第二行")
+        #expect(!entry.intro.contains("\r"))
+    }
+
+    @Test("匹配不到的行计入 unmatched，库里书数不变")
+    @MainActor
+    func unmatchedRowsReported() async throws {
+        let context = try makeContext()
+        let existing = Book(title: "库里有的书", author: "作者", isbn: "9787000000009")
+        context.insert(existing)
+
+        let data = try makeXLSX([
+            ("库里有的书", "作者", "9787000000009", "", "命中的介绍"),
+            ("库里没有的书", "陌生作者", "9787999999999", "", "落空的介绍")
+        ])
+        let entries = try await ExcelImportExportService().parseIntroductionEntries(data: data)
+        #expect(entries.count == 2)
+
+        let result = BookIntroductionSeeder.backfill(entries, into: context)
+        #expect(result.updated == 1)
+        #expect(result.unmatched == 1)
+        #expect(existing.bookIntroduction == "命中的介绍")
+        #expect(try context.fetch(FetchDescriptor<Book>()).count == 1)
+    }
+}
