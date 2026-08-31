@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from difflib import SequenceMatcher
 
 # 篇幅红线（非空白字符数）。标杆样板实测 694 字，契约目标 700–1000。
@@ -64,7 +65,47 @@ TRUNCATION_MARKERS = ("……", "展开全部")
 # 占位符。故意**不**收「未知」—— 标杆样板里就有「对未知维度的推演」，
 # 收了会把好文章打回。T1/T2 这类是旧模板真的漏出来过的。
 PLACEHOLDER_PATTERN = re.compile(r"(?<![A-Za-z0-9])T[0-9](?![0-9])")
-PLACEHOLDER_LITERALS = ("None", "undefined", "[待补充]")
+PLACEHOLDER_LITERALS = ("[待补充]",)
+
+# 这两个词只有「裸露」出现时才是脏数据（Python 值漏进正文）。
+# 正文允许写英文书名，`And Then There Were None`、`None of the Above` 都是正常内容，
+# 早先按子串匹配会把它们连坐 —— pk 1308《无人生还》实际踩过，agent 只能删掉英文原名才过。
+PLACEHOLDER_WORDS = ("None", "undefined")
+_ENGLISH_TAIL = re.compile(r"[A-Za-z][A-Za-z'’-]*\s*$")
+_ENGLISH_HEAD = re.compile(r"[A-Za-z]")
+
+
+def duplicate_pks(pks: Iterable[int]) -> list[int]:
+    """找出出现多于一次的 pk（升序、每个只列一次）。
+
+    两个 agent 并发 Edit 同一份稿件时会写出重复的 `### pk` 段。
+    这种稿件必须打回：`merge` 只会让后写的那份静默覆盖前一份，
+    质量更好的那版可能就这么没了，且不留痕迹。
+    """
+    seen: set[int] = set()
+    dupes: set[int] = set()
+    for pk in pks:
+        if pk in seen:
+            dupes.add(pk)
+        seen.add(pk)
+    return sorted(dupes)
+
+
+def leaked_placeholders(text: str) -> list[str]:
+    """找出裸露的占位符值。夹在英文词之间的一律视为正常英文行文。"""
+    hits: list[str] = []
+    for word in PLACEHOLDER_WORDS:
+        pattern = re.compile(rf"(?<![A-Za-z0-9]){re.escape(word)}(?![A-Za-z0-9])")
+        for m in pattern.finditer(text):
+            before, after = text[: m.start()], text[m.end() :]
+            in_english = bool(_ENGLISH_TAIL.search(before)) or bool(
+                _ENGLISH_HEAD.match(after.lstrip())
+            )
+            if not in_english:
+                hits.append(word)
+                break
+    return hits
+
 
 # 行首 markdown 标记：App 里是 Text 直出，写了会原样显示
 MARKDOWN_LINE_PATTERN = re.compile(r"^\s*(#{1,6}\s|[-*+]\s|\d+\.\s|>\s|\|)")
@@ -295,6 +336,8 @@ def validate_intro(text: str, *, title: str, douban_intro: str = "") -> list[str
     for literal in PLACEHOLDER_LITERALS:
         if literal in text:
             reasons.append(f"出现占位符「{literal}」")
+    for word in leaked_placeholders(text):
+        reasons.append(f"出现占位符「{word}」")
 
     for line in text.split("\n"):
         if MARKDOWN_LINE_PATTERN.match(line):

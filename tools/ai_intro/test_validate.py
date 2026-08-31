@@ -8,6 +8,7 @@ import re
 import pytest
 
 from validate import (
+    duplicate_pks,
     longest_common_run,
     normalize_indent,
     title_mismatch,
@@ -196,6 +197,50 @@ class TestForbiddenPatterns:
         assert any(
             "占位符" in r for r in reasons_for(FLATLAND.replace("阶级固化", "T1"))
         )
+
+    @pytest.mark.parametrize(
+        "english_phrase",
+        [
+            "And Then There Were None",  # pk 1308《无人生还》实际踩过
+            "None of the Above",
+            "the undefined behaviour of pointers",
+        ],
+    )
+    def test_英文书名或短语里的_None_不算占位符(self, english_phrase):
+        """正文允许出现英文书名。占位符判定不能把它们连坐。"""
+        text = FLATLAND.replace("（Flatland）", f"（{english_phrase}）")
+        assert not any("占位符" in r for r in reasons_for(text)), (
+            f"「{english_phrase}」被误判为占位符"
+        )
+
+    @pytest.mark.parametrize("leaked", ["None", "undefined"])
+    def test_裸露的_None_仍然打回(self, leaked):
+        """真正要抓的是 Python 值漏进正文，这一端不能放松。"""
+        text = FLATLAND.replace("正方形。他先是在梦中", f"{leaked}。他先是在梦中")
+        assert any("占位符" in r for r in reasons_for(text)), (
+            f"裸露的 {leaked} 没有被打回"
+        )
+
+
+class TestDuplicatePks:
+    """两个 agent 并发写同一份稿件时会写出重复的 `### pk` 段。
+
+    实测踩过两次（040 有 3 个 pk 重复、041 写出 12 段），而当时
+    `ingest-text` 用集合算缺失、从不比较段数与去重后的数量，
+    照样报「校验：全部合格」；`merge` 也只是让后写的那份静默覆盖前一份。
+    """
+
+    def test_重复的_pk_被指出(self):
+        assert duplicate_pks([1, 2, 2, 3, 3, 3]) == [2, 3]
+
+    def test_无重复时返回空(self):
+        assert duplicate_pks([1, 2, 3]) == []
+
+    def test_空输入返回空(self):
+        assert duplicate_pks([]) == []
+
+    def test_结果按_pk_升序且不重复列出(self):
+        assert duplicate_pks([9, 9, 9, 4, 4]) == [4, 9]
 
 
 class TestPlagiarism:

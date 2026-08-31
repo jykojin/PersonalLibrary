@@ -247,7 +247,7 @@ def cmd_export_batches(args: argparse.Namespace) -> int:
 def cmd_merge(args: argparse.Namespace) -> int:
     sys.path.insert(0, str(Path(__file__).parent))
     # 延迟导入，让前几步不依赖它
-    from validate import normalize_indent, validate_intro
+    from validate import duplicate_pks, normalize_indent, validate_intro
 
     manifest = json.loads((WORKDIR / "manifest.json").read_text(encoding="utf-8"))
     inputs = {
@@ -278,8 +278,20 @@ def cmd_merge(args: argparse.Namespace) -> int:
             continue
 
         by_pk = {b["pk"]: b for b in inputs[batch_id]["books"]}
+        results_in_batch = payload.get("results", [])
+        for dupe_pk in duplicate_pks(
+            r.get("pk") for r in results_in_batch if r.get("pk") is not None
+        ):
+            rejected.append(
+                {
+                    "batch_id": batch_id,
+                    "pk": dupe_pk,
+                    "title": by_pk.get(dupe_pk, {}).get("title", ""),
+                    "reasons": ["同一个 pk 写了多段（并发撞车），需删到只剩一段"],
+                }
+            )
         seen: set[int] = set()
-        for result in payload.get("results", []):
+        for result in results_in_batch:
             pk = result.get("pk")
             source = by_pk.get(pk)
             if source is None:
@@ -385,6 +397,10 @@ def cmd_status(args: argparse.Namespace) -> int:
     problems: list[str] = []
     mismatches: list[str] = []
     near_line: list[str] = []
+    # 「资料不足」留空是契约里的合法结果（ingest-text / merge 都这么认）。
+    # 早先 status 对空正文跑 validate_intro，把它们混进「待修（硬打回）」，
+    # 同一份稿件三个命令给出三种结论，跑批时会误判进度。
+    insufficient_rows: list[str] = []
 
     for m in manifest:
         batch_id, expected = m["batch_id"], m["count"]
@@ -411,8 +427,15 @@ def cmd_status(args: argparse.Namespace) -> int:
         }
         results = json.loads(out.read_text(encoding="utf-8"))["results"]
         bad = 0
+        skipped = 0
         for r in results:
             book = src.get(r["pk"], {})
+            if r.get("status") == "insufficient_data":
+                skipped += 1
+                insufficient_rows.append(
+                    f"  batch_{batch_id} pk={r['pk']} {book.get('title', '?')[:16]}"
+                )
+                continue
             reasons = validate_intro(
                 r.get("intro", ""),
                 title=book.get("title", ""),
@@ -441,7 +464,7 @@ def cmd_status(args: argparse.Namespace) -> int:
                         f"  batch_{batch_id} pk={r['pk']} "
                         f"{book.get('title', '?')[:16]}: 重合 {run} 字"
                     )
-        validated += len(results) - bad
+        validated += len(results) - bad - skipped
         rejected += bad
         if len(results) == expected and bad == 0:
             done_batches += 1
@@ -459,6 +482,14 @@ def cmd_status(args: argparse.Namespace) -> int:
             f"字数   最短 {min(lengths)}，最长 {max(lengths)}，"
             f"平均 {sum(lengths) // len(lengths)}（标杆样板 694）"
         )
+    if insufficient_rows:
+        print(
+            f"\n资料不足留空 {len(insufficient_rows)} 条（契约认可的合法结果，不是待修）:"
+        )
+        for line in insufficient_rows[: args.limit]:
+            print(line)
+        if len(insufficient_rows) > args.limit:
+            print(f"  …另有 {len(insufficient_rows) - args.limit} 条")
     if problems:
         print(f"\n待修 {len(problems)} 条（硬打回）:")
         for line in problems[: args.limit]:
@@ -530,7 +561,7 @@ def cmd_ingest_text(args: argparse.Namespace) -> int:
     只报"缺几段"不报"哪段不合格"，等于把问题推到事后返工。
     """
     sys.path.insert(0, str(Path(__file__).parent))
-    from validate import title_mismatch, validate_intro
+    from validate import duplicate_pks, title_mismatch, validate_intro
 
     batch_id = args.batch_id
     draft = args.draft or (WORKDIR / "text" / f"batch_{batch_id}.txt")
@@ -556,11 +587,16 @@ def cmd_ingest_text(args: argparse.Namespace) -> int:
 
     missing = sorted(set(books) - seen)
     extra = sorted(seen - set(books))
+    dupes = duplicate_pks(e["pk"] for e in entries)
     print(f"批次 {batch_id}: 输入 {len(books)} 本，稿件 {len(entries)} 段")
     if missing:
         print(f"缺 {len(missing)} 段: {missing}")
     if extra:
         print(f"多出（pk 不在该批次）: {extra}")
+    if dupes:
+        print(f"重复 {len(dupes)} 个 pk（同一本写了多段，要删到只剩一段）: {dupes}")
+        print("  多半是两个 agent 并发写了同一份稿件。merge 会让后写的那份静默覆盖，")
+        print("  所以必须在这一步修掉，别指望下游发现。")
 
     problems: list[str] = []
     insufficient = 0
@@ -595,7 +631,7 @@ def cmd_ingest_text(args: argparse.Namespace) -> int:
         if note:
             print(f"（供参考，不必改）pk={r['pk']}: {note}")
 
-    return 0 if not missing and not extra and not problems else 1
+    return 0 if not missing and not extra and not problems and not dupes else 1
 
 
 # --------------------------------------------------------------------------- #
