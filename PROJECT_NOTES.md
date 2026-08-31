@@ -163,6 +163,7 @@ iOS 个人藏书管理 + 阅读进度跟踪 App。SwiftUI + SwiftData，iOS 17+�
 - **v0.64**：**「AI介绍」字段 + 一次性回填 2853 条**（`343b671`）—— 详情页展示、编辑页可改、Excel 第 32 列（AF）；真机实测 2853 条全命中。详见第 9 节 v0.64 小节。
 - **v0.65**：数据备份页新增「**导入 AI介绍**」（`03e115b`）—— 可按 xlsx 批量回填已有书籍，只补空值、绝不新增书。
 - **v0.66**：**豆瓣简介只抓到折叠版的 bug**（`97379e0`）—— 删掉重复解析器，正文不再被截断在约 400 字（见 9.2）。
+- **v0.67**：**「从备份恢复」「从 Excel 导入」点了没反应的 bug** —— 三个 `.fileImporter` 挂在同一个 `List` 上，SwiftUI 只让最后一个生效（见第 9 节第 9 行）。同轮完成 **AI介绍 全量重写 2897 条**（工具链见 `.claude/skills/ai-book-intro/` 与 `tools/ai_intro/`）。
 
 ---
 
@@ -180,7 +181,7 @@ iOS 个人藏书管理 + 阅读进度跟踪 App。SwiftUI + SwiftData，iOS 17+�
 
 ---
 
-## 9. 修复追踪表（v0.59–v0.66，2026-08-09 ~ 08-14）
+## 9. 修复追踪表（v0.59–v0.67，2026-08-09 ~ 09-01）
 
 一轮集中排查修掉的 6 个问题。每行给出 **症状 → 版本 → commit → 根因 → 防护测试**，
 细节见第 4 节对应小节。查历史时从这张表入手，比翻 git log 快。
@@ -195,6 +196,7 @@ iOS 个人藏书管理 + 阅读进度跟踪 App。SwiftUI + SwiftData，iOS 17+�
 | 6 | 全量测试偶发失败（非用户可见） | v0.60 / v0.63 | `0880221` `4b03a8e` | 测试断言/改写进程级全局态（`isSyncing`、`AppLogger.currentMode`、共享 Keychain），`.serialized` 只管 suite 内 | `SyncLockDecisionTests`、`AppLoggerLevelDecisionTests` | 4.10 |
 | 7 | 导出的书单里空字段全都显示成 `"34"`（ISBN／总页数／微信读书ID 等） | v0.64 | — | ⚠️ **误报，App 无 bug**：App 写出的是真正的空串 `<si><t></t></si>`；那份 xlsx 被外部工具改写时，把空串换成了它自己的 sharedString 索引号 —— 31 列布局下空串正好落在索引 34，于是显示 "34" | `空字段往返后仍为空`、`批量导出时空字段依然全空` | 9.1 |
 | 8 | **书籍简介/作者简介被截断**，尾部是 `...` 加一行 `(展开全部)` | v0.66 | `97379e0` | 两套豆瓣解析器不一致：`ISBNLookupService` 取「内容简介」后第一个 `<div class="intro">`，而豆瓣把它放在 `<span class="short">` 里（约 400 字折叠版）；正确的 `DoubanDescriptionFetcher` 优先取 `<span class="all hidden">`。完整正文本就在同一份 HTML 里 | `DoubanCollapsedIntroTests` | 9.2 |
+| 9 | **数据备份页「从备份恢复」「从 Excel 导入」点了完全没反应**（「导入 AI介绍」正常）| v0.67 | 本次 | 三个 `.fileImporter` 全挂在同一个 `List` 上，SwiftUI 只让**最后一个**生效，前两个静默失效。判据很干净：「从 Excel 导入」用的是完全合法的 `.xlsx` 类型也照样弹不出来 → 问题在挂载位置与顺序，不在 `allowedContentTypes`。修法是三个 importer 各自挂到对应的 Button 上 | `testDataBackupFilePickersAllPresent`（UI 测试，已验证在修复前失败、修复后通过）| 9.3 |
 
 同轮的工程改进（非用户可见 bug）：
 
@@ -273,6 +275,34 @@ seed 生成脚本已把 `"34"` 当空值过滤，所以那些假 ISBN／假微�
 
 **验证结果（2026-08-15）**：v0.66 装真机后跑批量补全，简介恢复为完整正文，问题闭环。
 
+### 9.3 同一视图挂多个 `.fileImporter` 只有最后一个生效（2026-09-01）
+
+**症状**：数据备份页点「从备份恢复」和「从 Excel 导入」完全没反应 —— 不弹文件选择器、不报错、
+无日志。同页的「导入 AI介绍」正常。
+
+**根因**：三个 `.fileImporter` 都挂在同一个 `List` 上（`DataBackupView.swift` 原 `:132/:143/:153`），
+SwiftUI 只让最后一个（AI介绍）生效。第三个 importer 是 v0.65 的 `03e115b` 加的 —— 也就是说
+**加第三个入口的那次提交，静默弄坏了前两个**，而当时没人点恢复所以没发现。
+
+**判据（这条最省时间）**：「从 Excel 导入」用的是完全合法的 `.xlsx` 类型，照样弹不出来 →
+问题在 modifier 的挂载位置与顺序，不在 `allowedContentTypes`。
+反过来，两个 `.sheet`（备份分享、导出分享）同层却都正常，所以**不能笼统说"presentation modifier 同层必冲突"**，
+`.fileImporter` 是特例。
+
+**修法**：三个 importer 各自挂到对应的 Button 上（不同视图各挂一个即不冲突），
+参数与回调逻辑不动，+31/−31。
+
+**防护测试**：`PersonalLibraryUITests.testDataBackupFilePickersAllPresent` —— 依次点三个按钮，
+断言系统选择器的「取消／Cancel」出现。**已验证它能抓住这个 bug**：把 `DataBackupView.swift`
+还原成 HEAD 版本后测试失败（报「点『从备份恢复』后文件选择器没有出现」），改回修复版即通过。
+这是本仓库第一个真正验证过判别力的 UI 测试（此前只有启动 smoke test）。
+
+**顺带留下的一个未验证隐患**：`allowedContentTypes: [UTType(filenameExtension: "plbackup") ?? .data]`
+里的 `?? .data` 是**死代码** —— `project.yml` 从未声明 `.plbackup` 类型，而
+`UTType(filenameExtension:)` 对未注册扩展名返回动态 UTI（`dyn.*`）而不是 nil，兜底永不触发。
+真机实测能正常选中 `.plbackup` 并恢复成功（iOS 把磁盘文件解析成同一个动态 UTI，两边对得上），
+所以**当前不影响功能**，未改。若将来选择器出现「文件是灰的选不中」，从这里查。
+
 ### 遗留事项（下次接手先看这里）
 
 - [ ] **GitHub 账单未处理** → CI 仍处 `disabled_manually`。修好账单后 `gh workflow enable CI && gh workflow run CI` 验证。
@@ -280,7 +310,7 @@ seed 生成脚本已把 `"34"` 当空值过滤，所以那些假 ISBN／假微�
 - [x] ~~344 本待重抓简介~~ **已完成（2026-08-15）**：v0.66 装机后跑过 数据维护 → 批量补全，用户确认简介已变为完整正文，`(展开全部)` 残留消失。若之后又出现该标记，说明豆瓣页面结构变了，按 9.2 的判据重查。
 - [ ] **`BookIntroductionSeed.json`（3.33 MB）回填完成后可删**：真机已确认 2853 条全部落库，该资源只在首启用一次。v0.65 已提供常驻的「导入 AI介绍」入口，删掉 seed 后仍能随时按 xlsx 回填。删除时要连 `BookIntroductionSeeder.seedURL()` 的调用与两条依赖它的测试（`随包 seed 资源存在且可解析`、`用随包真实 seed 回填`）一起处理，否则 CI 会红。
 - [ ] **旧表头兜底何时可以去掉**：`ExcelImportExportService.legacyIntroHeader`（「书籍介绍」）只为读 0.64 之前的导出文件而存在，等确认不再需要导入历史文件即可删。
-- [ ] `PersonalLibraryUITests` 仍只有启动 smoke test，本轮的 UI 路径验证靠临时脚手架（已删）。若要长期防护「归档范围 + 输入文字」这类交互，需要补正式 UI 测试。
+- [ ] `PersonalLibraryUITests` 现有 3 个测试（启动 smoke、添加书流程、v0.67 的文件选择器回归）。「归档范围 + 输入文字」这类交互仍未覆盖，要长期防护还得补。
 
 ### 本轮沉淀的排查手法（可复用）
 

@@ -72,6 +72,18 @@ struct DataBackupView: View {
                     }
                 }
                 .disabled(isRestoring)
+                // 三个 fileImporter 必须各自挂在自己的按钮上：挂在同一个 List 上时
+                // SwiftUI 只让最后一个生效，前面的点了没反应。
+                .fileImporter(
+                    isPresented: $showingRestorePicker,
+                    allowedContentTypes: [UTType(filenameExtension: "plbackup") ?? .data],
+                    allowsMultipleSelection: false
+                ) { result in
+                    if case .success(let urls) = result, let url = urls.first {
+                        restoreFileURL = url
+                        showingRestoreConfirm = true
+                    }
+                }
             } header: {
                 Text("数据库")
             } footer: {
@@ -92,6 +104,15 @@ struct DataBackupView: View {
                     }
                 }
                 .disabled(isImporting)
+                .fileImporter(
+                    isPresented: $showingImportPicker,
+                    allowedContentTypes: [UTType(filenameExtension: "xlsx") ?? .data],
+                    allowsMultipleSelection: false
+                ) { result in
+                    if case .success(let urls) = result, let url = urls.first {
+                        Task { await importBooks(from: url) }
+                    }
+                }
 
                 Button {
                     showingIntroPicker = true
@@ -105,6 +126,15 @@ struct DataBackupView: View {
                     }
                 }
                 .disabled(isImportingIntros)
+                .fileImporter(
+                    isPresented: $showingIntroPicker,
+                    allowedContentTypes: [UTType(filenameExtension: "xlsx") ?? .data],
+                    allowsMultipleSelection: false
+                ) { result in
+                    if case .success(let urls) = result, let url = urls.first {
+                        Task { await importIntroductions(from: url) }
+                    }
+                }
 
                 Button {
                     Task { await exportBooks() }
@@ -128,37 +158,6 @@ struct DataBackupView: View {
             }
         }
         .navigationTitle("数据备份")
-        // File picker for restore
-        .fileImporter(
-            isPresented: $showingRestorePicker,
-            allowedContentTypes: [UTType(filenameExtension: "plbackup") ?? .data],
-            allowsMultipleSelection: false
-        ) { result in
-            if case .success(let urls) = result, let url = urls.first {
-                restoreFileURL = url
-                showingRestoreConfirm = true
-            }
-        }
-        // File picker for import
-        .fileImporter(
-            isPresented: $showingImportPicker,
-            allowedContentTypes: [UTType(filenameExtension: "xlsx") ?? .data],
-            allowsMultipleSelection: false
-        ) { result in
-            if case .success(let urls) = result, let url = urls.first {
-                Task { await importBooks(from: url) }
-            }
-        }
-        // File picker for AI介绍 回填
-        .fileImporter(
-            isPresented: $showingIntroPicker,
-            allowedContentTypes: [UTType(filenameExtension: "xlsx") ?? .data],
-            allowsMultipleSelection: false
-        ) { result in
-            if case .success(let urls) = result, let url = urls.first {
-                Task { await importIntroductions(from: url) }
-            }
-        }
         // Share sheet for backup
         .sheet(isPresented: $showingBackupShare) {
             if let url = backupFileURL {
