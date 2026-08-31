@@ -355,6 +355,103 @@ def cmd_merge(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# 3b. status —— 一眼看全局进度（跑上百批时反复要看）
+# --------------------------------------------------------------------------- #
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    sys.path.insert(0, str(Path(__file__).parent))
+    from validate import char_count, title_mismatch, validate_intro
+
+    manifest = json.loads((WORKDIR / "manifest.json").read_text(encoding="utf-8"))
+
+    done_batches = 0
+    total_books = sum(m["count"] for m in manifest)
+    drafted = validated = rejected = 0
+    lengths: list[int] = []
+    problems: list[str] = []
+    mismatches: list[str] = []
+
+    for m in manifest:
+        batch_id, expected = m["batch_id"], m["count"]
+        draft = WORKDIR / "text" / f"batch_{batch_id}.txt"
+        out = batch_path("out", batch_id)
+
+        n_draft = 0
+        if draft.exists():
+            n_draft = len(parse_text_draft(draft.read_text(encoding="utf-8")))
+        drafted += n_draft
+
+        if not out.exists():
+            if n_draft and args.verbose:
+                print(
+                    f"  batch_{batch_id} ({m['track']}): 稿件 {n_draft}/{expected}，未 ingest"
+                )
+            continue
+
+        src = {
+            b["pk"]: b
+            for b in json.loads(batch_path("in", batch_id).read_text(encoding="utf-8"))[
+                "books"
+            ]
+        }
+        results = json.loads(out.read_text(encoding="utf-8"))["results"]
+        bad = 0
+        for r in results:
+            book = src.get(r["pk"], {})
+            reasons = validate_intro(
+                r.get("intro", ""),
+                title=book.get("title", ""),
+                douban_intro=book.get("douban_intro", ""),
+            )
+            lengths.append(char_count(r.get("intro", "")))
+            if reasons:
+                bad += 1
+                problems.append(
+                    f"  batch_{batch_id} pk={r['pk']} {book.get('title', '?')[:16]}: "
+                    f"{'; '.join(reasons)[:100]}"
+                )
+            note = title_mismatch(
+                book.get("title", ""), r.get("intro", "").split("\n")[0]
+            )
+            if note:
+                mismatches.append(f"  batch_{batch_id} pk={r['pk']}: {note}")
+        validated += len(results) - bad
+        rejected += bad
+        if len(results) == expected and bad == 0:
+            done_batches += 1
+        elif args.verbose:
+            print(
+                f"  batch_{batch_id} ({m['track']}): {len(results)}/{expected} 段，打回 {bad}"
+            )
+
+    print(f"批次   {done_batches}/{len(manifest)} 批完成且全通过")
+    print(
+        f"藏书   {validated}/{total_books} 本已通过校验（打回 {rejected}，稿件累计 {drafted} 段）"
+    )
+    if lengths:
+        print(
+            f"字数   最短 {min(lengths)}，最长 {max(lengths)}，"
+            f"平均 {sum(lengths) // len(lengths)}（标杆样板 694）"
+        )
+    if problems:
+        print(f"\n待修 {len(problems)} 条（硬打回）:")
+        for line in problems[: args.limit]:
+            print(line)
+        if len(problems) > args.limit:
+            print(f"  …另有 {len(problems) - args.limit} 条，加 --limit 看更多")
+    if mismatches:
+        print(
+            f"\n待人工确认 {len(mismatches)} 条（书名对不上，多为繁简/中译名，不打回）:"
+        )
+        for line in mismatches[: args.limit]:
+            print(line)
+        if len(mismatches) > args.limit:
+            print(f"  …另有 {len(mismatches) - args.limit} 条，加 --limit 看更多")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # 4b. ingest-text —— 把纯文本稿转成 out/batch_NNN.json
 # --------------------------------------------------------------------------- #
 
@@ -392,10 +489,19 @@ def parse_text_draft(text: str) -> list[dict]:
 
 
 def cmd_ingest_text(args: argparse.Namespace) -> int:
+    """转 JSON **并当场校验**。
+
+    agent 的自检循环就跑这一条命令，所以质量闸门必须长在这里 —— 实测：
+    自发跑过校验器的两个批次 0 打回，没跑的三个批次出了 9 条抄袭。
+    只报"缺几段"不报"哪段不合格"，等于把问题推到事后返工。
+    """
+    sys.path.insert(0, str(Path(__file__).parent))
+    from validate import title_mismatch, validate_intro
+
     batch_id = args.batch_id
     draft = args.draft or (WORKDIR / "text" / f"batch_{batch_id}.txt")
     source = json.loads(batch_path("in", batch_id).read_text(encoding="utf-8"))
-    expected = {b["pk"]: b["title"] for b in source["books"]}
+    books = {b["pk"]: b for b in source["books"]}
 
     entries = parse_text_draft(draft.read_text(encoding="utf-8"))
     seen = {e["pk"] for e in entries}
@@ -403,7 +509,7 @@ def cmd_ingest_text(args: argparse.Namespace) -> int:
     results = [
         {
             "pk": e["pk"],
-            "title": expected.get(e["pk"], ""),
+            "title": books.get(e["pk"], {}).get("title", ""),
             "status": "ok",
             "intro": e["intro"],
         }
@@ -411,14 +517,41 @@ def cmd_ingest_text(args: argparse.Namespace) -> int:
     ]
     write_json(batch_path("out", batch_id), {"batch_id": batch_id, "results": results})
 
-    missing = sorted(set(expected) - seen)
-    extra = sorted(seen - set(expected))
-    print(f"批次 {batch_id}: 输入 {len(expected)} 本，稿件 {len(entries)} 段")
+    missing = sorted(set(books) - seen)
+    extra = sorted(seen - set(books))
+    print(f"批次 {batch_id}: 输入 {len(books)} 本，稿件 {len(entries)} 段")
     if missing:
-        print(f"缺: {missing}")
+        print(f"缺 {len(missing)} 段: {missing}")
     if extra:
         print(f"多出（pk 不在该批次）: {extra}")
-    return 0 if not missing and not extra else 1
+
+    problems: list[str] = []
+    for r in results:
+        book = books.get(r["pk"], {})
+        for reason in validate_intro(
+            r["intro"],
+            title=book.get("title", ""),
+            douban_intro=book.get("douban_intro", ""),
+        ):
+            problems.append(f"  pk={r['pk']} {book.get('title', '?')[:20]}: {reason}")
+
+    if problems:
+        print(f"\n不合格 {len(problems)} 条，必须改掉:")
+        for line in problems:
+            print(line)
+        print("\n提示：「与豆瓣简介连续重合 N 字」= 抄了原料里的句子，把那一条重写；")
+        print("     「篇幅过短」= 把该段补到 700 字以上。改完再跑本命令。")
+    else:
+        print("校验：全部合格")
+
+    for r in results:
+        note = title_mismatch(
+            books.get(r["pk"], {}).get("title", ""), r["intro"].split("\n")[0]
+        )
+        if note:
+            print(f"（供参考，不必改）pk={r['pk']}: {note}")
+
+    return 0 if not missing and not extra and not problems else 1
 
 
 # --------------------------------------------------------------------------- #
@@ -673,6 +806,15 @@ def main() -> int:
         help="只处理 AI介绍 为空的书（增量补新书用）",
     )
     p.set_defaults(func=cmd_export_batches)
+
+    p = sub.add_parser("status", help="一眼看全局进度与待修条目")
+    p.add_argument(
+        "-v", "--verbose", action="store_true", help="逐批列出未完成/有打回的批次"
+    )
+    p.add_argument(
+        "--limit", type=int, default=15, help="最多列出多少条待修（默认 15）"
+    )
+    p.set_defaults(func=cmd_status)
 
     p = sub.add_parser(
         "ingest-text", help="把 `### <pk>` 分隔的纯文本稿转成 out/batch_NNN.json"

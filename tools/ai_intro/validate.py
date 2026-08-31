@@ -114,8 +114,11 @@ def strip_title_punct(text: str) -> str:
     return TITLE_PUNCT_PATTERN.sub("", text or "")
 
 
+LEAD_TITLE_PATTERN = re.compile(r"《([^》]{1,80})》")
+
+
 def title_matches_lead(title: str, lead: str) -> bool:
-    """导语段是否点到了这本书。
+    """导语段里的书名是否对得上库里的书名。
 
     三层放行，从严到宽：
     1. 候选写法原样出现（含去掉版本装饰后的本名）
@@ -123,9 +126,6 @@ def title_matches_lead(title: str, lead: str) -> bool:
        而正文写《对"伪心理学"说不》（后者才是该书实际书名）
     3. 核心书名的字有一半以上出现在导语段 —— 繁简差异的兜底，如库里繁体
        `尋找家園` 而正文写简体《寻找家园》。没装 opencc/zhconv，用字符重合率替代
-
-    这个判定只为抓「写成了另一本书」。误拒会扔掉正确的文章，误放最多是让一条
-    本就基于正确原料写成的文章过关，两者代价不对等，所以宁宽勿严。
     """
     candidates = title_candidates(title)
     if not candidates:
@@ -145,6 +145,25 @@ def title_matches_lead(title: str, lead: str) -> bool:
             return True
 
     return False
+
+
+def title_mismatch(title: str, lead: str) -> str | None:
+    """书名对不上时返回一句供人工确认的说明，对得上返回 None。
+
+    **这不是打回理由。** 书名校验在实测中的误判率约 7%（75 本里 5 次），
+    每次误拒都要重跑一轮；而 agent 拿着某本书的确切原料、写进以 pk 为键的槽位，
+    写错书的概率极低。三类合法差异 `title_matches_lead` 都盖不住：
+    繁简（`納蘭詞箋注` → `纳兰词笺注`，字符重合率仅 0.2）、
+    中译名（`Harry Potter and the Chamber of Secrets` → `哈利·波特与密室`，零重合）、
+    以及正文自行补全的实际书名。
+
+    所以改为：格式问题（连书名号都没有）才打回；书名对不上只登记，由人汇总看。
+    """
+    if title_matches_lead(title, lead):
+        return None
+    found = LEAD_TITLE_PATTERN.search(lead)
+    written = found.group(1) if found else "（无）"
+    return f"库里「{title}」，正文写《{written}》"
 
 
 def char_count(text: str) -> int:
@@ -214,8 +233,10 @@ def validate_intro(text: str, *, title: str, douban_intro: str = "") -> list[str
 
     headings, items, lead = _classify_lines(text)
 
-    if not title_matches_lead(title, lead):
-        reasons.append(f"导语段没出现书名「{title}」")
+    # 书名对不对得上不在这里判（误判率高，见 title_mismatch 的说明）；
+    # 这里只管格式：导语段必须有《书名号》，否则是没照契约写
+    if not LEAD_TITLE_PATTERN.search(lead):
+        reasons.append("导语段没有《书名号》包住书名")
 
     if len(headings) < MIN_SECTIONS:
         reasons.append(f"分节标题只有 {len(headings)} 个，至少要 {MIN_SECTIONS} 个")

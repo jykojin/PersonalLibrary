@@ -5,7 +5,12 @@
 
 import pytest
 
-from validate import longest_common_run, normalize_indent, validate_intro
+from validate import (
+    longest_common_run,
+    normalize_indent,
+    title_mismatch,
+    validate_intro,
+)
 
 # 契约里的标杆样板，实测 694 个非空白字符
 FLATLAND = """《平面国》（Flatland）是英国学者埃德温·阿伯特于1884年出版的一部兼具高维数学启蒙与维多利亚时代社会讽刺的科幻寓言奇书。它以极具创意的几何视角，讲述了一个发生在二维平面的故事。
@@ -85,10 +90,9 @@ class TestStructure:
         )
         assert any("条目" in r for r in reasons_for(no_items))
 
-    def test_首段不含书名打回(self):
-        assert any(
-            "书名" in r for r in reasons_for(FLATLAND, title="另一本完全不同的书")
-        )
+    def test_导语段没有书名号要打回(self):
+        no_brackets = FLATLAND.replace("《平面国》", "平面国", 1)
+        assert any("书名号" in r for r in reasons_for(no_brackets, title="平面国"))
 
 
 class TestTitleWithEditionNoise:
@@ -119,32 +123,45 @@ class TestTitleWithEditionNoise:
             "书名" in r for r in reasons_for(text, title="三国英雄记5：鼎足成三分")
         )
 
-    def test_写成完全另一本书仍要打回(self):
-        text = FLATLAND.replace("《平面国》", "《水浒传》", 1)
-        assert any("书名" in r for r in reasons_for(text, title="倚天屠龙记(共四册)"))
-
 
 class TestTitleVariantForms:
-    """库里书名与正文的合理变体：繁简、插入标点。
+    """书名对不上不再是硬打回，只进「待人工确认」清单。
 
-    这两例是跑第 003 批时真的被误判过的，而 agent 写的其实比库里的更准。
+    理由：agent 拿着某本书的确切原料、写进以 pk 为键的槽位，写错书的概率极低；
+    而误拒会实实在在扔掉正确的文章。这些用例都是跑批时真的被误判过的。
     """
 
-    def test_库里繁体正文简体不算缺书名(self):
-        # 库里 '尋找家園'（高尔泰），正文写简体《寻找家园》—— 全中文界面里简体才对
-        text = FLATLAND.replace("《平面国》", "《寻找家园》", 1)
-        reasons = reasons_for(text, title="尋找家園")
-        assert not any("书名" in r for r in reasons), reasons
+    @pytest.mark.parametrize(
+        "full_title,lead_title",
+        [
+            ("倚天屠龙记(共四册)", "倚天屠龙记"),
+            ("红楼梦（珍藏版 无障碍阅读）/语文新课标课外阅读丛书", "红楼梦"),
+            ("走向世界的中国作家系列丛书：寻死无门（精装）", "寻死无门"),
+            ("尋找家園", "寻找家园"),
+            ("对伪心理学说不", '对"伪心理学"说不'),
+            ("納蘭詞箋注", "纳兰词笺注"),
+            (
+                "Harry Potter and the Chamber of Secrets: Illustrated Edition",
+                "哈利·波特与密室",
+            ),
+        ],
+    )
+    def test_合理变体一律不打回(self, full_title, lead_title):
+        text = FLATLAND.replace("《平面国》", f"《{lead_title}》", 1)
+        assert reasons_for(text, title=full_title) == []
 
-    def test_正文补上引号不算缺书名(self):
-        # 库里 '对伪心理学说不'，正文写《对"伪心理学"说不》—— 这才是该书实际书名
-        text = FLATLAND.replace("《平面国》", '《对"伪心理学"说不》', 1)
-        reasons = reasons_for(text, title="对伪心理学说不")
-        assert not any("书名" in r for r in reasons), reasons
+    def test_版本装饰算真命中不进确认清单(self):
+        text = FLATLAND.replace("《平面国》", "《倚天屠龙记》", 1)
+        assert title_mismatch("倚天屠龙记(共四册)", text.split("\n")[0]) is None
 
-    def test_繁简兜底不会放过另一本书(self):
-        text = FLATLAND.replace("《平面国》", "《水浒传》", 1)
-        assert any("书名" in r for r in reasons_for(text, title="尋找家園"))
+    def test_中译名进确认清单待人工看(self):
+        text = FLATLAND.replace("《平面国》", "《哈利·波特与密室》", 1)
+        note = title_mismatch(
+            "Harry Potter and the Chamber of Secrets: Illustrated Edition",
+            text.split("\n")[0],
+        )
+        assert note is not None
+        assert "哈利·波特与密室" in note
 
 
 class TestForbiddenPatterns:
