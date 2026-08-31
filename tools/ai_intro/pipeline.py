@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -354,6 +355,73 @@ def cmd_merge(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# 4b. ingest-text —— 把纯文本稿转成 out/batch_NNN.json
+# --------------------------------------------------------------------------- #
+
+# 纯文本稿的分隔行：`### <pk>`
+PK_HEADER = re.compile(r"^###\s+(\d+)\s*$")
+
+
+def parse_text_draft(text: str) -> list[dict]:
+    """解析 `### <pk>` 分隔的纯文本稿。
+
+    直接手写 JSON 要为每段正文转义几十个 \\n，既费 token 又容易写坏；
+    纯文本稿由脚本转 JSON，转义交给 json.dumps。
+    """
+    entries: list[dict] = []
+    pk: int | None = None
+    buffer: list[str] = []
+
+    def flush() -> None:
+        if pk is None:
+            return
+        body = "\n".join(buffer).strip("\n")
+        if body:
+            entries.append({"pk": pk, "intro": body})
+
+    for line in text.split("\n"):
+        match = PK_HEADER.match(line)
+        if match:
+            flush()
+            pk = int(match.group(1))
+            buffer = []
+        elif pk is not None:
+            buffer.append(line)
+    flush()
+    return entries
+
+
+def cmd_ingest_text(args: argparse.Namespace) -> int:
+    batch_id = args.batch_id
+    draft = args.draft or (WORKDIR / "text" / f"batch_{batch_id}.txt")
+    source = json.loads(batch_path("in", batch_id).read_text(encoding="utf-8"))
+    expected = {b["pk"]: b["title"] for b in source["books"]}
+
+    entries = parse_text_draft(draft.read_text(encoding="utf-8"))
+    seen = {e["pk"] for e in entries}
+
+    results = [
+        {
+            "pk": e["pk"],
+            "title": expected.get(e["pk"], ""),
+            "status": "ok",
+            "intro": e["intro"],
+        }
+        for e in entries
+    ]
+    write_json(batch_path("out", batch_id), {"batch_id": batch_id, "results": results})
+
+    missing = sorted(set(expected) - seen)
+    extra = sorted(seen - set(expected))
+    print(f"批次 {batch_id}: 输入 {len(expected)} 本，稿件 {len(entries)} 段")
+    if missing:
+        print(f"缺: {missing}")
+    if extra:
+        print(f"多出（pk 不在该批次）: {extra}")
+    return 0 if not missing and not extra else 1
+
+
+# --------------------------------------------------------------------------- #
 # 5. write-db —— 按主键精确写回
 # --------------------------------------------------------------------------- #
 
@@ -605,6 +673,13 @@ def main() -> int:
         help="只处理 AI介绍 为空的书（增量补新书用）",
     )
     p.set_defaults(func=cmd_export_batches)
+
+    p = sub.add_parser(
+        "ingest-text", help="把 `### <pk>` 分隔的纯文本稿转成 out/batch_NNN.json"
+    )
+    p.add_argument("batch_id")
+    p.add_argument("--draft", type=Path, default=None)
+    p.set_defaults(func=cmd_ingest_text)
 
     p = sub.add_parser("merge", help="收集校验 agent 输出")
     p.set_defaults(func=cmd_merge)
