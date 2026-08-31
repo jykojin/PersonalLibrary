@@ -12,8 +12,10 @@ from __future__ import annotations
 import re
 from difflib import SequenceMatcher
 
-# 篇幅红线（非空白字符数）。标杆样板实测 694 字，下限压到 550 留出余地。
-MIN_CHARS = 550
+# 篇幅红线（非空白字符数）。标杆样板实测 694 字，契约目标 700–1000。
+# 下限刻意只比目标低 100：实测下限设在 550 时，109 段（13%）挤在 550–599 ——
+# agent 优化的是闸门而不是目标，缝隙太大就会出现「顶到刚过线」的最小补丁。
+MIN_CHARS = 600
 MAX_CHARS = 1400
 
 # 判定"抄豆瓣简介"的连续重合字数

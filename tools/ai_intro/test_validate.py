@@ -70,6 +70,19 @@ class TestRealGarbage:
 
 
 class TestLength:
+    def test_下限与契约目标的差距不超过100字(self):
+        """闸门离目标太远会诱导「顶到刚过线」。
+
+        实测：下限 550、目标 700 时，109 段（13%）挤在 550–599 —— agent 优化的是闸门
+        而不是目标。收窄这个缝隙是为了消掉那个诱因。
+        """
+        from validate import MIN_CHARS
+
+        contract_target = 700
+        assert contract_target - MIN_CHARS <= 100, (
+            f"下限 {MIN_CHARS} 比契约目标 {contract_target} 低太多，会诱导最小补丁"
+        )
+
     def test_太短打回(self):
         assert any(
             "过短" in r
