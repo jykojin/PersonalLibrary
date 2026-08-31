@@ -3,6 +3,8 @@
 标杆用真实的《平面国》样板（必须通过），反面用库里真实的模板垃圾（必须逐条被打回）。
 """
 
+import re
+
 import pytest
 
 from validate import (
@@ -192,6 +194,44 @@ class TestPlagiarism:
         assert (
             reasons_for(FLATLAND, douban_intro="讲述了一个发生在二维平面的故事") == []
         )
+
+
+class TestPlagiarismCannotBeGamedByPunctuation:
+    """删标点绕过 40 字红线必须无效。
+
+    跑批时真的发生了：有 agent 把 46 字的照抄段删掉一个逗号变成 29 字连续，
+    校验就放行了，正文仍是逐字照搬。指标必须对标点免疫。
+    """
+
+    STOLEN = (
+        "甲午年的黄海海战惨败后，和比战难。李鸿章奉命和谈，受尽屈辱签下了马关条约，"
+        "此后，严复等人开始思考中国制度的改革，也由此催生了借法自强到立法自强的转变。"
+    )
+
+    def _intro_with(self, sentence):
+        return FLATLAND.replace("这本书的独特价值", f"这本书的独特价值\n {sentence}", 1)
+
+    def test_原样照抄要打回(self):
+        reasons = reasons_for(self._intro_with(self.STOLEN), douban_intro=self.STOLEN)
+        assert any("抄" in r for r in reasons)
+
+    def test_只删逗号仍要打回(self):
+        gamed = self.STOLEN.replace("此后，严复", "此后严复")
+        reasons = reasons_for(self._intro_with(gamed), douban_intro=self.STOLEN)
+        assert any("抄" in r for r in reasons), "删标点就绕过了红线"
+
+    def test_删掉所有标点仍要打回(self):
+        gamed = re.sub(r"[，。、；：]", "", self.STOLEN)
+        reasons = reasons_for(self._intro_with(gamed), douban_intro=self.STOLEN)
+        assert any("抄" in r for r in reasons), "删标点就绕过了红线"
+
+    def test_真正改写则放行(self):
+        rewritten = (
+            "黄海一役战败之后，议和比作战更难。谈判桌上的屈辱条款签订后，"
+            "一批士人转而追问制度本身该怎么改，思路从借用他国办法自强，"
+            "挪到了立宪自强这一层。"
+        )
+        assert reasons_for(self._intro_with(rewritten), douban_intro=self.STOLEN) == []
 
 
 class TestLongestCommonRun:

@@ -506,12 +506,15 @@ def cmd_ingest_text(args: argparse.Namespace) -> int:
     entries = parse_text_draft(draft.read_text(encoding="utf-8"))
     seen = {e["pk"] for e in entries}
 
+    from validate import is_insufficient
+
     results = [
         {
             "pk": e["pk"],
             "title": books.get(e["pk"], {}).get("title", ""),
-            "status": "ok",
-            "intro": e["intro"],
+            "status": "insufficient_data" if is_insufficient(e["intro"]) else "ok",
+            "intro": "" if is_insufficient(e["intro"]) else e["intro"],
+            **({"note": e["intro"].strip()} if is_insufficient(e["intro"]) else {}),
         }
         for e in entries
     ]
@@ -526,7 +529,11 @@ def cmd_ingest_text(args: argparse.Namespace) -> int:
         print(f"多出（pk 不在该批次）: {extra}")
 
     problems: list[str] = []
+    insufficient = 0
     for r in results:
+        if r["status"] == "insufficient_data":
+            insufficient += 1
+            continue
         book = books.get(r["pk"], {})
         for reason in validate_intro(
             r["intro"],
@@ -534,6 +541,9 @@ def cmd_ingest_text(args: argparse.Namespace) -> int:
             douban_intro=book.get("douban_intro", ""),
         ):
             problems.append(f"  pk={r['pk']} {book.get('title', '?')[:20]}: {reason}")
+
+    if insufficient:
+        print(f"其中 {insufficient} 段标为「资料不足」留空（track B 的合法结果）")
 
     if problems:
         print(f"\n不合格 {len(problems)} 条，必须改掉:")
@@ -703,6 +713,15 @@ UNTOUCHED_COLUMNS = [
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
+    # 边车检查必须在**打开数据库之前**做：库是 WAL 模式，
+    # 连上去（哪怕只读）就会重新生成 -wal/-shm，放在后面查等于自己制造失败。
+    stale_sidecars = [
+        Path(str(args.db) + suffix).name
+        for suffix in ("-wal", "-shm")
+        if Path(str(args.db) + suffix).exists()
+        and Path(str(args.db) + suffix).stat().st_size > 0
+    ]
+
     conn = connect(args.db, readonly=True)
     conn.execute("ATTACH DATABASE ? AS orig", (f"file:{args.original}?mode=ro",))
 
@@ -747,9 +766,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
     print(f"ZBOOKINTRODUCTION 变更 {changed} 行；非空 {filled} 条")
     print(f"新 AI介绍 字数: 最短 {stats[0]}，最长 {stats[1]}，平均 {stats[2]}")
 
-    for sidecar in ("-wal", "-shm"):
-        if Path(str(args.db) + sidecar).exists():
-            failures.append(f"成品旁残留 {sidecar} 边车，恢复时会丢改动")
+    for name in stale_sidecars:
+        failures.append(f"成品旁残留非空边车 {name}，恢复时会丢改动（先跑 checkpoint）")
 
     if failures:
         print("\n校验失败:", file=sys.stderr)

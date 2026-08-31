@@ -3,7 +3,7 @@
 设计原则：**判据来自标杆样板本身**。《平面国》样板必须无条件通过，
 库里现存的模板垃圾必须逐条被打回 —— 两端都锁在 test_validate.py 里。
 
-阈值比契约给 agent 的目标区间宽（契约要 800–1100，这里放到 550–1400）：
+阈值比契约给 agent 的目标区间宽（契约要 700–1000，这里放到 550–1400）：
 契约是"往哪写"，校验是"什么绝不能要"。写得比样板略短略长不值得重跑一次。
 """
 
@@ -18,6 +18,9 @@ MAX_CHARS = 1400
 
 # 判定"抄豆瓣简介"的连续重合字数
 PLAGIARISM_RUN = 40
+
+# track B 查不到资料时的合法留空标记（AGENT_TASK.md 教 agent 这么写）
+INSUFFICIENT_MARKER = "[资料不足]"
 
 # 结构下限
 MIN_SECTIONS = 2
@@ -187,8 +190,23 @@ def normalize_indent(text: str) -> str:
     return "\n".join(lines)
 
 
+# 比对抄袭前要剥掉的东西：空白与各类标点。
+# 「连续 N 字」这个指标不剥标点就是摆设 —— 跑批时真有 agent 把 46 字的照抄段
+# 删掉一个逗号变成 29 字连续就放行了，正文仍是逐字照搬。
+COMPARE_NOISE_PATTERN = re.compile(
+    r"[\s，。、；：！？“”‘’（）《》〈〉「」『』—…·,.;:!?\"'()\[\]{}<>/\\|~\-–_*#&@]+"
+)
+
+
+def strip_for_compare(text: str) -> str:
+    return COMPARE_NOISE_PATTERN.sub("", text or "")
+
+
 def longest_common_run(a: str, b: str) -> int:
-    """两段文本最长连续公共子串的长度。用来判是否整段照抄。"""
+    """两段文本最长连续公共子串的长度。用来判是否整段照抄。
+
+    调用方应先过 `strip_for_compare`，否则删几个标点就能绕过阈值。
+    """
     if not a or not b:
         return 0
     return (
@@ -218,12 +236,22 @@ def _classify_lines(text: str) -> tuple[list[str], list[str], str]:
     return headings, items, lead
 
 
+def is_insufficient(text: str) -> bool:
+    """这一段是 track B 查不到资料时的合法留空标记。"""
+    return (text or "").strip().startswith(INSUFFICIENT_MARKER)
+
+
 def validate_intro(text: str, *, title: str, douban_intro: str = "") -> list[str]:
     """返回打回原因列表；空列表表示通过。"""
     reasons: list[str] = []
 
     if not text or not text.strip():
         return ["正文为空"]
+
+    # track B 查不到资料时的合法留空。契约教 agent 这么写，校验就必须认 ——
+    # 否则 agent 照文档做会陷入永远达不到「全部合格」的死循环（跑批时真的发生了）。
+    if is_insufficient(text):
+        return []
 
     count = char_count(text)
     if count < MIN_CHARS:
@@ -275,8 +303,11 @@ def validate_intro(text: str, *, title: str, douban_intro: str = "") -> list[str
         reasons.append(f"出现 markdown 行内标记：{inline.group()[:20]}")
 
     if douban_intro:
-        run = longest_common_run(text, douban_intro)
+        # 先剥标点再比：否则删一个逗号就能把 46 字连续拆成 29 字蒙过去
+        run = longest_common_run(
+            strip_for_compare(text), strip_for_compare(douban_intro)
+        )
         if run >= PLAGIARISM_RUN:
-            reasons.append(f"与豆瓣简介连续重合 {run} 字，判定为抄原文")
+            reasons.append(f"与豆瓣简介连续重合 {run} 字（已忽略标点），判定为抄原文")
 
     return reasons
