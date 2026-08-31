@@ -66,6 +66,87 @@ MARKDOWN_LINE_PATTERN = re.compile(r"^\s*(#{1,6}\s|[-*+]\s|\d+\.\s|>\s|\|)")
 MARKDOWN_INLINE_PATTERN = re.compile(r"\*\*[^*\n]+\*\*|__[^_\n]+__|`[^`\n]+`")
 
 
+def title_candidates(title: str) -> list[str]:
+    """书名的可接受写法集合。
+
+    库里大量书名带版本/丛书装饰 —— `倚天屠龙记(共四册)`、
+    `红楼梦（珍藏版 无障碍阅读）/语文新课标课外阅读丛书`、
+    `走向世界的中国作家系列丛书：寻死无门（精装）`。正文该写作品本名，
+    要求整个字符串原样出现会把正确的文章全部误判掉（跑批时真的发生了）。
+
+    这个判定的目的是抓「写成了另一本书」，不是核对版本字样，所以宁宽勿严：
+    任何一种候选写法出现在导语段即放行。
+    """
+    raw = (title or "").strip()
+    if not raw:
+        return []
+
+    candidates = {raw}
+    # 斜杠后多是丛书名：`字绘上海/手绘中国`
+    candidates.add(raw.split("/")[0])
+    # 冒号两侧：`丛书名：作品名` 与 `三国英雄记5：鼎足成三分`
+    for part in re.split(r"[：:]", raw):
+        candidates.add(part)
+    # 去掉括号及其内容：`(共四册)`、`（精装）`、`(精)`、`(上下)`
+    stripped = re.sub(r"[（(\[【][^）)\]】]*[）)\]】]?", "", raw)
+    candidates.add(stripped)
+    candidates.add(stripped.split("/")[0])
+    for part in re.split(r"[：:]", stripped):
+        candidates.add(part)
+
+    # 两字以下的碎片没有区分力（会把任意正文都判成命中）
+    return sorted(
+        {c.strip() for c in candidates if len(c.strip()) >= 2}, key=len, reverse=True
+    )
+
+
+# 比对书名时要忽略的标点与空白（正文常补上引号、书名号）
+TITLE_PUNCT_PATTERN = re.compile(
+    r"[\s“”\"'‘’（）()\[\]【】《》〈〉「」『』·,，.。、:：;；!！?？~～—\-–_/\\|]+"
+)
+
+# 繁简/异体兜底：核心书名有多少比例的字出现在导语段里才算命中
+TITLE_OVERLAP_RATIO = 0.5
+TITLE_OVERLAP_MIN_CHARS = 3
+
+
+def strip_title_punct(text: str) -> str:
+    return TITLE_PUNCT_PATTERN.sub("", text or "")
+
+
+def title_matches_lead(title: str, lead: str) -> bool:
+    """导语段是否点到了这本书。
+
+    三层放行，从严到宽：
+    1. 候选写法原样出现（含去掉版本装饰后的本名）
+    2. 双方都去掉标点后出现 —— 正文补引号的情况，如库里 `对伪心理学说不`
+       而正文写《对"伪心理学"说不》（后者才是该书实际书名）
+    3. 核心书名的字有一半以上出现在导语段 —— 繁简差异的兜底，如库里繁体
+       `尋找家園` 而正文写简体《寻找家园》。没装 opencc/zhconv，用字符重合率替代
+
+    这个判定只为抓「写成了另一本书」。误拒会扔掉正确的文章，误放最多是让一条
+    本就基于正确原料写成的文章过关，两者代价不对等，所以宁宽勿严。
+    """
+    candidates = title_candidates(title)
+    if not candidates:
+        return True
+
+    if any(c in lead for c in candidates):
+        return True
+
+    lead_clean = strip_title_punct(lead)
+    if any(strip_title_punct(c) in lead_clean for c in candidates):
+        return True
+
+    core = strip_title_punct(min(candidates, key=len))
+    if len(core) >= TITLE_OVERLAP_MIN_CHARS:
+        hit = len(set(core) & set(lead_clean)) / len(set(core))
+        if hit >= TITLE_OVERLAP_RATIO:
+            return True
+
+    return False
+
+
 def char_count(text: str) -> int:
     """非空白字符数 —— 中文正文的"字数"用这个量最直观。"""
     return len(re.sub(r"\s", "", text))
@@ -133,7 +214,7 @@ def validate_intro(text: str, *, title: str, douban_intro: str = "") -> list[str
 
     headings, items, lead = _classify_lines(text)
 
-    if title and title.strip() and title.strip() not in lead:
+    if not title_matches_lead(title, lead):
         reasons.append(f"导语段没出现书名「{title}」")
 
     if len(headings) < MIN_SECTIONS:

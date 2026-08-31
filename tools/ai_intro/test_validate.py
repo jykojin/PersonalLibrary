@@ -91,6 +91,62 @@ class TestStructure:
         )
 
 
+class TestTitleWithEditionNoise:
+    """库里大量书名带版本/丛书装饰，正文只该出现作品本名。
+
+    这三个书名是跑批时真的被误判过的，锁在这里防回归。
+    """
+
+    @pytest.mark.parametrize(
+        "full_title,lead_title",
+        [
+            ("倚天屠龙记(共四册)", "倚天屠龙记"),
+            ("红楼梦（珍藏版 无障碍阅读）/语文新课标课外阅读丛书", "红楼梦"),
+            ("走向世界的中国作家系列丛书：寻死无门（精装）", "寻死无门"),
+            ("瓷器鉴藏全书(精)", "瓷器鉴藏全书"),
+            ("侠客行(上下)", "侠客行"),
+            ("字绘上海/手绘中国", "字绘上海"),
+        ],
+    )
+    def test_正文用作品本名不算缺书名(self, full_title, lead_title):
+        text = FLATLAND.replace("《平面国》", f"《{lead_title}》", 1)
+        reasons = reasons_for(text, title=full_title)
+        assert not any("书名" in r for r in reasons), reasons
+
+    def test_丛书名整体出现也放行(self):
+        text = FLATLAND.replace("《平面国》", "《三国英雄记5：鼎足成三分》", 1)
+        assert not any(
+            "书名" in r for r in reasons_for(text, title="三国英雄记5：鼎足成三分")
+        )
+
+    def test_写成完全另一本书仍要打回(self):
+        text = FLATLAND.replace("《平面国》", "《水浒传》", 1)
+        assert any("书名" in r for r in reasons_for(text, title="倚天屠龙记(共四册)"))
+
+
+class TestTitleVariantForms:
+    """库里书名与正文的合理变体：繁简、插入标点。
+
+    这两例是跑第 003 批时真的被误判过的，而 agent 写的其实比库里的更准。
+    """
+
+    def test_库里繁体正文简体不算缺书名(self):
+        # 库里 '尋找家園'（高尔泰），正文写简体《寻找家园》—— 全中文界面里简体才对
+        text = FLATLAND.replace("《平面国》", "《寻找家园》", 1)
+        reasons = reasons_for(text, title="尋找家園")
+        assert not any("书名" in r for r in reasons), reasons
+
+    def test_正文补上引号不算缺书名(self):
+        # 库里 '对伪心理学说不'，正文写《对"伪心理学"说不》—— 这才是该书实际书名
+        text = FLATLAND.replace("《平面国》", '《对"伪心理学"说不》', 1)
+        reasons = reasons_for(text, title="对伪心理学说不")
+        assert not any("书名" in r for r in reasons), reasons
+
+    def test_繁简兜底不会放过另一本书(self):
+        text = FLATLAND.replace("《平面国》", "《水浒传》", 1)
+        assert any("书名" in r for r in reasons_for(text, title="尋找家園"))
+
+
 class TestForbiddenPatterns:
     def test_省略号结尾打回(self):
         assert any("截断" in r for r in reasons_for(FLATLAND[:-1] + "……"))
