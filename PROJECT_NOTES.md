@@ -196,7 +196,7 @@ iOS 个人藏书管理 + 阅读进度跟踪 App。SwiftUI + SwiftData，iOS 17+�
 | 6 | 全量测试偶发失败（非用户可见） | v0.60 / v0.63 | `0880221` `4b03a8e` | 测试断言/改写进程级全局态（`isSyncing`、`AppLogger.currentMode`、共享 Keychain），`.serialized` 只管 suite 内 | `SyncLockDecisionTests`、`AppLoggerLevelDecisionTests` | 4.10 |
 | 7 | 导出的书单里空字段全都显示成 `"34"`（ISBN／总页数／微信读书ID 等） | v0.64 | — | ⚠️ **误报，App 无 bug**：App 写出的是真正的空串 `<si><t></t></si>`；那份 xlsx 被外部工具改写时，把空串换成了它自己的 sharedString 索引号 —— 31 列布局下空串正好落在索引 34，于是显示 "34" | `空字段往返后仍为空`、`批量导出时空字段依然全空` | 9.1 |
 | 8 | **书籍简介/作者简介被截断**，尾部是 `...` 加一行 `(展开全部)` | v0.66 | `97379e0` | 两套豆瓣解析器不一致：`ISBNLookupService` 取「内容简介」后第一个 `<div class="intro">`，而豆瓣把它放在 `<span class="short">` 里（约 400 字折叠版）；正确的 `DoubanDescriptionFetcher` 优先取 `<span class="all hidden">`。完整正文本就在同一份 HTML 里 | `DoubanCollapsedIntroTests` | 9.2 |
-| 9 | **数据备份页「从备份恢复」「从 Excel 导入」点了完全没反应**（「导入 AI介绍」正常）| v0.67 | 本次 | 三个 `.fileImporter` 全挂在同一个 `List` 上，SwiftUI 只让**最后一个**生效，前两个静默失效。判据很干净：「从 Excel 导入」用的是完全合法的 `.xlsx` 类型也照样弹不出来 → 问题在挂载位置与顺序，不在 `allowedContentTypes`。修法是三个 importer 各自挂到对应的 Button 上 | `testDataBackupFilePickersAllPresent`（UI 测试，已验证在修复前失败、修复后通过）| 9.3 |
+| 9 | **数据备份页「从备份恢复」「从 Excel 导入」点了完全没反应**（「导入 AI介绍」正常）| v0.67 | `8647239` | 三个 `.fileImporter` 全挂在同一个 `List` 上，SwiftUI 只让**最后一个**生效，前两个静默失效。判据很干净：「从 Excel 导入」用的是完全合法的 `.xlsx` 类型也照样弹不出来 → 问题在挂载位置与顺序，不在 `allowedContentTypes`。修法是三个 importer 各自挂到对应的 Button 上 | `testDataBackupFilePickersAllPresent`（UI 测试，已验证在修复前失败、修复后通过）| 9.3 |
 
 同轮的工程改进（非用户可见 bug）：
 
