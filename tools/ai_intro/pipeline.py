@@ -361,7 +361,20 @@ def cmd_merge(args: argparse.Namespace) -> int:
 
 def cmd_status(args: argparse.Namespace) -> int:
     sys.path.insert(0, str(Path(__file__).parent))
-    from validate import char_count, title_mismatch, validate_intro
+    from validate import (
+        PLAGIARISM_RUN,
+        char_count,
+        longest_common_run,
+        strip_for_compare,
+        title_mismatch,
+        validate_intro,
+    )
+
+    # 「贴线」审计区间：红线内但仍可能是照搬。实测有 agent 靠删一个字
+    # （`所能产生`→`所产生`、插入一个`都`）把 40+ 压到 30+ 蒙过红线。
+    # 但 30–39 也确实有不可回避的合理残留 —— 机构专名并列、书名加版次、
+    # 带引号的具名引文。所以只列出来供抽查，不打回。
+    near_floor = 30
 
     manifest = json.loads((WORKDIR / "manifest.json").read_text(encoding="utf-8"))
 
@@ -371,6 +384,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     lengths: list[int] = []
     problems: list[str] = []
     mismatches: list[str] = []
+    near_line: list[str] = []
 
     for m in manifest:
         batch_id, expected = m["batch_id"], m["count"]
@@ -416,6 +430,17 @@ def cmd_status(args: argparse.Namespace) -> int:
             )
             if note:
                 mismatches.append(f"  batch_{batch_id} pk={r['pk']}: {note}")
+
+            douban = book.get("douban_intro", "")
+            if douban and r.get("intro"):
+                run = longest_common_run(
+                    strip_for_compare(r["intro"]), strip_for_compare(douban)
+                )
+                if near_floor <= run < PLAGIARISM_RUN:
+                    near_line.append(
+                        f"  batch_{batch_id} pk={r['pk']} "
+                        f"{book.get('title', '?')[:16]}: 重合 {run} 字"
+                    )
         validated += len(results) - bad
         rejected += bad
         if len(results) == expected and bad == 0:
@@ -440,6 +465,15 @@ def cmd_status(args: argparse.Namespace) -> int:
             print(line)
         if len(problems) > args.limit:
             print(f"  …另有 {len(problems) - args.limit} 条，加 --limit 看更多")
+    if near_line:
+        print(
+            f"\n贴线待抽查 {len(near_line)} 条"
+            f"（重合 {near_floor}–{PLAGIARISM_RUN - 1} 字，不打回）:"
+        )
+        for line in near_line[: args.limit]:
+            print(line)
+        if len(near_line) > args.limit:
+            print(f"  …另有 {len(near_line) - args.limit} 条，加 --limit 看更多")
     if mismatches:
         print(
             f"\n待人工确认 {len(mismatches)} 条（书名对不上，多为繁简/中译名，不打回）:"
