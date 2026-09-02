@@ -37,6 +37,9 @@ iOS 个人藏书管理 + 阅读进度跟踪 App。SwiftUI + SwiftData，iOS 17+�
 
 数据模型（`Schema`，6 个 `@Model`）：`Book`、`Bookshelf`、`Tag`、`ReadingRecord`、`ImportRecord`、`SyncHistoryRecord`。
 
+> 另有一套**不在 App 里**的离线工具：`tools/ai_intro/` + `.claude/skills/ai-book-intro/`，
+> 用来批量重写「AI介绍」字段。见第 10 节。
+
 ---
 
 ## 3. 架构与数据流
@@ -318,3 +321,79 @@ SwiftUI 只让最后一个（AI介绍）生效。第三个 importer 是 v0.65 �
 - **多代备份横比**：同一字段在几代 `.plbackup` 里的计数趋势（只增/有减）能快速判断是"丢数据"还是"没写进去"。
 - **灌真实数据到模拟器走查**：`xcrun simctl get_app_container` 拿沙盒路径 → 覆盖 `PersonalLibrary.store` → 跑 XCUITest 驱动真实 UI。问题 #1 的修复就是这样在 2872 本真实数据上确认的。
 - **上限类 bug 必须造超限数据**：问题 #4 躲过旧测试的唯一原因是测试只插 1–2 本书。凡代码里有常量上限，测试数据量就必须越过它。
+
+---
+
+## 10. 内部工具：AI介绍 批量重写管线（2026-08-31 ~ 09-01）
+
+**不是 App 功能**，是一套离线工具，用来把 `Book.bookIntroduction`（Excel 第 32 列「AI介绍」）
+从 v0.64 那批模板货全量重写成人写的介绍。App 侧不需要任何改动 —— 成品经
+「数据备份 → 从备份恢复」或「导入 AI介绍」进库。
+
+### 构成
+
+| 位置 | 作用 |
+|---|---|
+| `.claude/skills/ai-book-intro/SKILL.md` | 怎么跑（九步流程、两条轨道、踩过的坑） |
+| `.claude/skills/ai-book-intro/PROMPT.md` | **写作契约** —— 唯一的质量标准，含《平面国》标杆样板与反面样板 |
+| `.claude/skills/ai-book-intro/AGENT_TASK.md` | 派给单个批次 agent 的任务卡 |
+| `tools/ai_intro/pipeline.py` | 九步流水线：`archive`→`clear`→`export-batches`→（生成）→`ingest-text`→`merge`→`write-db`→`checkpoint`→`verify`→`export-xlsx`→`publish` |
+| `tools/ai_intro/validate.py` | 纯函数校验器（篇幅、结构、抄袭、占位符、模板句、书名、重复 pk） |
+| `tools/ai_intro/test_validate.py` | 57 条测试，两端都锁：标杆样板必须过、真实模板垃圾必须被打回 |
+
+### 本轮结果
+
+2897 / 2904 本（99.8%），字数 625–998、均值 794（标杆样板 694）。7 本联网也查不到，
+按契约写成 `[资料不足]` 合法留空。`verify` 通过：只有 `ZBOOKINTRODUCTION` 变了，
+`ZBOOKDESCRIPTION`（豆瓣简介）/`ZAUTHORDESCRIPTION`（作者简介）/封面/阅读进度全部 0 行差异。
+
+### 铁律（违反会造成不可逆损失）
+
+- **原始 `.plbackup` 绝不改**，所有操作在 `work.sqlite` 副本上做，`original.sqlite` 留作比对基准。
+- **按 `Z_PK` 写回，不要按 ISBN 匹配** —— 套书各卷共用 ISBN（张居正、曾国藩、余罪都是），
+  按 ISBN 回填会一条介绍写到多本书上（v0.64 就出现过 2853 条写了 2854 本）。
+- **`checkpoint` 不能省**：库是 WAL 模式，不 checkpoint 会留 `-wal` 边车，
+  用户只传主文件时改动静默丢失（见第 9 节问题 #5）。
+- **只碰 `ZBOOKINTRODUCTION` 一列**，另两个 description 字段是生成用的原料。
+
+### 这轮踩的坑（下次直接看这里）
+
+- **`WORKDIR` 硬编码在 `/tmp`，重启清空 → 丢了 40 批约 1000 段稿件**。
+  Mac 死机重启后 `/private/tmp` 被系统清掉，`tmutil` 无快照（/tmp 不在 Time Machine 范围）。
+  agent 只回报统计数字、正文从不进上下文（这是对的，否则撑爆编排层），所以**稿件一丢就没有副本**。
+  → 跑长批前把 `WORKDIR` 改到持久目录，或每完成约 10 批就 `export-xlsx` + `publish` 存增量。
+- **agent 的完工汇报不可信**。多批报「写了 25 段、校验全部合格」而盘上根本没有文件，
+  或报 25 段实际 15 段。成因多半是 API 流被截断后 harness 拿到残缺响应，不是故意编造。
+  → **编排层每收一次汇报都要核盘**（`grep -c '^### ' text/batch_NNN.txt` 或跑 `merge`），
+  不能转述 agent 的自报数字。
+- **并发 12 路会集体挂**（同时 stalled + 超时），10 路较稳；19 路必挂。
+- **派接手 agent 前先看文件 mtime**：没有完成通知 ≠ 已经死掉。两个 agent 并发 Edit
+  同一份稿件会写出重复的 `### pk`，更糟的是用整文件 `Write` 覆盖会冲掉先写方的段落。
+  → 接手提示里写死「只用 Edit 追加，绝不整文件 Write」。重复 pk 的检测已在 `2690d62` 补上。
+- **subagent 的 toolset 里没有 `WebSearch`**（既不在工具表也不在延迟工具表），
+  track B 的联网查证实际全部靠 `mcp__plugin_ecc_exa__web_search_exa`。
+  Exa 并行两个查询会撞免费额度限流，**改串行即恢复**；`WebFetch` 打搜索引擎页返回无关内容，不能当回退。
+- **最有效的查证入口是 ISBN，不是书名**：多本 `author` 为「未知」的书靠 ISBN 精确命中
+  图书馆馆藏，拿到真实编者、出版社、年份甚至完整目录（有目录后写分节最稳）。
+- **agent 会估错自己写了多少字**：某批以为在写 85 字/条，实测只有 59–73 字，整段掉到 682–714。
+  → 任务卡要求它**用 `len(re.sub(r'\s','',正文))` 量**，而不是凭感觉估；
+  并且要讲明「`ingest-text` 说合格只代表过了 600 闸门，不等于到了 700 目标」。
+
+### 顺带查出的库内脏数据（建议人工抽查）
+
+库里的豆瓣简介/作者简介**存在串书**，至少 7 条：`pk 2586`（挂 Nate Silver 的书，
+简介却是 Claire Harman 写 Katherine Mansfield 的另一本）、`pk 2420`《盛世》（作者简介是陈冠中，
+书籍简介是一部黑帮小说）、`pk 2714`（哈利·波特电子合集混进插画师 Jim Kay 的简介）、
+`pk 2754`《一读就上瘾的逻辑学》（简介整段是心理学发展史）、`pk 2769`《范仲淹传》
+（`ZAUTHOR` 是邢超、作者简介却是程应镠）、`pk 62`、`pk 1160`。
+这几段正文都改按 `title + author + publisher` 三项互证的那本书写、只用可靠公共事实。
+另有几处顺带查出的库内错值：`pk 589` 作者应为「沈寂」（库里写「沉寂」）、
+`pk 1196` 应为 1985 年学林出版社（库里 year=1999）、`pk 568`《现代汉语词典》
+库里 1982 实为印次（初版 1978-12）。
+
+### 续跑/补写的正确姿势
+
+从 iCloud 的成品 `.plbackup` 复制成 `work.sqlite`、原始备份复制成 `original.sqlite`，
+**不要再跑 `archive` / `clear`**（会清掉已完成的介绍），直接
+`export-batches --only-empty` 重新切批。重新切批后批次号会重排，
+旧的 `text/batch_NNN.txt` 会和新的 `in/batch_NNN.json` 对不上 —— 先把旧稿件挪走备份。
