@@ -33,7 +33,12 @@ TRACK_A_MIN_DOUBAN = 50
 BATCH_SIZE_TRACK_A = 25
 BATCH_SIZE_TRACK_B = 10
 
-WORKDIR = Path("/tmp/pl-ai-intro")
+# 工作区。默认在 /tmp，但**跑长批前务必换到持久目录** ——
+# 2026-08-31 死机重启后 /private/tmp 被系统清空，40 批约 1000 段稿件全丢，
+# tmutil 无快照可救（/tmp 不在 Time Machine 范围），而 agent 只回报统计数字、
+# 正文从不进上下文，所以稿件一丢就没有任何副本。
+#     PL_AI_INTRO_WORKDIR=~/pl-ai-intro python3 tools/ai_intro/pipeline.py status
+WORKDIR = Path(os.environ.get("PL_AI_INTRO_WORKDIR", "/tmp/pl-ai-intro")).expanduser()
 
 
 # --------------------------------------------------------------------------- #
