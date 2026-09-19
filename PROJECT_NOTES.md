@@ -2,7 +2,7 @@
 
 > 本文是面向开发者（及 AI 协作）的**知识沉淀**：当前功能全景、架构、关键设计决策与踩坑、版本演进。
 > 与其它文档分工：`README.md` 对外介绍、`SETUP.md` 建工程步骤、`CLAUDE.md` 协作纪律与权限。**本文不重复这些，只记"为什么这么做 / 坑在哪"。**
-> 最后更新：v0.63（git 最新 tag）。注：下方第 6 节里程碑沿用旧的开发编号（tag 序列曾重排，见 commit 7f7183e），与实际 tag 号不对应，仅作功能演进参考。
+> 最后更新：v0.67（git 最新 tag）。注：下方第 6 节里程碑沿用旧的开发编号（tag 序列曾重排，见 commit 7f7183e），与实际 tag 号不对应，仅作功能演进参考。
 
 ---
 
@@ -59,7 +59,7 @@ iOS 个人藏书管理 + 阅读进度跟踪 App。SwiftUI + SwiftData，iOS 17+�
 - `@Attribute(.externalStorage)` 只对**超过 ~128KB** 的 blob 才外置；封面平均才 ~49KB → **全部内联进 Book 行**。
 - 后果（真实事故）：库膨胀到 **196MB（其中封面 139MB）**，列表 `@Query` 把全部书 fault 进内存 → RSS 达 **435MB**；主线程 `modelContext.save()` 要 bridge 这些大对象 → **卡顿 + 看门狗崩溃(0x8BADF00D) + 磁盘写入告警 + jetsam**。
 - 对策（v0.79）：
-  - `CoverImageProcessor.thumbnailData(from:)` 在**所有图片入口**统一压成 ≤400px JPEG（3 个下载器 `CoverFetchService.downloadImage`/`downloadWithReferer`/`BookService.downloadImage` + 相册选择）。
+  - `CoverImageProcessor.thumbnailData(from:)` 在**所有图片入口**统一压成 ≤800px JPEG（3 个下载器 `CoverFetchService.downloadImage`/`downloadWithReferer`/`BookService.downloadImage` + 相册选择）。
   - `Book.hasCoverData`：**<1KB 视为无封面**（历史写过 38 字节坏占位），使其重抓自愈。
   - `StorageManager.migrateOversizedCoversIfNeeded`：启动后台分批把存量超大/坏封面压缩（每批独立 context 控内存）。结果：封面 139MB→75MB，最大单图 1426KB→81KB。
   - **新增任何写 `book.coverImageData` 的地方，必须经 `CoverImageProcessor`。**
