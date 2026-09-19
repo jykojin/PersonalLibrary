@@ -34,3 +34,10 @@ PersonalLibrary/Config.xcconfig
 *.tmp
 *.bak
 私家书藏_书单导出.xlsx
+
+# Python 字节码（tools/ai_intro/ 的产物，曾被误提交进版本库）
+__pycache__/
+*.pyc
+
+# 代码结构分析工具的输出（本地产物，数 MB 的 graph.json / graph.html）
+graphify-out/
