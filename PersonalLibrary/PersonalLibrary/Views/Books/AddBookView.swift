@@ -4,6 +4,7 @@ import SwiftData
 struct AddBookView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
 
     @Query(sort: \Bookshelf.sortOrder) private var bookshelves: [Bookshelf]
 
@@ -21,15 +22,21 @@ struct AddBookView: View {
     // 智能补全
     @State private var isSmartFilling = false
     @State private var smartFillMessage: String?
+    @State private var smartFillTask: Task<Void, Never>?
+    @State private var aiAvailability = AIConfigAvailability.shared
+    @State private var enrichmentCommitMarkers = EnrichmentManualCommitMarkers()
 
     // 书籍信息
     @State private var title = ""
     @State private var author = ""
+    @State private var translator = ""
     @State private var publisher = ""
+    @State private var publishDateText = ""
     @State private var totalPages = ""
     @State private var price = ""
     @State private var bookDescription = ""
     @State private var authorDescription = ""
+    @State private var bookIntroduction = ""
 
     // 封面
     @State private var coverImageData: Data?
@@ -126,7 +133,10 @@ struct AddBookView: View {
                 Section("基本信息") {
                     TextField("书名", text: $title)
                     TextField("作者", text: $author)
+                    TextField("译者", text: $translator)
                     TextField("出版社", text: $publisher)
+                    TextField("出版日期（YYYY-MM-DD）", text: $publishDateText)
+                        .keyboardType(.numbersAndPunctuation)
                     TextField("总页数", text: $totalPages)
                         .keyboardType(.numberPad)
                     TextField("价格（如 ¥59.00）", text: $price)
@@ -134,21 +144,40 @@ struct AddBookView: View {
 
                 // MARK: - 智能补全
                 Section {
-                    Button {
-                        Task { await performSmartFill() }
-                    } label: {
+                    if isSmartFilling {
                         HStack {
-                            if isSmartFilling {
-                                ProgressView()
-                                    .controlSize(.small)
-                                Text("补全中...")
-                            } else {
-                                Image(systemName: "wand.and.stars")
-                                Text("智能补全书籍信息")
+                            ProgressView().controlSize(.small)
+                            Text("补全中...")
+                            Spacer()
+                            Button("停止补全", role: .cancel) {
+                                smartFillTask?.cancel()
                             }
                         }
+                    } else {
+                        Button {
+                            startSmartFill(mode: .full)
+                        } label: {
+                            Label("智能补全书籍信息", systemImage: "wand.and.stars")
+                        }
+                        .disabled(!EnrichmentEntryPolicy.canStart(title: title, isbn: isbn))
+
+                        Button {
+                            startSmartFill(mode: .aiOnly)
+                        } label: {
+                            Label("AI智能补全", systemImage: "sparkles")
+                        }
+                        .disabled(
+                            !EnrichmentEntryPolicy.canStart(title: title, isbn: isbn)
+                            || !aiAvailability.isAvailable
+                        )
+
+                        if !aiAvailability.isAvailable {
+                            NavigationLink("配置 AI 智能补全") {
+                                AISettingsView()
+                            }
+                            .font(.caption)
+                        }
                     }
-                    .disabled(title.isEmpty || isSmartFilling)
 
                     if let message = smartFillMessage {
                         Text(message)
@@ -203,6 +232,10 @@ struct AddBookView: View {
                         TextEditor(text: $authorDescription)
                             .frame(minHeight: 80)
                     }
+                    DisclosureGroup("AI简介") {
+                        TextEditor(text: $bookIntroduction)
+                            .frame(minHeight: 120)
+                    }
                 }
 
                 // MARK: - 书架
@@ -225,13 +258,17 @@ struct AddBookView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
+                    Button("取消") {
+                        smartFillTask?.cancel()
+                        dismiss()
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") { saveBook() }
-                        .disabled(title.isEmpty || author.isEmpty)
+                        .disabled(title.isEmpty || author.isEmpty || isSmartFilling)
                 }
             }
+            .interactiveDismissDisabled(isSmartFilling)
             .sheet(isPresented: $showingScanner) {
                 BarcodeScannerView(scannedISBN: $scannedISBN, isPresented: $showingScanner)
             }
@@ -245,6 +282,16 @@ struct AddBookView: View {
                     isbn = newValue
                     Task { await performLookup(isbn: newValue) }
                 }
+            }
+            .onDisappear {
+                if EnrichmentTaskLifecyclePolicy.shouldCancelOnDisappear(
+                    isSceneActive: scenePhase == .active
+                ) {
+                    smartFillTask?.cancel()
+                }
+            }
+            .onAppear {
+                aiAvailability.refresh()
             }
             .alert("ISBN 重复", isPresented: $showDuplicateAlert) {
                 Button("知道了", role: .cancel) {}
@@ -287,6 +334,8 @@ struct AddBookView: View {
                 title = result.title
                 author = result.author
                 publisher = result.publisher ?? ""
+                translator = result.translator ?? ""
+                publishDateText = result.publishDate ?? ""
                 totalPages = result.totalPages.map { String($0) } ?? ""
                 price = result.price ?? ""
                 bookDescription = result.bookDescription ?? ""
@@ -317,59 +366,81 @@ struct AddBookView: View {
 
     // MARK: - Smart Fill (手动触发，走书名搜索)
 
-    private func performSmartFill() async {
-        guard !title.isEmpty else { return }
+    private func startSmartFill(mode: EnrichmentMode) {
+        smartFillTask = Task { await performSmartFill(mode: mode) }
+    }
+
+    private func performSmartFill(mode: EnrichmentMode = .full) async {
+        guard EnrichmentEntryPolicy.canStart(title: title, isbn: isbn) else { return }
         isSmartFilling = true
         smartFillMessage = nil
+        defer {
+            isSmartFilling = false
+            smartFillTask = nil
+        }
 
-        let needsAuthor = author.isEmpty
-        let needsPublisher = publisher.isEmpty
-        let needsPages = totalPages.isEmpty
-        let needsPrice = price.isEmpty
-        let needsBookDesc = bookDescription.isEmpty
-        let needsAuthorDesc = authorDescription.isEmpty
+        let draft = makeEnrichmentDraft()
+        let outcome = await EnrichmentBackgroundExecution().run(
+            named: mode == .aiOnly ? "AI智能补全" : "智能补全书籍信息"
+        ) {
+            await EnrichmentCoordinator.live().enrich(
+                draft,
+                mode: mode,
+                localAuthorDescription: findLocalAuthorDescription(for: author)
+            )
+        }
+        let appliedOutcome = outcome.rebased(on: makeEnrichmentDraft())
+        applyEnrichedDraft(appliedOutcome.draft)
+        enrichmentCommitMarkers.record(appliedOutcome, mode: mode)
 
-        let result = await lookupService.smartFill(
-            isbn: isbn, title: title, author: author,
-            needsPublisher: needsPublisher, needsPages: needsPages,
-            needsPrice: needsPrice, needsPublishDate: false,
-            needsTranslator: false,
-            needsAuthor: needsAuthor, needsBookDesc: needsBookDesc,
-            needsAuthorDesc: needsAuthorDesc
-        )
+        if appliedOutcome.termination == .cancelled || Task.isCancelled {
+            smartFillMessage = "已停止补全"
+            return
+        }
 
-        // 填入结果
-        if needsAuthor, let a = result.author { author = a }
-        if needsPublisher, let p = result.publisher { publisher = p }
-        if needsPages, let p = result.totalPages { totalPages = String(p) }
-        if needsPrice, let p = result.price { price = p }
-        if needsBookDesc, let d = result.bookDescription { bookDescription = d }
-        if needsAuthorDesc, let d = result.authorDescription { authorDescription = d }
-
-        // 作者简介如果还是空，查本地 DB
-        if authorDescription.isEmpty && !author.isEmpty {
-            if let localDesc = findLocalAuthorDescription(for: author) {
-                authorDescription = localDesc
+        if appliedOutcome.changedFields.isEmpty {
+            if appliedOutcome.aiStatus == .notAttempted && mode == .aiOnly {
+                smartFillMessage = "请先在设置中完成支持联网检索的 AI 配置"
+            } else if let issue = appliedOutcome.aiIssueDescription {
+                smartFillMessage = "补全未完成：\(issue)"
+            } else {
+                smartFillMessage = "未找到可补全的信息"
             }
-        }
-
-        // 汇总消息
-        let filled = [
-            result.publisher != nil ? "出版社" : nil,
-            result.totalPages != nil ? "页数" : nil,
-            result.price != nil ? "定价" : nil,
-            result.author != nil ? "作者" : nil,
-            result.bookDescription != nil ? "图书简介" : nil,
-            result.authorDescription != nil || !authorDescription.isEmpty ? "作者简介" : nil
-        ].compactMap { $0 }
-
-        if filled.isEmpty {
-            smartFillMessage = "未找到可补全的信息"
         } else {
-            smartFillMessage = "已补全：\(filled.joined(separator: "、"))"
+            let tokenText = appliedOutcome.tokenUsage.total.map { "，Token：\($0)" } ?? ""
+            let issueText = appliedOutcome.aiIssueDescription.map { "；AI \($0)" } ?? ""
+            smartFillMessage = "已补全 \(appliedOutcome.changedFields.count) 个字段\(tokenText)\(issueText)"
         }
+    }
 
-        isSmartFilling = false
+    private func makeEnrichmentDraft() -> BookDraft {
+        BookDraft(
+            title: title,
+            author: author,
+            translator: translator,
+            isbn: isbn,
+            publisher: publisher,
+            publishDate: PublicationDateParser.parse(publishDateText),
+            totalPages: Int(totalPages) ?? 0,
+            price: price,
+            bookDescription: bookDescription,
+            authorDescription: authorDescription,
+            aiIntroduction: bookIntroduction,
+            rating: rating
+        )
+    }
+
+    private func applyEnrichedDraft(_ draft: BookDraft) {
+        title = draft.title
+        author = draft.author
+        translator = draft.translator ?? ""
+        publisher = draft.publisher ?? ""
+        publishDateText = PublicationDateParser.format(draft.publishDate)
+        totalPages = draft.totalPages > 0 ? String(draft.totalPages) : ""
+        price = draft.price ?? ""
+        bookDescription = draft.bookDescription ?? ""
+        authorDescription = draft.authorDescription ?? ""
+        bookIntroduction = draft.aiIntroduction ?? ""
     }
 
     // MARK: - Local Author Description
@@ -396,14 +467,17 @@ struct AddBookView: View {
         let container = modelContext.container
         let titleVal = title.trimmingCharacters(in: .whitespaces)
         let authorVal = author.trimmingCharacters(in: .whitespaces)
+        let translatorVal = translator.trimmingCharacters(in: .whitespacesAndNewlines)
         let isbnVal = isbn.isEmpty ? nil : isbn
         let publisherVal = publisher.isEmpty ? nil : publisher
+        let publishDateVal = PublicationDateParser.parse(publishDateText)
         let totalPagesVal = Int(totalPages) ?? 0
         let priceVal = price.isEmpty ? nil : price
         let doubanURLVal = doubanURL
         let bookTypeVal = bookType
         let bookDescVal = bookDescription.isEmpty ? nil : bookDescription
         let authorDescVal = authorDescription.isEmpty ? nil : authorDescription
+        let bookIntroductionVal = bookIntroduction.isEmpty ? nil : bookIntroduction
         let coverURLVal = coverImageURL
         let rawCover = coverImageData
         let statusVal = readingStatus
@@ -411,6 +485,13 @@ struct AddBookView: View {
         let shelfID = selectedBookshelf?.persistentModelID
         let tagNames = Array(selectedTags)
         let source: AddSource = scannedISBN != nil ? .scanned : .manual
+        let completedAt = Date()
+        let lastEnrichmentDateVal = enrichmentCommitMarkers.shouldRecordMetadataCompletion
+            ? completedAt
+            : nil
+        let lastAIEnrichmentDateVal = enrichmentCommitMarkers.shouldRecordAICompletion
+            ? completedAt
+            : nil
 
         dismiss()
 
@@ -421,8 +502,10 @@ struct AddBookView: View {
             let book = Book(
                 title: titleVal,
                 author: authorVal,
+                translator: translatorVal.isEmpty ? nil : translatorVal,
                 isbn: isbnVal,
                 publisher: publisherVal,
+                publishDate: publishDateVal,
                 totalPages: totalPagesVal,
                 price: priceVal,
                 doubanURL: doubanURLVal,
@@ -435,7 +518,10 @@ struct AddBookView: View {
             book.status = statusVal
             book.statusChangedDate = Date()
             book.rating = ratingVal
+            book.bookIntroduction = bookIntroductionVal
             book.addSource = source
+            book.lastEnrichmentDate = lastEnrichmentDateVal
+            book.lastAIEnrichmentDate = lastAIEnrichmentDateVal
 
             // 书架：来自主 context @Query，按 ID 在后台 context 重新取
             if let shelfID, let shelf = bg.model(for: shelfID) as? Bookshelf {

@@ -26,7 +26,7 @@ struct DataBackupView: View {
     @State private var showingExportShare = false
     @State private var exportFileURL: URL?
 
-    // AI介绍 回填 state
+    // AI简介回填 state
     @State private var isImportingIntros = false
     @State private var showingIntroPicker = false
     @State private var introParsedCount = 0
@@ -118,7 +118,7 @@ struct DataBackupView: View {
                     showingIntroPicker = true
                 } label: {
                     HStack {
-                        Label("导入 AI介绍", systemImage: "sparkles")
+                        Label("导入 AI简介", systemImage: "sparkles")
                         Spacer()
                         if isImportingIntros {
                             ProgressView()
@@ -154,7 +154,7 @@ struct DataBackupView: View {
             } header: {
                 Text("书单")
             } footer: {
-                Text("导入导出均为 XLSX 格式，导出的文件可被本应用重新导入。\n「导入 AI介绍」只按 微信读书ID／ISBN／书名+作者 把该列回填到已有书籍，只补空值、不会新增书。")
+                Text("导入导出均为 XLSX 格式，导出的文件可被本应用重新导入。\n「导入 AI简介」只按 微信读书ID／ISBN／书名+作者 把该列回填到已有书籍，只补空值、不会新增书。")
             }
         }
         .navigationTitle("数据备份")
@@ -193,7 +193,7 @@ struct DataBackupView: View {
                 Text("成功导入 \(r.successCount) 本书" + (r.failedCount > 0 ? "，\(r.failedCount) 本失败" : ""))
             }
         }
-        .alert("AI介绍 回填完成", isPresented: $showingIntroResult) {
+        .alert("AI简介回填完成", isPresented: $showingIntroResult) {
             Button("好的") {}
         } message: {
             if let r = introResult {
@@ -265,7 +265,7 @@ struct DataBackupView: View {
         }
     }
 
-    /// 用选中的 xlsx 回填「AI介绍」到已有书籍：只补空值、绝不新增书。
+    /// 用选中的 xlsx 回填「AI简介」到已有书籍：只补空值、绝不新增书。
     private func importIntroductions(from url: URL) async {
         isImportingIntros = true
         defer { isImportingIntros = false }
@@ -277,14 +277,14 @@ struct DataBackupView: View {
                 try modelContext.save()
             }
             AppLogger.info(
-                "AI介绍 导入：文件 \(entries.count) 条，更新 \(result.updated) 本，未匹配 \(result.unmatched) 条",
+                "AI简介导入：文件 \(entries.count) 条，更新 \(result.updated) 本，未匹配 \(result.unmatched) 条",
                 category: "IntroImport"
             )
             introParsedCount = entries.count
             introResult = result
             showingIntroResult = true
         } catch {
-            errorMessage = "导入 AI介绍 失败：\(error.localizedDescription)"
+            errorMessage = "导入 AI简介失败：\(error.localizedDescription)"
             showingError = true
         }
     }

@@ -2,7 +2,7 @@
 
 > 本文是面向开发者（及 AI 协作）的**知识沉淀**：当前功能全景、架构、关键设计决策与踩坑、版本演进。
 > 与其它文档分工：`README.md` 对外介绍、`SETUP.md` 建工程步骤、`CLAUDE.md` 协作纪律与权限。**本文不重复这些，只记"为什么这么做 / 坑在哪"。**
-> 最后更新：v0.67（git 最新 tag）。注：下方第 6 节里程碑沿用旧的开发编号（tag 序列曾重排，见 commit 7f7183e），与实际 tag 号不对应，仅作功能演进参考。
+> 最后更新：v0.67（git 最新 tag）+ 2026-09-22 未发布的智能补全升级。注：下方第 6 节里程碑沿用旧的开发编号（tag 序列曾重排，见 commit 7f7183e），与实际 tag 号不对应，仅作功能演进参考。
 
 ---
 
@@ -12,7 +12,7 @@ iOS 个人藏书管理 + 阅读进度跟踪 App。SwiftUI + SwiftData，iOS 17+�
 
 核心诉求（从需求与历史归纳）：
 - **录入省事**：扫码 ISBN / 手动 / Excel 批量导入 / **从微信读书同步**。
-- **信息齐全**：自动从 Open Library、Google Books、豆瓣/Goodreads 补全（出版社、页数、定价、出版日期、书籍简介、作者简介、封面）。
+- **信息齐全**：统一按豆瓣 → Goodreads → Open Library 补全空缺事实字段，再由可选的联网 AI 核实剩余空值并生成「AI简介」；Open Library 不提供图书简介或作者简介。
 - **微信读书深度集成**：同步书架、阅读进度/时长、状态、**划线/笔记**，并能**增量**同步（少请求、少发热）。
 - **数据自主**：本地 SwiftData（可选 iCloud/CloudKit），支持导出（TSV/XLSX）和整库备份/恢复。
 - **流畅**：大书库（数千本）下列表滚动、详情打开、输入都不能卡。
@@ -27,7 +27,8 @@ iOS 个人藏书管理 + 阅读进度跟踪 App。SwiftUI + SwiftData，iOS 17+�
 | 书架 | `Views/Bookshelf/`, `Models/Bookshelf` | 卡片式 Dashboard，书数排除已归档 |
 | 阅读记录/统计 | `Views/Reading/*`, `Models/ReadingRecord` | 记录阅读会话；详情页"阅读时间线"(加入→开始→累计时长→读完)；统计 Dashboard(分段图表，懒加载) |
 | 扫码 | `Views/Scanner/BarcodeScannerView` | 摄像头扫 ISBN |
-| ISBN/资料补全 | `ISBNLookupService`, `DoubanDescriptionFetcher` | Open Library + Google Books；`smartFill` 对用户导入书(CB_)补豆瓣/Goodreads 简介 |
+| ISBN/资料补全 | `EnrichmentCoordinator`, `Services/Enrichment/*`, `ISBNLookupService`, `DoubanDescriptionFetcher` | 添加、编辑、单本、批量和微信读书共用 `BookDraft` 原子能力；普通来源顺序为豆瓣 → Goodreads → Open Library，AI 只补剩余空值 |
+| AI 配置与简介 | `AIConfig`, `AISettingsView`, `AIEnrichmentService` | API Key 存 Keychain；支持百炼及常见 OpenAI 兼容平台；联网核实事实字段并生成建议 1000–1100 字的「AI简介」，可靠的精炼正文不因低于目标字数被拒绝 |
 | 封面抓取 | `CoverFetchService`, `CoverImageProcessor` | 豆瓣/OpenLibrary 多源；限流；**统一压缩略图**(见踩坑) |
 | 微信读书同步 | `WeReadDataSource`(协议) + `WeReadSkillProvider`(Skill) + `WeReadService`(Web) + `WeReadSyncService`(编排) | 双模式；增量同步；同步历史；自动同步 |
 | 导入导出/备份 | `ExcelImportExportService`, `BackupService`, `Views/Settings/*` | XLSX 导入(CoreXLSX)、TSV 导出；整库备份到 iCloud Drive + 恢复 |
@@ -38,7 +39,7 @@ iOS 个人藏书管理 + 阅读进度跟踪 App。SwiftUI + SwiftData，iOS 17+�
 数据模型（`Schema`，6 个 `@Model`）：`Book`、`Bookshelf`、`Tag`、`ReadingRecord`、`ImportRecord`、`SyncHistoryRecord`。
 
 > 另有一套**不在 App 里**的离线工具：`tools/ai_intro/` + `.claude/skills/ai-book-intro/`，
-> 用来批量重写「AI介绍」字段。见第 10 节。
+> 用来批量重写历史「AI介绍」字段（现产品文案统一为「AI简介」）。见第 10 节；它与 App 内的新 AI 能力相互独立。
 
 ---
 
@@ -50,6 +51,9 @@ iOS 个人藏书管理 + 阅读进度跟踪 App。SwiftUI + SwiftData，iOS 17+�
   - Skill：经 Agent Gateway `https://i.weread.qq.com/api/agent/gateway`，`Authorization: Bearer wrk-...`，Key 存 Keychain。
   - Web：扫码登录 Cookie。
 - **同步编排**：`WeReadSyncService`(actor) — 全局锁防并发、进度静态属性供 UI 轮询、可外部取消、写同步历史。后台 `ModelContext` 批处理，`autosaveEnabled=false`。
+- **补全编排**：`EnrichmentCoordinator` 输入/输出均为 `BookDraft` 值类型，不直接保存 SwiftData；普通来源、AI、页面和同步只通过这一接口组合，写回时只应用补全过程中仍为空且未被用户并发修改的字段。
+- **补全后台连续性**：添加、编辑和批量入口用 `EnrichmentBackgroundExecution` 申请 iOS 短时后台额度；页面消失不等于取消，系统额度到期只释放租约，明确“停止补全”或导航栏“取消”才传播取消。长时间挂起或 App 被系统终止仍需服务端异步任务才能保证。
+- **微信读书 AI简介**：平台书仅走 `.aiIntroductionOnly`，用户导入书走 `.full`；即使历史 `wereadEnrichedDate` 已存在，只要 AI简介缺失且尚未形成 AI 终态，仍会进入队列。
 
 ---
 
@@ -83,7 +87,17 @@ iOS 个人藏书管理 + 阅读进度跟踪 App。SwiftUI + SwiftData，iOS 17+�
 ### 4.6 网络与安全
 - **SSRF 防护**：封面/简介抓取走域名白名单 + 仅 https（覆盖从 og:image 抓到的 URL）。
 - **豆瓣限流**：`DoubanRateLimiter`（等待上限 30s，避免陈旧预约卡死）+ 分源延迟日志。
-- 批量补全节流：与 WeRead 同步 QPS 对齐（顺序 + 2s 间隔），曾因并发/burst 导致发热，最终回退到稳的方案。
+- 批量补全保持顺序执行；普通网页补全保留 2s 间隔以控制来源站点 QPS，AI 调用本身耗时较长，不再额外固定 sleep（429 仍按 `Retry-After` 或退避策略处理）。
+- **AI 凭证**：API Key 只进 Keychain，不写 UserDefaults、日志、测试 fixture 或仓库；配置页重新打开也不回显明文。
+- **AI Endpoint**：只允许无 credentials/敏感查询凭据/fragment 的公网 HTTPS；查询参数仅放行 `api-version`，其余一律拒绝，避免未知凭据明文进入 UserDefaults。生产请求前解析 DNS，阻断本机、私网、链路本地、保留地址、数值 IP、IPv4-mapped IPv6 和跨主机重定向。响应使用最多 2 MB 的有界内存分块缓冲，超限立即取消并在解码前拒绝。事实字段必须逐字段带非 Endpoint 自身来源，未通过身份/类型/来源验证的一律不写入。
+- **AI 连接测试**：百炼官方 Endpoint 使用 `forced_search` + 输入 token 注入阈值 + 外部来源 URL 验证搜索能力，不再要求模型读取 drand API；自定义 Endpoint 不得复用此简化探针。整个测试有 30 秒硬截止，并区分 Endpoint、认证、模型和联网证据错误。
+- **AI 输入预算**：事实字段按类型同时限制显示字符、Unicode scalar 和 UTF-8 字节；Prompt 用明确的不可信数据边界包裹书籍内容，最终 HTTP 请求体限制为 256 KB，避免异常存量数据无限放大请求或被当作系统指令。
+- **AI简介**：必须基于联网调研来源，建议目标为 1000–1100 个非空白字符，安全上限为 3000 字；结构完整、来源有效的精炼正文不会因低于目标字数被拒绝。正文须无 Markdown/模板/截断，且不得与已有简介连续重合 40 字。综合情况、主题与写法、阅读体验、推荐与延伸是写作方向而非逐项必填内容；对比或扩展阅读可自然写入正文，不要求 `comparison_books` 等独立结构化元数据，也不因其缺失或残缺拒绝整篇简介。验证失败最多携原因重试一次，仍失败则留空。
+- **AI 截断恢复**：事实检索关闭深度思考，按 4096 → 8192 输出 token 扩容，两次尝试共享同一个 60 秒阶段 deadline，第二次只获得剩余预算；AI简介保持深度思考，百炼使用 `thinking_budget=4096` 与 `max_completion_tokens=12288 → 16384`。客户端读取 `finish_reason`，截断内容绝不写入；`NSURLError -1005` 自动重试一次。简介提示词仍以 1000–1100 字为建议目标，验证只拒绝超过 3000 字的异常长文。
+- **响应与请求放大防护**：普通豆瓣/Goodreads/Open Library/Google Books 响应也使用 5 MB 流式上限，超限时在继续缓冲前取消；豆瓣书名回退最多检查 5 个合法建议。AI简介先执行 3000 字及独立 Unicode scalar/UTF-8 字节上限，再做滑动窗口重复分析；AI 事实字段使用相同的多维资源预算，最终请求体超过 256 KB 时不发送。
+- **归档隐私边界**：微信读书自动同步不会再把已归档书籍送入普通补全、AI简介或划线拉取队列；即使书在入队后由用户或 CloudKit 并发归档，也会在 AI 与划线外部调用前重新读取持久层状态并安全跳过。
+- **并发提交边界**：批量与微信 AI 在外发前、返回提交前分别使用新 SwiftData context 重读；返回结果按最新草稿 rebase，手工编辑优先，归档/删除 fail-closed。微信同步由服务统一持有可取消的核心 Task，自动、登录后和手工同步共用同一取消入口。
+- **AI 网络固定边界**：AI 请求使用 Network.framework 只拨号到本轮 DNS 校验通过的数值 IP，同时保留原 hostname 做 TLS SNI、证书与 HTTP `Host` 校验；同源重定向逐跳重新解析并固定，连接故障转移也只限于同一批已验证地址。该传输不支持 PAC/HTTP 代理、HTTP/2/3 或自动内容解压，VPN Fake-IP 兼容性仍须真机验证。
 
 ### 4.7 「一次性结果」不能承载「持续筛选范围」⚠️
 
@@ -167,6 +181,13 @@ iOS 个人藏书管理 + 阅读进度跟踪 App。SwiftUI + SwiftData，iOS 17+�
 - **v0.65**：数据备份页新增「**导入 AI介绍**」（`03e115b`）—— 可按 xlsx 批量回填已有书籍，只补空值、绝不新增书。
 - **v0.66**：**豆瓣简介只抓到折叠版的 bug**（`97379e0`）—— 删掉重复解析器，正文不再被截断在约 400 字（见 9.2）。
 - **v0.67**：**「从备份恢复」「从 Excel 导入」点了没反应的 bug** —— 三个 `.fileImporter` 挂在同一个 `List` 上，SwiftUI 只让最后一个生效（见第 9 节第 9 行）。同轮完成 **AI介绍 全量重写 2897 条**（工具链见 `.claude/skills/ai-book-intro/` 与 `tools/ai_intro/`）。
+- **未发布（2026-09-20）**：智能补全升级为统一原子能力；普通来源固定为豆瓣 → Goodreads → Open Library，新增豆瓣译者、AI 设置/模型列表/证据闸门、AI简介、独立及批量 AI 按钮，并接入微信读书自动同步。批量保持顺序执行；普通来源每本间隔 2 秒，AI 批量不另加固定等待。
+- **未发布（2026-09-21）**：修复 qwen3.7-plus 深度思考挤占输出空间导致事实与 AI简介残缺 JSON；新增结束原因识别、分档预算、-1005 重试，并取消逐段字数死限。该阶段曾使用 900–1200 字闸门，随后已由下方“3000 字与 Unicode 资源修订”取代。模拟器真实生成《大一统的制度密码》约 128 秒通过。
+- **未发布（2026-09-21 安全收口）**：归档微信书不再进入自动 AI/划线队列，并在耗时调用后复查归档状态以关闭 TOCTOU 窗口；普通元数据响应改为 5 MB 流式上限，重定向仅允许同主机、同端口 HTTPS；豆瓣书名回退最多检查 5 个候选；AI简介在高成本重复窗口分析前先执行资源上限（当时为 1200 字，现为 3000 字）；AI 阶段截止改为不等待底层取消完成的真正硬截止，事实检索的 4096 → 8192 重试共用一个 60 秒总预算。
+- **未发布（2026-09-21 AI简介语义修订）**：综合情况、主题与写法、阅读体验、推荐与延伸仅作为生成方向，不再强制每段命中特定关键词或覆盖全部要点；相似书比较与扩展阅读改为可选，并移除 `comparison_books` 结构及其书名、理由和独立来源闸门，避免辅助信息不完整时拒绝整篇有效简介。
+- **未发布（2026-09-21 AI简介长度修订）**：移除 900 字最低验收门槛；1000–1100 字仅作为生成建议，结构完整、来源有效的精炼正文直接采用。该阶段的 1200 字上限已由下一条修订放宽到 3000 字。
+- **未发布（2026-09-21 AI简介 3000 字与 Unicode 资源修订）**：按产品要求把 AI简介安全上限放宽为 3000 个非空白显示字符，1000–1100 字建议目标不变；同时增加 Unicode scalar、UTF-8 字节和 256 KB 最终请求体上限，阻断组合附加符绕过而不改变正常中文字数语义。
+- **未发布（2026-09-22 后台连续性）**：修复添加/编辑页 `onDisappear` 在切后台时误取消 AI 补全；添加、编辑和批量补全统一申请短时后台额度。补全中禁止下拉关闭和保存，明确取消仍有效；552 个单元/集成测试与 3 个 UI 测试通过，模拟器真实 Home→返回场景通过，并已覆盖安装到“多洛霍夫”iPhone 14 Plus。
 
 ---
 
@@ -312,7 +333,7 @@ SwiftUI 只让最后一个（AI介绍）生效。第三个 importer 是 v0.65 �
 - [ ] **重复数据未清理**：v0.60–v0.62 期间手动扫码添加的书可能有重复（已知《我已经没有烦恼了》）。⚠️ **不要按 ISBN 批量清理** —— 套书各卷共用 ISBN（张居正第二/三/四卷、曾国藩 1/2/3、余罪单册与全集），必须连书名一起比。建议手工删。
 - [x] ~~344 本待重抓简介~~ **已完成（2026-08-15）**：v0.66 装机后跑过 数据维护 → 批量补全，用户确认简介已变为完整正文，`(展开全部)` 残留消失。若之后又出现该标记，说明豆瓣页面结构变了，按 9.2 的判据重查。
 - [ ] **`BookIntroductionSeed.json`（3.33 MB）回填完成后可删**：真机已确认 2853 条全部落库，该资源只在首启用一次。v0.65 已提供常驻的「导入 AI介绍」入口，删掉 seed 后仍能随时按 xlsx 回填。删除时要连 `BookIntroductionSeeder.seedURL()` 的调用与两条依赖它的测试（`随包 seed 资源存在且可解析`、`用随包真实 seed 回填`）一起处理，否则 CI 会红。
-- [ ] **旧表头兜底何时可以去掉**：`ExcelImportExportService.legacyIntroHeader`（「书籍介绍」）只为读 0.64 之前的导出文件而存在，等确认不再需要导入历史文件即可删。
+- [ ] **旧表头兜底何时可以去掉**：`ExcelImportExportService.legacyIntroHeaders`（「AI介绍」「书籍介绍」）只为读取历史导出文件而存在，等确认不再需要导入历史文件即可删。
 - [ ] `PersonalLibraryUITests` 现有 3 个测试（启动 smoke、添加书流程、v0.67 的文件选择器回归）。「归档范围 + 输入文字」这类交互仍未覆盖，要长期防护还得补。
 
 ### 本轮沉淀的排查手法（可复用）
@@ -325,6 +346,8 @@ SwiftUI 只让最后一个（AI介绍）生效。第三个 importer 是 v0.65 �
 ---
 
 ## 10. 内部工具：AI介绍 批量重写管线（2026-08-31 ~ 09-01）
+
+> 本节记录历史字段名和离线流程；当前 App 的用户可见名称为「AI简介」。该离线管线不属于 2026-09-20 新增的 App 内 AI 智能补全，也不应被后者修改。
 
 **不是 App 功能**，是一套离线工具，用来把 `Book.bookIntroduction`（Excel 第 32 列「AI介绍」）
 从 v0.64 那批模板货全量重写成人写的介绍。App 侧不需要任何改动 —— 成品经

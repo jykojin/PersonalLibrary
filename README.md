@@ -9,17 +9,20 @@
 - **多类型** — 纸质书 / 电子书 / 有声书
 - **多入口添加** — 手动 / 扫码 / Excel 导入 / 微信读书同步
 - **扫码录入** — 扫描 ISBN 条形码自动获取书籍信息
-- **多源智能补全** — 豆瓣 → Open Library → Google Books → Goodreads 串联查询
+- **统一智能补全** — 单本、批量、添加和编辑共用同一能力，按豆瓣 → Goodreads → Open Library 顺序只补空值
+- **AI 智能补全** — 普通来源仍有空缺时可继续联网核实；也可单独触发，并生成经来源和内容规则校验的「AI简介」，内容会按图书特点从综合情况、主题与写法、阅读体验、推荐与延伸等方向灵活组织
+- **后台连续性** — 添加、编辑和批量补全切到后台时不会主动取消，并使用 iOS 短时后台额度；回到前台可继续，用户仍可明确停止
 
 ### 微信读书集成
 - **两种连接方式** — Web 扫码登录 / Skill API Key
 - **批量导入** — 一键导入微信读书全部书架
 - **增量同步** — 自动检查更新，只补全缺失字段
+- **AI简介** — 同步时自动为缺失的书生成 AI简介；微信平台书不额外抓取普通网页，用户导入书复用完整补全链
 - **进度同步** — 阅读时长、TTS 时长、完成日期、开始日期
 - **划线笔记** — 自动同步划线到本地备注
 - **同步历史** — 查看每次同步的统计与结果
 - **限速保护** — 全局豆瓣 5 秒间隔避免 IP 封禁
-- **后台并发** — 批量补全 3 路并发，stop 按钮可即时取消
+- **顺序节流** — 补全按单本顺序处理；普通网页补全每本间隔 2 秒，AI 批量不另加固定等待；stop 按钮可取消
 
 ### 封面管理
 - **多来源** — 网络搜索（内置浏览器 Google/百度/Bing 长按取图）/ 相册 / 拍照 / ISBN 自动下载
@@ -56,7 +59,7 @@
 | 安全存储 | Keychain Services |
 | 网络 | URLSession (async/await) |
 | 并发 | Swift Concurrency (actors, TaskGroup) |
-| 测试 | Swift Testing framework (291+ tests) |
+| 测试 | Swift Testing framework（552 个单元/集成测试 + 3 个 UI 测试） |
 
 ## 项目结构
 
@@ -72,6 +75,8 @@ PersonalLibrary/
 ├── Services/                # 业务逻辑
 │   ├── ISBNLookupService.swift     # 多源 ISBN 查询 + DoubanRateLimiter
 │   ├── DoubanDescriptionFetcher.swift  # 豆瓣 HTML 解析
+│   ├── AIConfig.swift              # AI 平台、Endpoint、模型与安全存储配置
+│   ├── Enrichment/                 # 统一补全协调器、普通来源与 AI 证据/内容校验
 │   ├── CoverFetchService.swift     # 封面下载与缓存
 │   ├── WeReadService.swift         # 微信读书 Web API
 │   ├── WeReadSkillProvider.swift   # 微信读书 Skill API
@@ -125,16 +130,18 @@ xcodegen generate
 
 # 4. 构建（模拟器）
 xcodebuild -scheme PersonalLibrary \
+  -project PersonalLibrary.xcodeproj \
   -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
   -derivedDataPath /tmp/PersonalLibrary-DerivedData build
 
 # 5. 运行测试
 xcodebuild -scheme PersonalLibrary \
+  -project PersonalLibrary.xcodeproj \
   -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
   -derivedDataPath /tmp/PersonalLibrary-DerivedData test
 ```
 
-生成后可直接用 Xcode 打开 `PersonalLibrary.xcodeproj`。
+生成后可直接用 Xcode 打开 `PersonalLibrary.xcodeproj`。本机若还保留历史工程（例如 `PersonalLibrary 2.xcodeproj`），命令行构建和测试必须显式传入上面的 `-project PersonalLibrary.xcodeproj`，避免选中旧工程。
 
 ## 版本管理
 
@@ -145,13 +152,17 @@ xcodebuild -scheme PersonalLibrary \
 
 ## 测试
 
-Swift Testing 框架，291+ 测试覆盖：
+Swift Testing 框架，当前共 552 个单元/集成测试和 3 个 UI 测试，0 失败；应用目标行覆盖率 25.04%（8135/32485，2026-09-22 最终全量模拟器测试），覆盖：
 
 - 数据模型与枚举逻辑
 - 微信读书 Web/Skill 双源同步
 - 增量同步去重与字段保护
 - 取消传播与并发控制
 - ISBN 多源查询解析
+- 豆瓣 → Goodreads → Open Library 顺序、译者提取和串书拒绝
+- AI Endpoint、平台请求体、错误分类、证据验证和 AI简介合同
+- 单本/批量/微信读书统一补全、取消传播和时间戳策略
+- 页面生命周期与 iOS 短时后台执行租约
 - 豆瓣限速器（DoubanRateLimiter）
 - Excel XLSX 导入导出（含字段往返）
 - 数据维护工具（繁转简、分隔符规范化）
@@ -161,7 +172,15 @@ Swift Testing 框架，291+ 测试覆盖：
 
 ## 安全设计
 
-- Cookie / API Key 存于 iOS Keychain (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`)
+- 微信读书 Cookie、Skill API Key 和 AI API Key 均存于 iOS Keychain (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`)；AI Key 绑定平台与 Endpoint，切换目标后必须重新输入
+- AI Endpoint 仅允许无内嵌凭据的公网 HTTPS 地址；TLS 连接固定到本次 DNS 校验通过的数值 IP，同时保留原域名做 SNI、证书与 `Host` 校验，重定向逐跳重新解析并只允许同主机、同端口 HTTPS。仅内置平台和联网验证域名可在 VPN 下使用 `198.18.0.0/15` Fake-IP，自定义域名仍严格阻断，避免密钥泄漏
+- `Retry-After` 只接受有限数值并限制到 0–10 秒；`NaN`、`Infinity` 等异常值统一回退到 1 秒，避免非法 `Duration` 导致崩溃
+- AI 请求同时限制逐字段显示字符、Unicode scalar、UTF-8 字节和最终 HTTP 请求体（256 KB）；响应使用最多 2 MB 的有界内存分块缓冲，超限立即取消并在解码前拒绝，降低异常输入和超大响应的内存风险
+- 自定义 Endpoint/模型必须通过结构化联网证据测试后才能启用；AI 事实字段必须逐字段附有效来源，AI简介还需通过身份、基本结构、纯文本、3000 字安全上限和抄袭校验；1000–1100 字只是生成建议，精炼正文不设最低字数；对比与扩展阅读只是可选写作方向，不要求独立结构化字段，也不作为整篇简介的采用闸门
+- AI简介保持深度思考：百炼限制思考预算并预留完整 JSON 输出空间；事实或简介遇到模型长度截断会扩大预算重试，瞬时连接中断会自动重试一次
+- 正式事实检索和 AI简介使用真正的阶段硬截止；即使底层网络任务不响应取消，调用方也会按 60/600 秒预算返回可重试超时
+- 输入含有效 ISBN 时，普通来源和 AI 事实结果都必须提供匹配的来源侧 ISBN 凭据；冲突或缺少凭据时不会直接采用，存在书名时继续执行书名/作者回退
+- 普通元数据重定向只允许同主机、同端口的 HTTPS；微信书在 AI 与划线调用前重新检查归档状态，归档记录不会继续外发
 - WeRead API 请求参数格式校验
 - XLSX 导入限 10MB
 - WKWebView 用非持久化 DataStore
@@ -178,6 +197,8 @@ Swift Testing 框架，291+ 测试覆盖：
 微信读书功能可二选一，均在 app 内完成，无需额外配置：
 - **Web 扫码登录**：内置 WKWebView 扫码登录微信读书，Cookie 存 Keychain
 - **Skill API**：在 app 内输入 Skill API Key
+
+AI 智能补全在“设置 → 导入导出与 AI → AI 智能补全”中配置。默认平台为百炼，也可选择 OpenAI、DeepSeek、OpenRouter 或自定义 OpenAI 兼容 Endpoint；模型可读取列表选择或手动填写。只有支持联网检索的配置会启用补全，调用会消耗所选平台的 token。
 
 ## License
 

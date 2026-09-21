@@ -11,8 +11,15 @@ struct KeychainService {
             kSecAttrAccount as String: key,
             kSecAttrService as String: bundleIdentifier
         ]
-        // 先删除旧数据
-        SecItemDelete(query as CFDictionary)
+        let updateAttributes: [String: Any] = [
+            kSecValueData as String: data
+        ]
+        let updateStatus = SecItemUpdate(
+            query as CFDictionary,
+            updateAttributes as CFDictionary
+        )
+        if updateStatus == errSecSuccess { return true }
+        guard updateStatus == errSecItemNotFound else { return false }
 
         var addQuery = query
         addQuery[kSecValueData as String] = data
@@ -71,6 +78,9 @@ struct KeychainService {
 
     /// 微信读书 Skill API Key
     static let wereadApiKey = "com.personallibrary.weread.apikey"
+
+    /// AI 智能补全 API Key
+    static let aiApiKey = "com.personallibrary.ai.apikey"
 
     // MARK: - Private
 

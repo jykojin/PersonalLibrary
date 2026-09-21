@@ -7,6 +7,7 @@ import WebKit
 struct EditBookView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @Bindable var book: Book
     @Query(sort: \Bookshelf.sortOrder) private var bookshelves: [Bookshelf]
 
@@ -49,7 +50,11 @@ struct EditBookView: View {
     @State private var isAutoFilling = false
     @State private var autoFillMessage: String = ""
     @State private var showFillResult = false
-    @State private var fillResult: SmartFillResult?
+    @State private var fillResult: EnrichmentOutcome?
+    @State private var autoFillTask: Task<Void, Never>?
+    @State private var aiAvailability = AIConfigAvailability.shared
+    @State private var enrichmentCommitMarkers = EnrichmentManualCommitMarkers()
+    @State private var hasLoadedBookData = false
 
     var body: some View {
         NavigationStack {
@@ -66,14 +71,34 @@ struct EditBookView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
+                    Button("取消") {
+                        autoFillTask?.cancel()
+                        dismiss()
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") { saveChanges() }
-                        .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .disabled(
+                            title.trimmingCharacters(in: .whitespaces).isEmpty
+                            || isAutoFilling
+                        )
                 }
             }
-            .onAppear { loadBookData() }
+            .interactiveDismissDisabled(isAutoFilling)
+            .onDisappear {
+                if EnrichmentTaskLifecyclePolicy.shouldCancelOnDisappear(
+                    isSceneActive: scenePhase == .active
+                ) {
+                    autoFillTask?.cancel()
+                }
+            }
+            .onAppear {
+                if !hasLoadedBookData {
+                    loadBookData()
+                    hasLoadedBookData = true
+                }
+                aiAvailability.refresh()
+            }
             .sheet(isPresented: $showWebSearch) {
                 CoverWebSearchView(bookTitle: title, bookAuthor: author) { imageData in
                     coverData = imageData  // 已在搜索页内部裁剪+压缩（§4.1）
@@ -284,7 +309,7 @@ struct EditBookView: View {
     private var descriptionSection: some View {
         Section("描述") {
             VStack(alignment: .leading, spacing: 4) {
-                Text("AI介绍")
+                Text("AI简介")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 TextEditor(text: $bookIntroduction)
@@ -411,59 +436,95 @@ struct EditBookView: View {
                     Text(autoFillMessage)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("停止补全", role: .cancel) {
+                        autoFillTask?.cancel()
+                    }
                 }
-            } else if let result = fillResult {
-                // 显示补全结果
+            } else {
+                Button {
+                    startSmartFill(mode: .full)
+                } label: {
+                    Label("智能补全缺失信息", systemImage: "wand.and.stars")
+                }
+                .disabled(!EnrichmentEntryPolicy.canStart(title: title, isbn: isbn))
+
+                Button {
+                    startSmartFill(mode: .aiOnly)
+                } label: {
+                    Label("AI智能补全", systemImage: "sparkles")
+                }
+                .disabled(
+                    !EnrichmentEntryPolicy.canStart(title: title, isbn: isbn)
+                    || !aiAvailability.isAvailable
+                )
+
+                if !aiAvailability.isAvailable {
+                    NavigationLink("配置 AI 智能补全") {
+                        AISettingsView()
+                    }
+                    .font(.caption)
+                }
+            }
+
+            if let result = fillResult {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        Image(systemName: result.hasAnyFill ? "checkmark.circle.fill" : "info.circle.fill")
-                            .foregroundStyle(result.hasAnyFill ? .green : .orange)
-                        Text(result.hasAnyFill ? "已补全部分信息" : "未找到可补全的信息")
+                        Image(systemName: result.changedFields.isEmpty ? "info.circle.fill" : "checkmark.circle.fill")
+                            .foregroundStyle(result.changedFields.isEmpty ? .orange : .green)
+                        Text(result.changedFields.isEmpty ? "未找到可补全的信息" : "已补全 \(result.changedFields.count) 个字段")
                             .font(.subheadline)
                             .fontWeight(.medium)
                     }
 
-                    // 各源状态
-                    ForEach(Array(result.sourceStatuses.enumerated()), id: \.offset) { _, source in
+                    ForEach(Array(result.sourceReports.enumerated()), id: \.offset) { _, report in
                         HStack(spacing: 6) {
                             Circle()
-                                .fill(statusColor(source.status))
+                                .fill(statusColor(report.status))
                                 .frame(width: 6, height: 6)
-                            Text(source.name)
+                            Text(report.source.rawValue)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             Spacer()
-                            Text(source.status.displayText)
+                            Text(report.status.displayText)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                     }
-                }
-                .padding(.vertical, 4)
-            } else {
-                // 初始状态 — 显示按钮
-                Button {
-                    Task { await performSmartFill() }
-                } label: {
-                    HStack {
-                        Image(systemName: "wand.and.stars")
-                        Text("智能补全缺失信息")
+
+                    HStack(spacing: 6) {
+                        Circle().fill(statusColor(result.aiStatus)).frame(width: 6, height: 6)
+                        Text("AI").font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Text(result.aiStatus.displayText).font(.caption).foregroundStyle(.secondary)
+                    }
+
+                    if !result.rejectionDetails.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label("未采用的 AI 字段", systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                            ForEach(result.rejectionDetails) { rejection in
+                                Text("\(rejection.fieldName)：\(rejection.reason)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
+                    if let total = result.tokenUsage.total {
+                        Text("本次 Token：\(total)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
                     }
                 }
-                .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty && isbn.isEmpty)
+                .padding(.vertical, 4)
             }
         } header: {
             Text("数据补全")
         } footer: {
-            if fillResult == nil && !isAutoFilling {
-                if book.wereadBookId != nil {
-                    Text("从微信读书补全：出版社、简介、阅读时长等")
-                        .font(.caption2)
-                } else {
-                    Text("从豆瓣、Open Library、Google Books 查找：出版社、页数、作者、图书简介、作者简介")
-                        .font(.caption2)
-                }
-            }
+            Text("普通补全按豆瓣 → Goodreads → Open Library 查询，并在已配置时自动使用 AI 补齐；AI智能补全会跳过普通来源。")
+                .font(.caption2)
         }
     }
 
@@ -472,109 +533,73 @@ struct EditBookView: View {
         case .found: return .green
         case .notFound: return .red
         case .notAttempted: return .gray
-        case .error: return .orange
+        case .retryableFailure, .error: return .orange
+        case .fatalFailure, .validationRejected: return .red
+        case .cancelled: return .gray
         }
     }
 
-    private func performSmartFill() async {
+    private func startSmartFill(mode: EnrichmentMode) {
+        autoFillTask = Task { await performSmartFill(mode: mode) }
+    }
+
+    private func performSmartFill(mode: EnrichmentMode) async {
         isAutoFilling = true
-        autoFillMessage = "正在查询数据源..."
-        defer { isAutoFilling = false }
+        autoFillMessage = mode == .aiOnly ? "正在进行 AI 检索与调研..." : "正在查询数据源..."
+        defer {
+            isAutoFilling = false
+            autoFillTask = nil
+        }
 
-        // 微信读书电纸书：先从微信读书补全
-        let wereadId = book.wereadBookId
-        if let wereadId, !wereadId.isEmpty {
+        if mode == .full, let wereadId = book.wereadBookId, !wereadId.isEmpty {
             await fillFromWeRead(bookId: wereadId)
-
-            // 本地作者简介
-            if authorDescription.isEmpty && !author.isEmpty && author != "未知作者" {
-                autoFillMessage = "正在从本地书库查找作者简介..."
-                if let localDesc = findLocalAuthorDescription(for: author) {
-                    authorDescription = localDesc
-                }
-            }
-
-            // 微信读书缺描述时，是否查外部源：
-            // - 用户导入书（isWereadUserImported=true）：可以搜外部源补全
-            // - 平台书（isWereadUserImported=false）：不搜外部源，只用微信读书+本地
-            var externalFilled = false
-            AppLogger.warning("performSmartFill: bookDesc.isEmpty=\(bookDescription.isEmpty), authorDesc.isEmpty=\(authorDescription.isEmpty), isbn=\(isbn), title=\(title), author=\(author), isUserImported=\(book.isWereadUserImported)", category: "EditBook")
-            let shouldSearchExternal = book.isWereadUserImported && (Book.descriptionNeedsRefresh(bookDescription) || Book.descriptionNeedsRefresh(authorDescription))
-            if shouldSearchExternal {
-                autoFillMessage = "正在从外部数据源补全描述..."
-                AppLogger.warning("performSmartFill: calling ISBNLookupService.smartFill for external sources...", category: "EditBook")
-                let service = ISBNLookupService()
-                let extResult = await service.smartFill(
-                    isbn: isbn,
-                    title: title,
-                    author: author,
-                    needsPublisher: false,
-                    needsPages: false,
-                    needsPrice: false,
-                    needsPublishDate: false,
-                    needsTranslator: false,
-                    needsAuthor: false,
-                    needsBookDesc: Book.descriptionNeedsRefresh(bookDescription),
-                    needsAuthorDesc: Book.descriptionNeedsRefresh(authorDescription)
-                )
-                AppLogger.warning("performSmartFill: external result bookDesc=\(extResult.bookDescription != nil), authorDesc=\(extResult.authorDescription != nil)", category: "EditBook")
-                if let d = extResult.bookDescription { bookDescription = d; externalFilled = true }
-                if let d = extResult.authorDescription { authorDescription = d; externalFilled = true }
-            } else {
-                AppLogger.warning("performSmartFill: skipped external sources (platform book or both descriptions non-empty)", category: "EditBook")
-            }
-
-            // 构建结果
-            var statuses: [(name: String, status: LookupSourceStatus)] = []
-            statuses.append(("微信读书", book.wereadEnrichedDate != nil ? .found : .notFound))
-            if !Book.descriptionNeedsRefresh(authorDescription) {  // 截断的简介不进共享缓存，避免扩散到别的书
-                statuses.append(("本地书库", .found))
-            }
-            if externalFilled {
-                statuses.append(("外部数据源", .found))
-            }
-            fillResult = SmartFillResult(sourceStatuses: statuses)
-            return
         }
 
-        // 非微信读书的书：走 ISBN 外部源
-        var needsAuthorDesc = Book.descriptionNeedsRefresh(authorDescription)
-
-        // 优先从本地数据库查找同名作者的简介
-        if needsAuthorDesc && !author.isEmpty && author != "未知作者" {
-            autoFillMessage = "正在从本地书库查找作者简介..."
-            if let localDesc = findLocalAuthorDescription(for: author) {
-                authorDescription = localDesc
-                needsAuthorDesc = false
-            }
+        let draft = makeEnrichmentDraft()
+        let outcome = await EnrichmentBackgroundExecution().run(
+            named: mode == .aiOnly ? "AI智能补全" : "智能补全缺失信息"
+        ) {
+            await EnrichmentCoordinator.live().enrich(
+                draft,
+                mode: mode,
+                localAuthorDescription: findLocalAuthorDescription(for: author)
+            )
         }
+        let appliedOutcome = outcome.rebased(on: makeEnrichmentDraft())
+        applyEnrichedDraft(appliedOutcome.draft)
+        enrichmentCommitMarkers.record(appliedOutcome, mode: mode)
+        fillResult = appliedOutcome
+    }
 
-        let service = ISBNLookupService()
-        let result = await service.smartFill(
-            isbn: isbn,
+    private func makeEnrichmentDraft() -> BookDraft {
+        BookDraft(
             title: title,
             author: author,
-            needsPublisher: publisher.isEmpty,
-            needsPages: totalPages.isEmpty,
-            needsPrice: price.isEmpty,
-            needsPublishDate: publishDate == nil,
-            needsTranslator: translator.isEmpty,
-            needsAuthor: author.isEmpty || author == "未知作者",
-            needsBookDesc: Book.descriptionNeedsRefresh(bookDescription),
-            needsAuthorDesc: needsAuthorDesc
+            translator: translator,
+            isbn: isbn,
+            publisher: publisher,
+            publishDate: publishDate,
+            totalPages: Int(totalPages) ?? 0,
+            price: price,
+            bookDescription: bookDescription,
+            authorDescription: authorDescription,
+            aiIntroduction: bookIntroduction,
+            rating: rating > 0 ? rating : nil,
+            notes: notes
         )
+    }
 
-        // 填充到表单
-        if let p = result.publisher { publisher = p }
-        if let p = result.totalPages { totalPages = String(p) }
-        if let p = result.price { price = p }
-        if let d = result.publishDate { publishDate = parsePublishDateString(d) }
-        if let t = result.translator { translator = t }
-        if let a = result.author { author = a }
-        if let d = result.bookDescription { bookDescription = d }
-        if let d = result.authorDescription { authorDescription = d }
-
-        fillResult = result
+    private func applyEnrichedDraft(_ draft: BookDraft) {
+        title = draft.title
+        author = draft.author
+        translator = draft.translator ?? ""
+        publisher = draft.publisher ?? ""
+        publishDate = draft.publishDate
+        totalPages = draft.totalPages > 0 ? String(draft.totalPages) : ""
+        price = draft.price ?? ""
+        bookDescription = draft.bookDescription ?? ""
+        authorDescription = draft.authorDescription ?? ""
+        bookIntroduction = draft.aiIntroduction ?? ""
     }
 
     /// 从微信读书 API 补全书籍信息 + 阅读时长（使用统一 enrichBook 方法）
@@ -614,7 +639,7 @@ struct EditBookView: View {
                 price = "¥\(String(format: "%.2f", p))"
             }
             if publishDate == nil, let pt = result.publishTime, !pt.isEmpty {
-                publishDate = parsePublishDateString(pt)
+                publishDate = PublicationDateParser.parse(pt)
             }
             if let type = result.bookType, type == .audiobook, bookType != .audiobook {
                 bookType = .audiobook
@@ -689,17 +714,6 @@ struct EditBookView: View {
         AppLogger.warning("fillFromWeRead END, isWereadUserImported=\(book.isWereadUserImported)", category: "EditBook")
     }
 
-    /// 解析出版日期字符串为 Date
-    private func parsePublishDateString(_ dateString: String) -> Date? {
-        for format in ["yyyy-MM-dd", "yyyy-MM", "yyyy"] {
-            let formatter = DateFormatter()
-            formatter.dateFormat = format
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            if let date = formatter.date(from: dateString) { return date }
-        }
-        return nil
-    }
-
     /// 从本地数据库查找同名作者的最详细简介
     private func findLocalAuthorDescription(for authorName: String) -> String? {
         let descriptor = FetchDescriptor<Book>()
@@ -735,6 +749,13 @@ struct EditBookView: View {
         book.authorDescription = authorDescription.isEmpty ? nil : authorDescription
         book.notes = notes.isEmpty ? nil : notes
         book.bookshelf = selectedShelf
+        let completedAt = Date()
+        if enrichmentCommitMarkers.shouldRecordMetadataCompletion {
+            book.lastEnrichmentDate = completedAt
+        }
+        if enrichmentCommitMarkers.shouldRecordAICompletion {
+            book.lastAIEnrichmentDate = completedAt
+        }
         // 只在封面数据真正变化时写入，避免不必要的大 blob I/O；相册选的大图先压成缩略图
         let newCover = coverData.map { CoverImageProcessor.thumbnailData(from: $0) }
         if book.coverImageData != newCover {

@@ -262,14 +262,12 @@ struct WeReadImportView: View {
                 let container = modelContext.container
                 let provider = activeProvider
                 AppLogger.warning("[IMPORT] 导入完成，准备触发后台 sync enrichment", category: "WeReadSync")
-                let bgTask = Task.detached {
+                Task.detached {
                     AppLogger.warning("[IMPORT] Task.detached 开始，即将调用 sync", category: "WeReadSync")
                     let syncService = WeReadSyncService(provider: provider)
                     let syncResult = await syncService.sync(container: container)
                     AppLogger.warning("[IMPORT] Task.detached sync 结束: error=\(syncResult.error ?? "nil")", category: "WeReadSync")
-                    WeReadSyncService.clearSyncTask()
                 }
-                WeReadSyncService.registerSyncTask(bgTask)
             }
         } catch {
             errorMessage = "导入失败: \(error.localizedDescription)"

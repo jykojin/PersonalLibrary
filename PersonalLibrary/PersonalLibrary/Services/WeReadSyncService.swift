@@ -6,35 +6,101 @@ import SwiftData
 actor WeReadSyncService {
 
     private let weReadService: any WeReadDataSource
+    private let enrichmentCoordinator: any BookEnriching
+    private let runControl: RunControl
 
-    /// 全局同步锁：防止多个 sync 实例同时运行（自动同步 + 手动触发）
-    private static let syncLock = NSLock()
-    private static var _isSyncing = false
-    static var isSyncing: Bool {
-        syncLock.lock()
-        defer { syncLock.unlock() }
-        return _isSyncing
+    /// 生产环境共享一个控制器来协调自动/手工同步；测试可注入隔离实例。
+    final class RunControl: @unchecked Sendable {
+        static let shared = RunControl()
+
+        private struct ActiveSync {
+            let id: UUID
+            var task: Task<SyncResult, Never>?
+            var cancellationRequested = false
+        }
+
+        private let syncLock = NSLock()
+        private var activeSync: ActiveSync?
+        private let progressLock = NSLock()
+        private var progress: SyncProgress?
+
+        var isSyncing: Bool {
+            syncLock.lock()
+            defer { syncLock.unlock() }
+            return activeSync != nil
+        }
+
+        var currentProgress: SyncProgress? {
+            progressLock.lock()
+            defer { progressLock.unlock() }
+            return progress
+        }
+
+        func claimSync() -> UUID? {
+            syncLock.lock()
+            defer { syncLock.unlock() }
+            guard activeSync == nil else { return nil }
+            let id = UUID()
+            activeSync = ActiveSync(id: id)
+            return id
+        }
+
+        func registerCoreTask(_ task: Task<SyncResult, Never>, for id: UUID) {
+            var shouldCancel = false
+            syncLock.lock()
+            if var current = activeSync, current.id == id {
+                current.task = task
+                shouldCancel = current.cancellationRequested
+                activeSync = current
+            }
+            syncLock.unlock()
+            if shouldCancel { task.cancel() }
+        }
+
+        func finishSync(id: UUID) {
+            syncLock.lock()
+            if activeSync?.id == id {
+                activeSync = nil
+            }
+            syncLock.unlock()
+        }
+
+        func setProgress(_ newValue: SyncProgress?) {
+            progressLock.lock()
+            progress = newValue
+            progressLock.unlock()
+        }
+
+        func resetForTesting() {
+            var task: Task<SyncResult, Never>?
+            syncLock.lock()
+            task = activeSync?.task
+            activeSync = nil
+            syncLock.unlock()
+            task?.cancel()
+            setProgress(nil)
+        }
+
+        func cancelCurrentSync() {
+            var task: Task<SyncResult, Never>?
+            syncLock.lock()
+            if var current = activeSync {
+                current.cancellationRequested = true
+                task = current.task
+                activeSync = current
+            }
+            syncLock.unlock()
+            task?.cancel()
+        }
     }
-    private static func setSyncing(_ value: Bool) {
-        syncLock.lock()
-        _isSyncing = value
-        syncLock.unlock()
+
+    static var isSyncing: Bool {
+        RunControl.shared.isSyncing
     }
 
     /// 当前同步进度（供 UI 轮询读取，无论是否传了 onProgress 回调）
-    private static var _currentProgress: SyncProgress?
-    private static let progressLock = NSLock()
-
     static var currentProgress: SyncProgress? {
-        progressLock.lock()
-        defer { progressLock.unlock() }
-        return _currentProgress
-    }
-
-    private static func setProgress(_ progress: SyncProgress?) {
-        progressLock.lock()
-        _currentProgress = progress
-        progressLock.unlock()
+        RunControl.shared.currentProgress
     }
 
     /// 纯函数版本：是否放行本次同步。仅依赖显式入参，不读取全局状态。
@@ -45,39 +111,26 @@ actor WeReadSyncService {
 
     /// 仅供测试使用：重置同步锁状态
     static func resetSyncLockForTesting() {
-        setSyncing(false)
-        setProgress(nil)
-        clearSyncTask()
-    }
-
-    // MARK: - Global Sync Task (for external cancellation)
-
-    private static var _syncTask: Task<Void, Never>?
-    private static let taskLock = NSLock()
-
-    /// Register the current sync task so external code can cancel it
-    static func registerSyncTask(_ task: Task<Void, Never>) {
-        taskLock.lock()
-        _syncTask = task
-        taskLock.unlock()
-    }
-
-    /// Clear the registered sync task reference
-    static func clearSyncTask() {
-        taskLock.lock()
-        _syncTask = nil
-        taskLock.unlock()
+        RunControl.shared.resetForTesting()
     }
 
     /// Cancel the currently running sync task (if any)
     static func cancelCurrentSync() {
-        taskLock.lock()
-        _syncTask?.cancel()
-        taskLock.unlock()
+        RunControl.shared.cancelCurrentSync()
     }
 
-    init(provider: any WeReadDataSource = WeReadService()) {
+    init(
+        provider: any WeReadDataSource = WeReadService(),
+        enrichmentCoordinator: any BookEnriching = EnrichmentCoordinator.live(),
+        runControl: RunControl = .shared
+    ) {
         self.weReadService = provider
+        self.enrichmentCoordinator = enrichmentCoordinator
+        self.runControl = runControl
+    }
+
+    func cancelCurrentSync() {
+        runControl.cancelCurrentSync()
     }
 
     // MARK: - Sync Settings (UserDefaults)
@@ -149,6 +202,7 @@ actor WeReadSyncService {
         var booksArchived: Int = 0
         var booksEnriched: Int = 0
         var totalRemote: Int = 0
+        var tokenUsage: AITokenUsage = .accumulator
         var error: String?
 
         var hasChanges: Bool {
@@ -157,13 +211,14 @@ actor WeReadSyncService {
 
         var summary: String {
             if let error { return error }
-            if !hasChanges { return "已是最新，无需更新" }
             var parts: [String] = []
+            if !hasChanges { parts.append("已是最新，无需更新") }
             if newBooksImported > 0 { parts.append("新增 \(newBooksImported) 本") }
             if booksEnriched > 0 { parts.append("补全 \(booksEnriched) 本") }
             if progressUpdated > 0 { parts.append("进度更新 \(progressUpdated) 本") }
             if statusUpdated > 0 { parts.append("状态更新 \(statusUpdated) 本") }
             if booksArchived > 0 { parts.append("移除 \(booksArchived) 本") }
+            if let total = tokenUsage.total { parts.append("Token \(total)") }
             return parts.joined(separator: "，")
         }
     }
@@ -176,12 +231,20 @@ actor WeReadSyncService {
         let total: Int
         let phase: String  // "检查登录" / "拉取书架" / "处理书籍" / "下载封面" / "补全信息" / "拉取划线"
         let detail: String?  // 当前正在处理的书名
+        let tokenUsage: AITokenUsage
 
-        init(current: Int, total: Int, phase: String, detail: String? = nil) {
+        init(
+            current: Int,
+            total: Int,
+            phase: String,
+            detail: String? = nil,
+            tokenUsage: AITokenUsage = .accumulator
+        ) {
             self.current = current
             self.total = total
             self.phase = phase
             self.detail = detail
+            self.tokenUsage = tokenUsage
         }
     }
 
@@ -193,18 +256,49 @@ actor WeReadSyncService {
 
     /// 执行增量同步（container 版本，内部创建 background context）
     func sync(container: ModelContainer, skipLockCheck: Bool = false, triggeredBy: String = SyncHistoryRecord.Trigger.user, onProgress: (@Sendable (SyncProgress) -> Void)? = nil) async -> SyncResult {
-        var result = SyncResult()
-
-        // 0. 防止重复触发：如果已有同步在运行，直接返回
-        if !skipLockCheck {
-            guard Self.shouldProceed(isSyncing: Self.isSyncing, skipLockCheck: skipLockCheck) else {
-                AppLogger.warning("[SYNC-LOCK] 被锁拦住，当前已有 sync 在运行", category: "WeReadSync")
-                result.error = "同步正在进行中，请稍候"
-                return result
-            }
-            Self.setSyncing(true)
-            AppLogger.warning("[SYNC-LOCK] 获得锁，开始同步", category: "WeReadSync")
+        guard !skipLockCheck else {
+            return await performSync(
+                container: container,
+                triggeredBy: triggeredBy,
+                onProgress: onProgress
+            )
         }
+
+        guard let runID = runControl.claimSync() else {
+            AppLogger.warning("[SYNC-LOCK] 被锁拦住，当前已有 sync 在运行", category: "WeReadSync")
+            var result = SyncResult()
+            result.error = "同步正在进行中，请稍候"
+            return result
+        }
+
+        AppLogger.warning("[SYNC-LOCK] 获得锁，开始同步", category: "WeReadSync")
+        let coreTask = Task {
+            await self.performSync(
+                container: container,
+                triggeredBy: triggeredBy,
+                onProgress: onProgress
+            )
+        }
+        runControl.registerCoreTask(coreTask, for: runID)
+
+        let result = await withTaskCancellationHandler {
+            await coreTask.value
+        } onCancel: {
+            coreTask.cancel()
+        }
+
+        runControl.setProgress(nil)
+        runControl.finishSync(id: runID)
+        AppLogger.warning("[SYNC-LOCK] 释放锁，同步结束", category: "WeReadSync")
+        return result
+    }
+
+    private func performSync(
+        container: ModelContainer,
+        triggeredBy: String,
+        onProgress: (@Sendable (SyncProgress) -> Void)?
+    ) async -> SyncResult {
+        var result = SyncResult()
 
         let eventType = triggeredBy == SyncHistoryRecord.Trigger.system
             ? SyncHistoryRecord.EventType.autoSync
@@ -212,11 +306,6 @@ actor WeReadSyncService {
         let syncStartTime = Date.now
 
         defer {
-            if !skipLockCheck {
-                Self.setProgress(nil)
-                Self.setSyncing(false)
-                AppLogger.warning("[SYNC-LOCK] 释放锁，同步结束", category: "WeReadSync")
-            }
             let historyContext = ModelContext(container)
             let record = SyncHistoryRecord(eventType: eventType, triggeredBy: triggeredBy, startTime: syncStartTime)
             record.endTime = .now
@@ -238,7 +327,7 @@ actor WeReadSyncService {
         // 1. 检查连接状态
         let p1 = SyncProgress(current: 0, total: 0, phase: "检查登录")
         onProgress?(p1)
-        Self.setProgress(p1)
+        runControl.setProgress(p1)
         guard await weReadService.isConnected() else {
             result.error = "未连接微信读书"
             return result
@@ -253,10 +342,25 @@ actor WeReadSyncService {
             }
         }
 
+        // Capture remote identities already known locally before the shelf request.
+        // If one is deleted while that request is in flight, do not resurrect it as a new import.
+        let preflightWeReadBookIDs: Set<String>
+        do {
+            let descriptor = FetchDescriptor<Book>(
+                predicate: #Predicate { $0.wereadBookId != nil }
+            )
+            preflightWeReadBookIDs = Set(
+                try modelContext.fetch(descriptor).compactMap(\.wereadBookId)
+            )
+        } catch {
+            result.error = "读取本地数据失败: \(error.localizedDescription)"
+            return result
+        }
+
         // 3. 拉取微信读书书架
         let p3 = SyncProgress(current: 0, total: 0, phase: "拉取书架")
         onProgress?(p3)
-        Self.setProgress(p3)
+        runControl.setProgress(p3)
         let remoteBooks: [WeReadImportItem]
         do {
             remoteBooks = try await weReadService.fetchAllBooks()
@@ -310,14 +414,18 @@ actor WeReadSyncService {
         let totalRemoteCount = remoteBooks.count
         let p6 = SyncProgress(current: 0, total: totalRemoteCount, phase: "处理书籍")
         onProgress?(p6)
-        Self.setProgress(p6)
+        runControl.setProgress(p6)
 
         // 分离已存在和需要匹配的书
         var existingItems: [(Book, WeReadImportItem)] = []
         var unmatchedItems: [WeReadImportItem] = []
         for item in remoteBooks {
             if let existingBook = localBookMap[item.id] {
+                guard !existingBook.isArchived else { continue }
                 existingItems.append((existingBook, item))
+            } else if preflightWeReadBookIDs.contains(item.id) {
+                // The user or CloudKit deleted this known record while the shelf request waited.
+                continue
             } else {
                 unmatchedItems.append(item)
             }
@@ -386,7 +494,7 @@ actor WeReadSyncService {
 
         let p6a = SyncProgress(current: existingItems.count, total: totalRemoteCount, phase: "处理书籍")
         onProgress?(p6a)
-        Self.setProgress(p6a)
+        runControl.setProgress(p6a)
 
         // 6b. 处理未匹配的书（需要逐本查数据库，但数量通常很少）
         for (index, item) in unmatchedItems.enumerated() {
@@ -394,7 +502,7 @@ actor WeReadSyncService {
             if index % 20 == 0 {
                 let p6b = SyncProgress(current: existingItems.count + index, total: totalRemoteCount, phase: "处理书籍")
                 onProgress?(p6b)
-                Self.setProgress(p6b)
+                runControl.setProgress(p6b)
             }
             let matched = findExistingBook(item: item, modelContext: modelContext)
             if let existingBook = matched {
@@ -459,7 +567,7 @@ actor WeReadSyncService {
                 guard !Task.isCancelled else { break }
                 let p9a = SyncProgress(current: index + 1, total: booksNeedCover.count, phase: "下载封面", detail: book.title)
                 onProgress?(p9a)
-                Self.setProgress(p9a)
+                runControl.setProgress(p9a)
                 guard let urlStr = book.coverImageURL, !urlStr.isEmpty else { continue }
                 if index > 0 && index % 3 == 0 {
                     try? await Task.sleep(for: .seconds(1))
@@ -490,11 +598,16 @@ actor WeReadSyncService {
                 // 无变化的书直接排除，既不发请求也不计入进度，避免发烫和无意义遍历。
                 let booksToProcess = allWeReadBooks.filter { book in
                     guard let bookId = book.wereadBookId else { return false }
-                    if book.wereadEnrichedDate == nil { return true }
-                    if let map = notebookCountMap {
-                        return (map[bookId] ?? 0) != book.wereadBookmarkCount
-                    }
-                    return false
+                    let notebookChanged = notebookCountMap.map {
+                        ($0[bookId] ?? 0) != book.wereadBookmarkCount
+                    } ?? false
+                    return WeReadEnrichmentPolicy.shouldProcess(
+                        isArchived: book.isArchived,
+                        hasCompletedWeReadEnrichment: book.wereadEnrichedDate != nil,
+                        hasCompletedAIEnrichment: book.lastAIEnrichmentDate != nil,
+                        aiIntroductionMissing: BookDraft(book: book).missingFields.contains(.aiIntroduction),
+                        notebookChanged: notebookChanged
+                    )
                 }
 
                 if !booksToProcess.isEmpty {
@@ -517,23 +630,35 @@ actor WeReadSyncService {
                     // （bgContext 自身缓存可能过期，单独的 read-only context 保证 fetch 直接读 store）
                     let checkContext = ModelContext(container)
                     // 只在"做过网络请求的书"之间限速，避免无变化书拖慢整体节奏
-                    var madeNetworkCall = false
-
+                    var madeWeReadNetworkCall = false
                     for (index, book) in booksToProcess.enumerated() {
                         guard !Task.isCancelled else { break }
-                        let p9b = SyncProgress(current: index + 1, total: booksToProcess.count, phase: "补全同步", detail: book.title)
+                        let persistentID = book.persistentModelID
+                        var shouldStopAfterCurrentBook = false
+                        let p9b = SyncProgress(
+                            current: index + 1,
+                            total: booksToProcess.count,
+                            phase: "补全同步",
+                            detail: book.title,
+                            tokenUsage: result.tokenUsage
+                        )
                         onProgress?(p9b)
-                        Self.setProgress(p9b)
+                        runControl.setProgress(p9b)
                         guard let bookId = book.wereadBookId else { continue }
 
-                        // 是否需要补全（并发保护：用独立 context 检查是否已被智能补全补过）
+                        // 并发保护：用独立 context 读取最新归档和补全状态。
+                        // 归档是隐私边界；读取失败时也不继续向外部服务发送图书信息。
                         var needsEnrich = (book.wereadEnrichedDate == nil)
-                        if needsEnrich,
-                           let freshBook = try? checkContext.fetch(FetchDescriptor<Book>(
-                               predicate: #Predicate { $0.wereadBookId == bookId }
-                           )).first, freshBook.wereadEnrichedDate != nil {
+                        guard let freshBook = try? checkContext.fetch(FetchDescriptor<Book>(
+                            predicate: #Predicate { $0.wereadBookId == bookId }
+                        )).first, !freshBook.isArchived else {
+                            continue
+                        }
+                        if needsEnrich, freshBook.wereadEnrichedDate != nil {
                             needsEnrich = false
                         }
+                        let needsAIIntroduction = book.lastAIEnrichmentDate == nil
+                            && BookDraft(book: book).missingFields.contains(.aiIntroduction)
 
                         // 是否需要拉划线：Skill 模式按划线数变化；Web 模式仅首次补全时拉（保持现状）
                         let remoteNoteCount = notebookCountMap?[bookId] ?? 0
@@ -545,14 +670,20 @@ actor WeReadSyncService {
                         }
 
                         // 都不需要（并发场景下可能发生）→ 跳过，不限速
-                        if !needsEnrich && !needsBookmarkFetch { continue }
+                        if !needsEnrich && !needsBookmarkFetch && !needsAIIntroduction { continue }
 
-                        // 限速：在两本"做网络请求的书"之间间隔 2 秒（避免密集网络请求导致手机发烫）
-                        if madeNetworkCall {
+                        // 限速：只在微信读书补全/划线请求之间间隔 2 秒；纯 AI 补全不另外等待。
+                        if WeReadEnrichmentPolicy.shouldDelayBeforeBook(
+                            hasPreviousWeReadNetworkCall: madeWeReadNetworkCall,
+                            needsWeReadEnrichment: needsEnrich,
+                            needsBookmarkFetch: needsBookmarkFetch
+                        ) {
                             try? await Task.sleep(for: .seconds(2))
                             guard !Task.isCancelled else { break }
                         }
-                        madeNetworkCall = true
+                        if needsEnrich || needsBookmarkFetch {
+                            madeWeReadNetworkCall = true
+                        }
 
                         // (1) 补全书籍信息（仅未补全的书）
                         var enrichSucceeded = false
@@ -564,84 +695,165 @@ actor WeReadSyncService {
                                 } else {
                                     enrichResult = try await weReadService.enrichBook(bookId: bookId)
                                 }
-                                enrichResult.applyToBook(book)
+                                guard try Self.commitWeReadMetadata(
+                                    enrichResult,
+                                    to: persistentID,
+                                    in: container
+                                ) else { continue }
                                 enrichSucceeded = true
                             } catch {
                                 AppLogger.warning("微信读书补全失败 (\(book.title)): \(error)", category: "WeReadSync")
                             }
 
-                            // (1b) CB_ 用户导入书：WeRead 补全后若简介仍为空，查询外部源（豆瓣/Goodreads）
-                            if bookId.hasPrefix("CB_") {
-                                let needsBookDesc = (book.bookDescription ?? "").isEmpty
-                                let needsAuthorDesc = (book.authorDescription ?? "").isEmpty
-                                if needsBookDesc || needsAuthorDesc {
-                                    let lookupService = ISBNLookupService()
-                                    let extResult = await lookupService.smartFill(
-                                        isbn: book.isbn ?? "",
-                                        title: book.title,
-                                        author: book.author,
-                                        needsTitle: false,
-                                        needsPublisher: false,
-                                        needsPages: false,
-                                        needsPrice: false,
-                                        needsPublishDate: false,
-                                        needsTranslator: false,
-                                        needsAuthor: false,
-                                        needsBookDesc: needsBookDesc,
-                                        needsAuthorDesc: needsAuthorDesc
-                                    )
-                                    if let desc = extResult.bookDescription {
-                                        book.bookDescription = desc
-                                    }
-                                    if let desc = extResult.authorDescription {
-                                        book.authorDescription = desc
-                                    }
-                                }
+                        }
+
+                        // 微信补全期间可能被用户或 CloudKit 归档；AI 调用前必须读取最新快照。
+                        guard let aiSnapshot = EnrichmentBookPersistence.activeSnapshot(
+                            for: persistentID,
+                            in: container
+                        ) else { continue }
+
+                        // (1b) 统一补全：平台书只生成 AI简介；用户导入书走完整来源链与 AI 兜底。
+                        let isUserImported = aiSnapshot.isWereadUserImported || bookId.hasPrefix("CB_")
+                        if let mode = WeReadEnrichmentPolicy.mode(
+                            isUserImported: isUserImported,
+                            needsWeReadEnrichment: needsEnrich,
+                            aiIntroductionMissing: aiSnapshot.draft.missingFields.contains(.aiIntroduction)
+                        ) {
+                            let outcome = await enrichmentCoordinator.enrich(
+                                aiSnapshot.draft,
+                                mode: mode,
+                                localAuthorDescription: nil
+                            )
+                            if outcome.aiStatus != .notAttempted {
+                                result.tokenUsage.add(outcome.tokenUsage)
                             }
+                            let committedOutcome = try? EnrichmentBookPersistence.commitWeRead(
+                                outcome,
+                                to: persistentID,
+                                in: container
+                            )
+                            if committedOutcome?.changedFields.isEmpty == false && !enrichSucceeded {
+                                result.booksEnriched += 1
+                            }
+                            if AIEnrichmentAttemptPolicy.shouldStopBatch(for: outcome.aiStatus) {
+                                result.error = "AI 智能补全已中止：\(outcome.aiStatus.displayText)"
+                                shouldStopAfterCurrentBook = true
+                            }
+                            let tokenProgress = SyncProgress(
+                                current: index + 1,
+                                total: booksToProcess.count,
+                                phase: "补全同步",
+                                detail: book.title,
+                                tokenUsage: result.tokenUsage
+                            )
+                            onProgress?(tokenProgress)
+                            runControl.setProgress(tokenProgress)
                         }
 
                         // (2) 拉取划线（仅当划线数有变化 / 首次补全）
                         guard !Task.isCancelled else { break }
+                        // AI 调研可能持续较久，划线请求前再次执行归档隐私闸门。
+                        var fetchedBookmarks: [WeReadBookmark]?
+                        var bookmarkFetchSucceeded = false
                         if needsBookmarkFetch {
+                            guard EnrichmentBookPersistence.activeSnapshot(
+                                for: persistentID,
+                                in: container
+                            ) != nil else {
+                                if shouldStopAfterCurrentBook { break }
+                                continue
+                            }
                             do {
-                                let bookmarks = try await weReadService.fetchBookmarks(bookId: bookId)
-                                if !bookmarks.isEmpty {
-                                    let formatted = WeReadSyncService.formatBookmarksStatic(bookmarks)
-                                    if book.notes != formatted {
-                                        book.notes = formatted
-                                    }
-                                }
-                                // 成功拉取后记录划线数（即使为空也记录，避免下次重复拉取）；仅 Skill 模式有 map
-                                if notebookCountMap != nil {
-                                    book.wereadBookmarkCount = remoteNoteCount
-                                }
+                                fetchedBookmarks = try await weReadService.fetchBookmarks(bookId: bookId)
+                                bookmarkFetchSucceeded = true
                             } catch {
                                 AppLogger.warning("拉取划线失败 (\(book.title)): \(error)", category: "WeReadSync")
                                 // 失败不更新 count，下次 sync 重试
                             }
                         }
 
+                        // 所有异步请求完成后重新读取，归档/删除时不写回任何在途结果。
+                        let finalContext = ModelContext(container)
+                        finalContext.autosaveEnabled = false
+                        guard let finalBook = Self.activeBook(
+                            for: persistentID,
+                            in: finalContext
+                        ) else {
+                            if shouldStopAfterCurrentBook { break }
+                            continue
+                        }
+                        if bookmarkFetchSucceeded {
+                            if let fetchedBookmarks, !fetchedBookmarks.isEmpty {
+                                let formatted = WeReadSyncService.formatBookmarksStatic(fetchedBookmarks)
+                                if finalBook.notes != formatted {
+                                    finalBook.notes = formatted
+                                }
+                            }
+                            if notebookCountMap != nil {
+                                finalBook.wereadBookmarkCount = remoteNoteCount
+                            }
+                        }
+
                         // (3) 仅当补全成功时标记已完成（失败的书下次 sync 会重试）
                         if enrichSucceeded {
-                            book.wereadEnrichedDate = Date()
+                            finalBook.wereadEnrichedDate = Date()
                             result.booksEnriched += 1
                         }
 
-                        // 每 10 本保存一次，减少 UI 刷新频率
-                        if (index + 1) % 10 == 0 {
-                            try? bgContext.save()
-                        }
+                        try? finalContext.save()
+                        if shouldStopAfterCurrentBook { break }
                     }
-                    // 最终保存剩余
-                    try? bgContext.save()
                 }
             }
         }
 
         // 12. 记录同步时间
-        Self.lastSyncDate = Date()
+        if result.error == nil {
+            Self.lastSyncDate = Date()
+        }
 
         return result
+    }
+
+    private static func isArchived(bookId: String, in container: ModelContainer) -> Bool {
+        let context = ModelContext(container)
+        var descriptor = FetchDescriptor<Book>(
+            predicate: #Predicate { $0.wereadBookId == bookId }
+        )
+        descriptor.fetchLimit = 1
+        guard let book = try? context.fetch(descriptor).first else {
+            return true
+        }
+        return book.isArchived
+    }
+
+    private static func commitWeReadMetadata(
+        _ result: WeReadEnrichResult,
+        to id: PersistentIdentifier,
+        in container: ModelContainer
+    ) throws -> Bool {
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        guard let book = activeBook(for: id, in: context) else { return false }
+        result.applyToBook(book)
+        try context.save()
+        return true
+    }
+
+    private static func activeBook(
+        for id: PersistentIdentifier,
+        in context: ModelContext
+    ) -> Book? {
+        var descriptor = FetchDescriptor<Book>(
+            predicate: #Predicate { $0.persistentModelID == id }
+        )
+        descriptor.fetchLimit = 1
+        guard let book = try? context.fetch(descriptor).first,
+              !book.isArchived else {
+            return nil
+        }
+        return book
     }
 
     // MARK: - Update Existing Book
@@ -787,7 +999,9 @@ actor WeReadSyncService {
                 predicate: #Predicate { $0.isbn == isbnStr }
             )
             if let isbnMatches = try? modelContext.fetch(isbnDescriptor),
-               let match = isbnMatches.first(where: { $0.bookType == .ebook || $0.bookType == .audiobook }) {
+               let match = isbnMatches.first(where: {
+                   !$0.isArchived && ($0.bookType == .ebook || $0.bookType == .audiobook)
+               }) {
                 return match
             }
         }
@@ -799,7 +1013,9 @@ actor WeReadSyncService {
             predicate: #Predicate { $0.title == title && $0.author == author }
         )
         if let titleMatches = try? modelContext.fetch(titleDescriptor) {
-            return titleMatches.first(where: { $0.bookType == .ebook || $0.bookType == .audiobook })
+            return titleMatches.first(where: {
+                !$0.isArchived && ($0.bookType == .ebook || $0.bookType == .audiobook)
+            })
         }
         return nil
     }

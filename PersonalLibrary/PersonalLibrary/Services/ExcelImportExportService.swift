@@ -4,7 +4,7 @@ import SwiftData
 
 /// Excel 导入导出服务
 /// 支持导入/导出格式：序号, 书名, 作者, 译者, 出版社, 出版年份, ISBN, 定价, 总页数,
-/// 加入时间, 阅读状态, 读完时间, 所在书架, 标签, 图书简介, 作者简介, 备注, 豆瓣链接, ..., AI介绍
+/// 加入时间, 阅读状态, 读完时间, 所在书架, 标签, 图书简介, 作者简介, 备注, 豆瓣链接, ..., AI简介
 actor ExcelImportExportService {
 
     // MARK: - Column Mapping
@@ -18,11 +18,15 @@ actor ExcelImportExportService {
         "微信读书ID", "微信读书进度", "微信读书阅读时长",
         "开始阅读日期", "状态变更时间",
         "用户导入书", "开始日期为估算",
-        "AI介绍"
+        "AI简介"
     ]
 
-    /// 「AI介绍」列的旧表头（0.64 之前叫「书籍介绍」），导入时一并识别，避免旧导出文件丢这一列
-    private static let legacyIntroHeader = "书籍介绍"
+    /// 历史导出曾使用「AI介绍」，更早使用「书籍介绍」；导入时继续兼容。
+    private static let legacyIntroHeaders = ["AI介绍", "书籍介绍"]
+
+    private static func introductionColumn(in columnMap: [String: Int]) -> Int? {
+        columnMap["AI简介"] ?? legacyIntroHeaders.lazy.compactMap { columnMap[$0] }.first
+    }
 
     // MARK: - Import
 
@@ -123,9 +127,9 @@ actor ExcelImportExportService {
         return ImportResult(successCount: successCount, failedCount: failedCount, errors: errors)
     }
 
-    // MARK: - AI介绍 回填（只读该列，不新增书籍）
+    // MARK: - AI简介 回填（只读该列，不新增书籍）
 
-    /// 从 XLSX 文件里只提取「AI介绍」列 + 匹配键，供 `BookIntroductionSeeder.backfill` 回填已有书籍。
+    /// 从 XLSX 文件里只提取「AI简介」列 + 匹配键，供 `BookIntroductionSeeder.backfill` 回填已有书籍。
     func parseIntroductionEntries(from fileURL: URL) throws -> [BookIntroductionSeeder.SeedEntry] {
         let didStartAccess = fileURL.startAccessingSecurityScopedResource()
         defer {
@@ -141,7 +145,7 @@ actor ExcelImportExportService {
     }
 
     /// 同上，直接吃 XLSX 数据。
-    /// 只读 书名/作者/ISBN/微信读书ID/AI介绍 五列；介绍为空或一个匹配键都没有的行直接跳过。
+    /// 只读 书名/作者/ISBN/微信读书ID/AI简介 五列；介绍为空或一个匹配键都没有的行直接跳过。
     func parseIntroductionEntries(data: Data) throws -> [BookIntroductionSeeder.SeedEntry] {
         guard data.count <= 10_000_000 else {
             throw ImportError.invalidFormat
@@ -165,7 +169,7 @@ actor ExcelImportExportService {
         }
 
         let columnMap = buildColumnMap(headerRow: rows[0], sharedStrings: sharedStrings)
-        guard let introCol = columnMap["AI介绍"] ?? columnMap[Self.legacyIntroHeader] else {
+        guard let introCol = Self.introductionColumn(in: columnMap) else {
             throw ImportError.noData  // 文件里没有这一列，等于没数据可回填
         }
 
@@ -330,7 +334,7 @@ actor ExcelImportExportService {
         let isbn = columnMap["ISBN"].flatMap { getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }
         let priceStr = columnMap["定价"].flatMap { getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }
         let pagesStr = columnMap["总页数"].flatMap { getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }
-        let introCol = columnMap["AI介绍"] ?? columnMap[Self.legacyIntroHeader]
+        let introCol = Self.introductionColumn(in: columnMap)
         let bookIntro = introCol.flatMap { getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }
         let bookDesc = columnMap["图书简介"].flatMap { getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }
         let authorDesc = columnMap["作者简介"].flatMap { getCellValue(row: row, columnIndex: $0, sharedStrings: sharedStrings) }

@@ -489,7 +489,7 @@ struct ExcelExportTests {
         #expect(r.title == "标题 含Tab")
     }
 
-    @Test("AI介绍往返保留")
+    @Test("AI简介往返保留")
     @MainActor
     func bookIntroductionRoundTrip() async throws {
         let book = Book(title: "欧洲史话", author: "枫落白衣", isbn: "9787000000002")
@@ -566,8 +566,8 @@ struct ExcelExportTests {
     @Test("columnHeaders 包含32列")
     func columnHeadersCount() {
         #expect(ExcelImportExportService.columnHeaders.count == 32)
-        // 第 32 列（索引 31）= AF 列，与外部整理 AI介绍 时用的列序一致
-        #expect(ExcelImportExportService.columnHeaders[31] == "AI介绍")
+        // 第 32 列（索引 31）= AF 列，与外部整理 AI简介 时用的列序一致
+        #expect(ExcelImportExportService.columnHeaders[31] == "AI简介")
         #expect(ExcelImportExportService.columnHeaders[0] == "序号")
         #expect(ExcelImportExportService.columnHeaders[1] == "书名")
         #expect(ExcelImportExportService.columnHeaders[17] == "豆瓣链接")
@@ -1445,7 +1445,7 @@ struct WeReadSyncLogicTests {
         // 两者都是进程级状态，会影响并行运行的其它 suite。
         let mock = MockWeReadDataSource()
         await mock.setConnected(false)
-        let syncService = WeReadSyncService(provider: mock)
+        let syncService = WeReadSyncService(provider: mock, enrichmentCoordinator: NoOpBookEnricher())
         let result = await syncService.sync(container: container, skipLockCheck: true)
 
         #expect(result.error == "未连接微信读书")
@@ -1623,7 +1623,7 @@ struct WeReadSyncUpdateStrategyTests {
                            bookType: .ebook)
         ])
 
-        let syncService = WeReadSyncService(provider: mock)
+        let syncService = WeReadSyncService(provider: mock, enrichmentCoordinator: NoOpBookEnricher())
         _ = await syncService.sync(container: container, skipLockCheck: true)
 
         let verifyContext = ModelContext(container)
@@ -1654,7 +1654,7 @@ struct WeReadSyncUpdateStrategyTests {
                            bookType: .ebook)
         ])
 
-        let syncService = WeReadSyncService(provider: mock)
+        let syncService = WeReadSyncService(provider: mock, enrichmentCoordinator: NoOpBookEnricher())
         _ = await syncService.sync(container: container, skipLockCheck: true)
 
         let verifyContext = ModelContext(container)
@@ -1686,7 +1686,7 @@ struct WeReadSyncUpdateStrategyTests {
                            bookType: .ebook)
         ])
 
-        let syncService = WeReadSyncService(provider: mock)
+        let syncService = WeReadSyncService(provider: mock, enrichmentCoordinator: NoOpBookEnricher())
         _ = await syncService.sync(container: container, skipLockCheck: true)
 
         let verifyContext = ModelContext(container)
@@ -1706,6 +1706,7 @@ actor MockWeReadDataSource: WeReadDataSource {
     var notebookCounts: [String: Int]?  // nil = 不支持 notebooks（Web 模式行为）
     var enrichCallCount = 0
     var bookmarkCallCount = 0
+    var enrichHook: (@Sendable (String) async -> Void)?
     /// 可配置连接状态：让"未连接"场景无需删共享 Keychain 即可测试
     var connected = true
 
@@ -1713,6 +1714,7 @@ actor MockWeReadDataSource: WeReadDataSource {
     func setEnrichResults(_ results: [String: WeReadEnrichResult]) { enrichResults = results }
     func setBookmarks(_ bm: [String: [WeReadBookmark]]) { bookmarkResults = bm }
     func setNotebookCounts(_ counts: [String: Int]?) { notebookCounts = counts }
+    func setEnrichHook(_ hook: @escaping @Sendable (String) async -> Void) { enrichHook = hook }
     func setConnected(_ value: Bool) { connected = value }
 
     func isConnected() -> Bool { connected }
@@ -1724,6 +1726,7 @@ actor MockWeReadDataSource: WeReadDataSource {
 
     func enrichBook(bookId: String) async throws -> WeReadEnrichResult {
         enrichCallCount += 1
+        await enrichHook?(bookId)
         return enrichResults[bookId] ?? WeReadEnrichResult()
     }
 
@@ -1737,6 +1740,21 @@ actor MockWeReadDataSource: WeReadDataSource {
     }
 
     func fetchNotebookCounts() async throws -> [String: Int]? { notebookCounts }
+}
+
+private struct NoOpBookEnricher: BookEnriching {
+    func enrich(
+        _ draft: BookDraft,
+        mode: EnrichmentMode,
+        localAuthorDescription: String?
+    ) async -> EnrichmentOutcome {
+        EnrichmentOutcome(
+            originalDraft: draft,
+            draft: draft,
+            aiStatus: .notAttempted,
+            tokenUsage: .accumulator
+        )
+    }
 }
 
 @Suite("WeRead Sync Enrichment Atomicity Tests", .serialized)
@@ -1782,7 +1800,7 @@ struct WeReadSyncEnrichmentTests {
         ])
 
         // 执行同步
-        let syncService = WeReadSyncService(provider: mock)
+        let syncService = WeReadSyncService(provider: mock, enrichmentCoordinator: NoOpBookEnricher())
         let result = await syncService.sync(container: container, skipLockCheck: true)
 
         #expect(result.error == nil)
@@ -1828,7 +1846,7 @@ struct WeReadSyncEnrichmentTests {
             WeReadImportItem(id: "wr_done", title: "Already Done", author: "Author", bookType: .ebook)
         ])
 
-        let syncService = WeReadSyncService(provider: mock)
+        let syncService = WeReadSyncService(provider: mock, enrichmentCoordinator: NoOpBookEnricher())
         _ = await syncService.sync(container: container, skipLockCheck: true)
 
         let enrichCount = await mock.enrichCallCount
@@ -1863,7 +1881,7 @@ struct WeReadSyncEnrichmentTests {
         await mock.setEnrichResults(["wr_test_start": enrichResult])
         await mock.setBookmarks(["wr_test_start": []])
 
-        let syncService = WeReadSyncService(provider: mock)
+        let syncService = WeReadSyncService(provider: mock, enrichmentCoordinator: NoOpBookEnricher())
         _ = await syncService.sync(container: container, skipLockCheck: true)
 
         // 验证 startedReadingDate 被设置
@@ -1899,7 +1917,7 @@ struct WeReadSyncEnrichmentTests {
         await mock.setEnrichResults(["wr_added": enrichResult])
         await mock.setBookmarks(["wr_added": []])
 
-        let syncService = WeReadSyncService(provider: mock)
+        let syncService = WeReadSyncService(provider: mock, enrichmentCoordinator: NoOpBookEnricher())
         _ = await syncService.sync(container: container, skipLockCheck: true)
 
         let verifyContext = ModelContext(container)
@@ -1942,7 +1960,7 @@ struct CBExternalLookupTests {
         await mock.setEnrichResults(["CB_user_book_123": enrichResult])
         await mock.setBookmarks(["CB_user_book_123": []])
 
-        let syncService = WeReadSyncService(provider: mock)
+        let syncService = WeReadSyncService(provider: mock, enrichmentCoordinator: NoOpBookEnricher())
         _ = await syncService.sync(container: container, skipLockCheck: true)
 
         // 验证 enrichment 完成（wereadEnrichedDate 被设置）
@@ -1979,7 +1997,7 @@ struct CBExternalLookupTests {
         await mock.setEnrichResults(["wr_platform_123": enrichResult])
         await mock.setBookmarks(["wr_platform_123": []])
 
-        let syncService = WeReadSyncService(provider: mock)
+        let syncService = WeReadSyncService(provider: mock, enrichmentCoordinator: NoOpBookEnricher())
         _ = await syncService.sync(container: container, skipLockCheck: true)
 
         let verifyContext = ModelContext(container)
@@ -2013,7 +2031,7 @@ struct CBExternalLookupTests {
         await mock.setEnrichResults(["CB_has_desc": WeReadEnrichResult()])
         await mock.setBookmarks(["CB_has_desc": []])
 
-        let syncService = WeReadSyncService(provider: mock)
+        let syncService = WeReadSyncService(provider: mock, enrichmentCoordinator: NoOpBookEnricher())
         _ = await syncService.sync(container: container, skipLockCheck: true)
 
         let verifyContext = ModelContext(container)
@@ -2542,7 +2560,6 @@ struct SecurityTests {
 
     @Test("DoubanDescriptionFetcher 清理HTML标签")
     func htmlTagStripping() {
-        let fetcher = DoubanDescriptionFetcher()
         // 使用公开方法间接测试 — 通过构造含有 HTML 的模拟数据
         // 直接测试 cleanHTML 逻辑
         let html = "<p>第一段</p><p>第二段</p><br/><b>加粗</b>"
@@ -2603,147 +2620,6 @@ struct SecurityTests {
         #expect(LookupSourceStatus.error("a") != LookupSourceStatus.error("b"))
     }
 
-    @Test("SmartFillResult hasAnyFill 无数据时为 false")
-    func smartFillResultEmpty() {
-        let result = SmartFillResult(sourceStatuses: [])
-        #expect(result.hasAnyFill == false)
-    }
-
-    @Test("SmartFillResult hasAnyFill 有出版社时为 true")
-    func smartFillResultWithPublisher() {
-        var result = SmartFillResult(sourceStatuses: [])
-        result.publisher = "人民出版社"
-        #expect(result.hasAnyFill == true)
-    }
-
-    @Test("SmartFillResult hasAnyFill 有页数时为 true")
-    func smartFillResultWithPages() {
-        var result = SmartFillResult(sourceStatuses: [])
-        result.totalPages = 300
-        #expect(result.hasAnyFill == true)
-    }
-
-    @Test("SmartFillResult hasAnyFill 有作者时为 true")
-    func smartFillResultWithAuthor() {
-        var result = SmartFillResult(sourceStatuses: [])
-        result.author = "鲁迅"
-        #expect(result.hasAnyFill == true)
-    }
-
-    @Test("SmartFillResult hasAnyFill 有图书简介时为 true")
-    func smartFillResultWithBookDesc() {
-        var result = SmartFillResult(sourceStatuses: [])
-        result.bookDescription = "这是一本好书"
-        #expect(result.hasAnyFill == true)
-    }
-
-    @Test("SmartFillResult hasAnyFill 有作者简介时为 true")
-    func smartFillResultWithAuthorDesc() {
-        var result = SmartFillResult(sourceStatuses: [])
-        result.authorDescription = "著名作家"
-        #expect(result.hasAnyFill == true)
-    }
-
-    @Test("smartFill 无ISBN无书名返回全部notAttempted")
-    func smartFillNoISBNNoTitle() async {
-        let service = ISBNLookupService()
-        let result = await service.smartFill(
-            isbn: "",
-            title: "",
-            author: "",
-            needsPublisher: true,
-            needsPages: true,
-            needsAuthor: true,
-            needsBookDesc: true,
-            needsAuthorDesc: true
-        )
-        // 无有效ISBN → 4个源都是 notAttempted，无书名 → 无书名搜索
-        for (_, status) in result.sourceStatuses {
-            #expect(status == .notAttempted)
-        }
-        #expect(result.hasAnyFill == false)
-    }
-
-    @Test("smartFill 无效ISBN格式返回notAttempted")
-    func smartFillInvalidISBN() async {
-        let service = ISBNLookupService()
-        let result = await service.smartFill(
-            isbn: "123",  // 太短，无效
-            title: "",
-            author: "",
-            needsPublisher: true,
-            needsPages: true,
-            needsAuthor: true,
-            needsBookDesc: true,
-            needsAuthorDesc: true
-        )
-        for (_, status) in result.sourceStatuses {
-            #expect(status == .notAttempted)
-        }
-    }
-
-    @Test("smartFill 不需要任何字段时返回notAttempted")
-    func smartFillNothingNeeded() async {
-        let service = ISBNLookupService()
-        let result = await service.smartFill(
-            isbn: "9787020002207",
-            title: "红楼梦",
-            author: "曹雪芹",
-            needsPublisher: false,
-            needsPages: false,
-            needsAuthor: false,
-            needsBookDesc: false,
-            needsAuthorDesc: false
-        )
-        // 什么都不需要，所以所有源都 notAttempted
-        for (_, status) in result.sourceStatuses {
-            #expect(status == .notAttempted)
-        }
-        #expect(result.hasAnyFill == false)
-    }
-
-}
-
-// MARK: - SmartFillResult Extended Fields Tests
-
-@Suite("SmartFillResult Extended Fields Tests")
-struct SmartFillResultExtendedTests {
-
-    @Test("SmartFillResult 包含扩展字段 — title/price/publishDate/translator")
-    func extendedFieldsExist() {
-        var result = SmartFillResult(sourceStatuses: [])
-        result.title = "书名"
-        result.price = "¥59.00"
-        result.publishDate = "2020-01"
-        result.translator = "译者"
-        #expect(result.title == "书名")
-        #expect(result.price == "¥59.00")
-        #expect(result.publishDate == "2020-01")
-        #expect(result.translator == "译者")
-    }
-
-    @Test("hasAnyFill 在新字段填充时返回 true")
-    func hasAnyFillWithExtendedFields() {
-        var result = SmartFillResult(sourceStatuses: [])
-        #expect(result.hasAnyFill == false)
-
-        result.price = "¥39.00"
-        #expect(result.hasAnyFill == true)
-    }
-
-    @Test("hasAnyFill 在 title 填充时返回 true")
-    func hasAnyFillWithTitle() {
-        var result = SmartFillResult(sourceStatuses: [])
-        result.title = "新书名"
-        #expect(result.hasAnyFill == true)
-    }
-
-    @Test("hasAnyFill 在 translator 填充时返回 true")
-    func hasAnyFillWithTranslator() {
-        var result = SmartFillResult(sourceStatuses: [])
-        result.translator = "王德威"
-        #expect(result.hasAnyFill == true)
-    }
 }
 
 // MARK: - Book needsEnrichment Extended Tests
@@ -3784,7 +3660,7 @@ struct SkillFetchAllBooksFieldTests {
             )
         ])
 
-        let syncService = WeReadSyncService(provider: mock)
+        let syncService = WeReadSyncService(provider: mock, enrichmentCoordinator: NoOpBookEnricher())
         let result = await syncService.sync(container: container, skipLockCheck: true)
 
         #expect(result.newBooksImported == 1)
@@ -3813,7 +3689,7 @@ struct SkillFetchAllBooksFieldTests {
             )
         ])
 
-        let syncService = WeReadSyncService(provider: mock)
+        let syncService = WeReadSyncService(provider: mock, enrichmentCoordinator: NoOpBookEnricher())
         let result = await syncService.sync(container: container, skipLockCheck: true)
 
         #expect(result.newBooksImported == 1)
@@ -3843,7 +3719,7 @@ struct SkillFetchAllBooksFieldTests {
             )
         ])
 
-        let syncService = WeReadSyncService(provider: mock)
+        let syncService = WeReadSyncService(provider: mock, enrichmentCoordinator: NoOpBookEnricher())
         let result = await syncService.sync(container: container, skipLockCheck: true)
 
         #expect(result.newBooksImported == 1)
@@ -3879,7 +3755,7 @@ struct SkillFetchAllBooksFieldTests {
             )
         ])
 
-        let syncService = WeReadSyncService(provider: mock)
+        let syncService = WeReadSyncService(provider: mock, enrichmentCoordinator: NoOpBookEnricher())
         let result = await syncService.sync(container: container, skipLockCheck: true)
 
         #expect(result.newBooksImported == 0)
@@ -3916,7 +3792,7 @@ struct SkillFetchAllBooksFieldTests {
             )
         ])
 
-        let syncService = WeReadSyncService(provider: mock)
+        let syncService = WeReadSyncService(provider: mock, enrichmentCoordinator: NoOpBookEnricher())
         _ = await syncService.sync(container: container, skipLockCheck: true)
 
         let verifyContext = ModelContext(container)
@@ -4216,7 +4092,7 @@ struct WeReadIncrementalBookmarkSyncTests {
             WeReadBookmark(bookmarkId: "b2", markText: "新划线2", chapterName: nil, createTime: nil)
         ]])
 
-        let syncService = WeReadSyncService(provider: mock)
+        let syncService = WeReadSyncService(provider: mock, enrichmentCoordinator: NoOpBookEnricher())
         _ = await syncService.sync(container: container, skipLockCheck: true)
 
         let enrichCount = await mock.enrichCallCount
@@ -4247,7 +4123,7 @@ struct WeReadIncrementalBookmarkSyncTests {
         await mock.setBooks([WeReadImportItem(id: "wr_y", title: "Stable Book", author: "Author", bookType: .ebook)])
         await mock.setNotebookCounts(["wr_y": 5])   // 相同
 
-        let syncService = WeReadSyncService(provider: mock)
+        let syncService = WeReadSyncService(provider: mock, enrichmentCoordinator: NoOpBookEnricher())
         _ = await syncService.sync(container: container, skipLockCheck: true)
 
         let bmCount = await mock.bookmarkCallCount
@@ -4274,7 +4150,7 @@ struct WeReadIncrementalBookmarkSyncTests {
             WeReadBookmark(bookmarkId: "b1", markText: "划线", chapterName: nil, createTime: nil)
         ]])
 
-        let syncService = WeReadSyncService(provider: mock)
+        let syncService = WeReadSyncService(provider: mock, enrichmentCoordinator: NoOpBookEnricher())
         _ = await syncService.sync(container: container, skipLockCheck: true)
 
         let enrichCount = await mock.enrichCallCount
@@ -4305,7 +4181,7 @@ struct WeReadIncrementalBookmarkSyncTests {
         await mock.setBooks([WeReadImportItem(id: "wr_w", title: "No Notes Book", author: "Author", bookType: .ebook)])
         await mock.setNotebookCounts([:])   // 该书无笔记 → 缺席 → 视为 0
 
-        let syncService = WeReadSyncService(provider: mock)
+        let syncService = WeReadSyncService(provider: mock, enrichmentCoordinator: NoOpBookEnricher())
         _ = await syncService.sync(container: container, skipLockCheck: true)
 
         let bmCount = await mock.bookmarkCallCount
@@ -5406,9 +5282,9 @@ struct BookIntroductionSeedTests {
     }
 }
 
-// MARK: - AI介绍 导入回填 Tests
+// MARK: - AI简介 导入回填 Tests
 
-@Suite("AI介绍 导入回填 Tests")
+@Suite("AI简介 导入回填 Tests")
 struct IntroductionImportTests {
 
     private func makeContext() throws -> ModelContext {
@@ -5418,10 +5294,10 @@ struct IntroductionImportTests {
         return ModelContext(container)
     }
 
-    /// 按导出表头造一份 xlsx。spec = (书名, 作者, ISBN, 微信读书ID, AI介绍)
+    /// 按导出表头造一份 xlsx。spec = (书名, 作者, ISBN, 微信读书ID, AI简介)
     private func makeXLSX(
         _ specs: [(String, String, String, String, String)],
-        introHeader: String = "AI介绍"
+        introHeader: String = "AI简介"
     ) throws -> Data {
         var headers = ExcelImportExportService.columnHeaders
         headers[31] = introHeader
@@ -5480,6 +5356,17 @@ struct IntroductionImportTests {
         let entries = try await ExcelImportExportService().parseIntroductionEntries(data: data)
         let entry = try #require(entries.first)
         #expect(entry.intro == "旧表头的介绍")
+    }
+
+    @Test("上一版表头「AI介绍」的文件同样能解析")
+    @MainActor
+    func parsesPreviousAIIntroductionHeader() async throws {
+        let data = try makeXLSX(
+            [("活着", "余华", "9787506365437", "", "上一版表头的介绍")],
+            introHeader: "AI介绍"
+        )
+        let entries = try await ExcelImportExportService().parseIntroductionEntries(data: data)
+        #expect(entries.first?.intro == "上一版表头的介绍")
     }
 
     @Test("AI介绍 为空的行被跳过")

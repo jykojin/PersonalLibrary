@@ -87,6 +87,7 @@ final class Book {
 
     // 批量补全标记
     var lastEnrichmentDate: Date?  // 上次批量补全的时间，nil 表示从未处理
+    var lastAIEnrichmentDate: Date?  // 上次 AI 补全达到终态的时间
 
     // 逻辑删除（取消收藏）
     var isArchived: Bool = false

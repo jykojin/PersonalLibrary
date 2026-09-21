@@ -43,6 +43,16 @@ struct ImportExportView: View {
                 Text("同步和批量导入微信读书书架")
             }
 
+            Section {
+                NavigationLink(destination: AISettingsView()) {
+                    Label("AI 智能补全", systemImage: "sparkles")
+                }
+            } header: {
+                Text("智能服务")
+            } footer: {
+                Text("配置 AI 平台、接口地址、API 密钥、联网方式和模型")
+            }
+
             // MARK: - 数据维护
             Section {
                 NavigationLink(destination: DataMaintenanceView()) {

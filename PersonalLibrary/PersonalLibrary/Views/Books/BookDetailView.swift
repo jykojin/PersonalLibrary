@@ -27,9 +27,9 @@ struct BookDetailView: View {
                 // 书籍基本信息
                 bookInfoSection
 
-                // AI介绍
+                // AI简介
                 if let intro = book.bookIntroduction, !intro.isEmpty {
-                    descriptionSection(title: "AI介绍", text: intro)
+                    descriptionSection(title: "AI简介", text: intro)
                 }
 
                 // 书籍简介

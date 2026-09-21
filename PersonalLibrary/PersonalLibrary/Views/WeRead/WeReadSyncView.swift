@@ -114,7 +114,6 @@ struct WeReadSyncView: View {
                                     syncResult = nil
                                     let task = Task { await performSync() }
                                     syncTask = task
-                                    WeReadSyncService.registerSyncTask(task)
                                 }
                             }
                         }
@@ -136,7 +135,6 @@ struct WeReadSyncView: View {
                             syncResult = nil
                             let task = Task { await performSync() }
                             syncTask = task
-                            WeReadSyncService.registerSyncTask(task)
                         }
                     } label: {
                         HStack {
@@ -179,6 +177,11 @@ struct WeReadSyncView: View {
                                     .font(.caption2)
                                     .foregroundStyle(.tertiary)
                                     .lineLimit(1)
+                            }
+                            if WeReadEnrichmentPolicy.shouldDisplayTokenUsage(progress.tokenUsage) {
+                                Text(tokenUsageText(progress.tokenUsage))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
@@ -451,6 +454,17 @@ struct WeReadSyncView: View {
                     .font(.subheadline)
                 }
 
+                if WeReadEnrichmentPolicy.shouldDisplayTokenUsage(result.tokenUsage) {
+                    HStack {
+                        Label("AI Token", systemImage: "sparkles")
+                            .foregroundStyle(.purple)
+                        Spacer()
+                        Text(tokenUsageText(result.tokenUsage))
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.subheadline)
+                }
+
                 if !result.hasChanges {
                     Label("已是最新，无需更新", systemImage: "checkmark.circle")
                         .foregroundStyle(.green)
@@ -458,6 +472,13 @@ struct WeReadSyncView: View {
                 }
             }
         }
+    }
+
+    private func tokenUsageText(_ usage: AITokenUsage) -> String {
+        let input = usage.input.map(String.init) ?? "—"
+        let output = usage.output.map(String.init) ?? "—"
+        let total = usage.total.map(String.init) ?? "—"
+        return "输入 \(input) / 输出 \(output) / 总计 \(total)"
     }
 
     // MARK: - Actions
@@ -472,7 +493,6 @@ struct WeReadSyncView: View {
             syncCancelled = false
             syncProgress = nil
             syncTask = nil
-            WeReadSyncService.clearSyncTask()
         }
 
         AppLogger.warning("[SYNC-VIEW] 用户点击立即同步，调用 sync", category: "WeReadSync")

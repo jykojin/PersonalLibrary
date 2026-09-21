@@ -2,69 +2,46 @@ import Foundation
 
 /// 从豆瓣获取图书简介和作者简介
 /// 支持通过 ISBN 或书名+作者搜索
-struct DoubanDescriptionFetcher {
+struct DoubanDescriptionFetcher: Sendable {
 
     private let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    private let httpClient: any HTTPDataClient
+    private let waitForRateLimit: @Sendable () async -> Void
 
-    // MARK: - 图书简介
-
-    /// 通过 ISBN 获取图书简介
-    func fetchBookDescription(isbn: String, title: String) async -> String? {
-        if let desc = await fetchDescriptionFromDoubanISBN(isbn: isbn) {
-            return desc
+    init(
+        httpClient: any HTTPDataClient = URLSessionHTTPDataClient(),
+        waitForRateLimit: @escaping @Sendable () async -> Void = {
+            await DoubanRateLimiter.shared.wait()
         }
-        return await fetchBookDescriptionByTitle(title: title, author: nil)
+    ) {
+        self.httpClient = httpClient
+        self.waitForRateLimit = waitForRateLimit
     }
 
-    /// 通过书名搜索获取图书简介
-    func fetchBookDescriptionByTitle(title: String, author: String?) async -> String? {
-        guard let doubanURL = await searchDoubanBookURL(title: title) else {
-            return nil
+    func fetchBookPageByTitle(title: String, author: String?) async throws -> DoubanBookPage? {
+        for doubanURL in try await searchDoubanBookURLs(title: title) {
+            guard let html = try await fetchHTML(url: doubanURL),
+                  let page = DoubanBookPage.parse(html) else {
+                continue
+            }
+            if BookIdentityMatcher.matches(
+                requestedTitle: title,
+                requestedAuthor: author,
+                candidateTitle: page.title,
+                candidateAuthor: page.author
+            ) {
+                return page
+            }
         }
-        return await fetchDescriptionFromDoubanPage(url: doubanURL, type: .book)
-    }
-
-    // MARK: - 作者简介
-
-    /// 通过 ISBN 获取作者简介
-    func fetchAuthorDescription(isbn: String, title: String) async -> String? {
-        if let desc = await fetchAuthorDescFromDoubanISBN(isbn: isbn) {
-            return desc
-        }
-        return await fetchAuthorDescriptionByTitle(title: title, author: nil)
-    }
-
-    /// 通过书名搜索获取作者简介
-    func fetchAuthorDescriptionByTitle(title: String, author: String?) async -> String? {
-        guard let doubanURL = await searchDoubanBookURL(title: title) else {
-            return nil
-        }
-        return await fetchDescriptionFromDoubanPage(url: doubanURL, type: .author)
+        return nil
     }
 
     // MARK: - Private
 
-    private enum DescriptionType {
-        case book
-        case author
-    }
-
-    private func fetchDescriptionFromDoubanISBN(isbn: String) async -> String? {
-        guard let url = URL(string: "https://book.douban.com/isbn/\(isbn)/") else { return nil }
-        guard let html = await fetchHTML(url: url) else { return nil }
-        return Self.extractBookDescription(from: html)
-    }
-
-    private func fetchAuthorDescFromDoubanISBN(isbn: String) async -> String? {
-        guard let url = URL(string: "https://book.douban.com/isbn/\(isbn)/") else { return nil }
-        guard let html = await fetchHTML(url: url) else { return nil }
-        return Self.extractAuthorDescription(from: html)
-    }
-
-    private func searchDoubanBookURL(title: String) async -> URL? {
+    private func searchDoubanBookURLs(title: String) async throws -> [URL] {
         guard let encoded = title.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
               let url = URL(string: "https://book.douban.com/j/subject_suggest?q=\(encoded)") else {
-            return nil
+            return []
         }
 
         var request = URLRequest(url: url)
@@ -72,59 +49,60 @@ struct DoubanDescriptionFetcher {
         request.timeoutInterval = 10
 
         // 全局豆瓣限速：保证至少 5 秒间隔
-        await DoubanRateLimiter.shared.wait()
+        await waitForRateLimit()
 
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
-            return nil
+        let (data, response) = try await httpClient.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
         }
+        if httpResponse.statusCode == 404 { return [] }
+        guard httpResponse.statusCode == 200 else { throw URLError(.badServerResponse) }
+        guard data.count <= 5_000_000 else { throw HTTPDataClientError.responseTooLarge }
 
         guard let results = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
               !results.isEmpty else {
-            return nil
+            return []
         }
 
-        for result in results {
-            guard result["type"] as? String == "b" else { continue }
+        return Array(results.compactMap { result in
+            guard result["type"] as? String == "b" else { return nil }
             if let urlStr = result["url"] as? String, let bookURL = URL(string: urlStr) {
-                return bookURL
+                return Self.isAllowedBookURL(bookURL) ? bookURL : nil
             }
             if let id = result["id"] as? String {
                 return URL(string: "https://book.douban.com/subject/\(id)/")
             }
-        }
-
-        return nil
+            return nil
+        }.prefix(5))
     }
 
-    private func fetchDescriptionFromDoubanPage(url: URL, type: DescriptionType) async -> String? {
-        guard let html = await fetchHTML(url: url) else { return nil }
-        switch type {
-        case .book:
-            return Self.extractBookDescription(from: html)
-        case .author:
-            return Self.extractAuthorDescription(from: html)
-        }
+    private static func isAllowedBookURL(_ url: URL) -> Bool {
+        url.scheme?.lowercased() == "https"
+            && url.host?.lowercased() == "book.douban.com"
+            && url.user == nil
+            && url.password == nil
+            && url.fragment == nil
+            && (url.port == nil || url.port == 443)
     }
 
-    private func fetchHTML(url: URL) async -> String? {
+    private func fetchHTML(url: URL) async throws -> String? {
         var request = URLRequest(url: url)
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 15
 
         // 全局豆瓣限速：保证至少 5 秒间隔
-        await DoubanRateLimiter.shared.wait()
+        await waitForRateLimit()
 
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
-            return nil
+        let (data, response) = try await httpClient.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
         }
+        if httpResponse.statusCode == 404 { return nil }
+        guard httpResponse.statusCode == 200 else { throw URLError(.badServerResponse) }
 
         // 防止异常大响应导致内存耗尽
-        guard data.count <= 5_000_000 else { return nil }
+        guard data.count <= 5_000_000 else { throw HTTPDataClientError.responseTooLarge }
 
         return String(data: data, encoding: .utf8)
     }

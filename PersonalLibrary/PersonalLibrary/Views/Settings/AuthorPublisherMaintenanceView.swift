@@ -35,9 +35,11 @@ struct DataMaintenanceView: View {
     @State private var batchTotal: Int = 0
     @State private var batchCurrent: Int = 0
     @State private var batchStatusText: String = ""
+    @State private var batchSummary: EnrichmentBatchSummary?
     @State private var isBatchRunning = false
     @State private var batchTask: Task<Void, Never>?
     @State private var batchCancelled = false  // 手动取消标志（跨 Task.detached）
+    @State private var aiAvailability = AIConfigAvailability.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -64,6 +66,7 @@ struct DataMaintenanceView: View {
         .navigationTitle("数据维护")
         .navigationBarTitleDisplayMode(.inline)
         .task {
+            aiAvailability.refresh()
             rebuildCaches()
         }
         .sheet(item: $editingItem) { item in
@@ -146,10 +149,26 @@ struct DataMaintenanceView: View {
                     }
                 }
                 .disabled(isCleaning || batchCancelled)
+
+                Button {
+                    batchCancelled = false
+                    batchTask = Task { await batchAIEnrichBooks() }
+                } label: {
+                    Label("批量 AI 智能补全", systemImage: "sparkles")
+                }
+                .disabled(isCleaning || isBatchRunning || !aiAvailability.isAvailable)
+
+                if EnrichmentBatchPolicy.shouldShowAISettingsLink(
+                    isAIAvailable: aiAvailability.isAvailable
+                ) {
+                    NavigationLink("配置 AI 智能补全") {
+                        AISettingsView()
+                    }
+                }
             } header: {
                 Text("信息补全")
             } footer: {
-                Text("从豆瓣 → Open Library → Google Books 查询补全纸质书信息\n微信读书图书请使用「微信读书同步」功能自动补全")
+                Text("普通补全按豆瓣 → Goodreads → Open Library 处理纸质书，并自动使用 AI 兜底；AI 批量补全适用于所有未归档载体。")
             }
 
             // 进度区域
@@ -162,6 +181,11 @@ struct DataMaintenanceView: View {
                         Text("\(batchCurrent)/\(batchTotal)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        if let batchSummary {
+                            Text(batchSummary.progressMessage)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .padding(.vertical, 4)
                 }
@@ -541,16 +565,26 @@ struct DataMaintenanceView: View {
     // MARK: - 批量补全（统一入口）
 
     private func batchEnrichPaperBooks() async {
-        let bookIDs = allBooks.filter {
-            !$0.isArchived && $0.bookType == .paper
-            && $0.needsEnrichment && $0.lastEnrichmentDate == nil
-        }.map(\.persistentModelID)
+        let bookIDs = allBooks.filter { EnrichmentBatchPolicy.isCandidate($0, mode: .full) }
+            .map(\.persistentModelID)
 
         await batchEnrich(
             bookIDs: bookIDs,
+            mode: .full,
             label: "paper",
-            emptyMessage: "所有纸质书信息已完整，无需补全",
-            doneMessage: { s, t in "完成！\(s)/\(t) 本书成功补全信息" }
+            emptyMessage: "所有纸质书信息已完整，无需补全"
+        )
+    }
+
+    private func batchAIEnrichBooks() async {
+        let bookIDs = allBooks.filter { EnrichmentBatchPolicy.isCandidate($0, mode: .aiOnly) }
+            .map(\.persistentModelID)
+
+        await batchEnrich(
+            bookIDs: bookIDs,
+            mode: .aiOnly,
+            label: "ai",
+            emptyMessage: "所有未归档图书均无需 AI 补全"
         )
     }
 
@@ -559,12 +593,11 @@ struct DataMaintenanceView: View {
     ///   - bookIDs: 待处理书籍的 PersistentIdentifier 列表
     ///   - label: 日志标签（"paper" / "weread"）
     ///   - emptyMessage: 无需补全时的提示
-    ///   - doneMessage: 完成时的提示（参数: successCount, totalCount）
     private func batchEnrich(
         bookIDs: [SwiftData.PersistentIdentifier],
+        mode: EnrichmentMode,
         label: String,
-        emptyMessage: String,
-        doneMessage: @Sendable (Int, Int) -> String
+        emptyMessage: String
     ) async {
         guard !bookIDs.isEmpty else {
             cleanResultMessage = emptyMessage
@@ -591,10 +624,11 @@ struct DataMaintenanceView: View {
         batchCurrent = 0
         batchProgress = 0
         batchStatusText = "正在批量补全..."
+        batchSummary = EnrichmentBatchSummary(totalCount: bookIDs.count)
 
         let container = modelContext.container
         let totalCount = bookIDs.count
-        let perBookSleepSeconds: UInt64 = 2  // 每本之间间隔 2 秒（与 WeRead 同步同样的 QPS 节奏，防止手机过热）
+        let perBookSleepSeconds = EnrichmentBatchPolicy.interBookDelaySeconds(for: mode)
 
         await BatchEnrichmentState.shared.start()
 
@@ -620,94 +654,81 @@ struct DataMaintenanceView: View {
         }
 
         let detachedTask = Task.detached(priority: .utility) {
-            let lookupService = ISBNLookupService()
-            var successCount = 0
-            var completedCount = 0
+            let coordinator = EnrichmentCoordinator.live()
+            var summary = EnrichmentBatchSummary(totalCount: totalCount)
 
-            // 单一 ModelContext 跨整个循环复用，避免每次迭代 new context 导致内存压力
-            // （每次 new ModelContext 会触发 KVO/NotificationCenter 注册并被 SwiftData 内部持有）
-            let taskContext = ModelContext(container)
-            taskContext.autosaveEnabled = false
-
-            // 顺序处理：每本之间间隔 2 秒，与 WeRead 同步相同的 QPS 节奏
+            // 顺序处理；普通来源保留间隔，纯 AI 模式由远端请求本身控制节奏
             // 不并发——并发 + 多源 HTTP 会导致 modem/CPU 持续高峰，手机过热
             for (index, bookID) in bookIDs.enumerated() {
                 if Task.isCancelled { break }
 
-                guard let book = taskContext.model(for: bookID) as? Book else { continue }
-                let title = book.title
+                guard let snapshot = EnrichmentBookPersistence.eligibleBatchSnapshot(
+                    for: bookID,
+                    mode: mode,
+                    in: container
+                ) else { continue }
+                let title = snapshot.draft.title
 
-                // 本地作者简介缓存（只读）
-                if (book.authorDescription ?? "").isEmpty {
-                    let primaryAuthor = book.author.trimmingCharacters(in: .whitespaces)
-                    if let localDesc = localAuthorCache[primaryAuthor] {
-                        book.authorDescription = localDesc
-                    }
-                }
+                let primaryAuthor = snapshot.draft.author.trimmingCharacters(in: .whitespaces)
+                let localAuthorDescription = localAuthorCache[primaryAuthor]
 
                 if Task.isCancelled { break }
 
                 // 进度 UI（处理本本前显示当前书）
-                let displayIndex = completedCount + 1
+                let displayIndex = summary.completedCount + 1
                 await MainActor.run {
-                    self.batchCurrent = displayIndex
-                    self.batchProgress = Double(displayIndex) / Double(totalCount)
                     self.batchStatusText = "正在补全（\(title)）\(displayIndex)/\(totalCount)"
                 }
 
-                // smartFill — 网络 I/O（Douban 请求由全局 DoubanRateLimiter 串行化）
                 let tFill0 = CFAbsoluteTimeGetCurrent()
-                let result = await lookupService.smartFill(
-                    isbn: book.isbn ?? "",
-                    title: book.title,
-                    author: book.author,
-                    needsTitle: false,
-                    needsPublisher: (book.publisher ?? "").isEmpty,
-                    needsPages: book.totalPages == 0,
-                    needsPrice: (book.price ?? "").isEmpty,
-                    needsPublishDate: book.publishDate == nil,
-                    needsTranslator: (book.translator ?? "").isEmpty,
-                    needsAuthor: book.author.isEmpty || book.author == "未知作者",
-                    needsBookDesc: book.needsBookDescriptionRefresh,
-                    needsAuthorDesc: book.needsAuthorDescriptionRefresh
+                let outcome = await coordinator.enrich(
+                    snapshot.draft,
+                    mode: mode,
+                    localAuthorDescription: localAuthorDescription
                 )
                 let tFill1 = CFAbsoluteTimeGetCurrent()
-                AppLogger.perf("\(label)[\(index+1)/\(totalCount)] \(title) | smartFill:\(Int((tFill1-tFill0)*1000))ms filled:\(result.hasAnyFill)", category: "BatchEnrich")
+                AppLogger.perf("\(label)[\(index+1)/\(totalCount)] \(title) | enrich:\(Int((tFill1-tFill0)*1000))ms fields:\(outcome.changedFields.count)", category: "BatchEnrich")
 
-                if Task.isCancelled { break }
+                guard let committedOutcome = try? EnrichmentBookPersistence.commitBatch(
+                    outcome,
+                    to: bookID,
+                    mode: mode,
+                    in: container
+                ) else { continue }
 
-                // 应用结果
-                if let p = result.publisher { book.publisher = p }
-                if let p = result.totalPages { book.totalPages = p }
-                if let p = result.price { book.price = p }
-                if let d = result.publishDate { book.publishDate = self.parsePublishDate(d) }
-                if let t = result.translator { book.translator = t }
-                if let a = result.author { book.author = a }
-                if let d = result.bookDescription { book.bookDescription = d }
-                if let d = result.authorDescription { book.authorDescription = d }
-                book.lastEnrichmentDate = Date()
+                summary.record(committedOutcome)
+                let currentSummary = summary
+                await MainActor.run {
+                    self.batchSummary = currentSummary
+                    self.batchCurrent = currentSummary.completedCount
+                    self.batchProgress = Double(currentSummary.completedCount) / Double(totalCount)
+                }
 
-                // 立即保存（每本一次），避免 batch save 在中断时丢数据
-                try? taskContext.save()
+                if Task.isCancelled
+                    || committedOutcome.termination == .cancelled
+                    || AIEnrichmentAttemptPolicy.shouldStopBatch(for: committedOutcome.aiStatus) {
+                    break
+                }
 
-                completedCount += 1
-                if result.hasAnyFill { successCount += 1 }
-
-                // 限速：每本间隔 2 秒（避免持续 QPS 让 modem/CPU 不停烧）
-                if index < bookIDs.count - 1 {
+                // 普通来源每本间隔 2 秒；纯 AI 调用不另加固定等待
+                if index < bookIDs.count - 1, perBookSleepSeconds > 0 {
                     try? await Task.sleep(for: .seconds(perBookSleepSeconds))
                 }
             }
 
             let cancelled = Task.isCancelled
-            return (successCount, completedCount, cancelled)
+            return (summary, cancelled)
         }
 
         // 当外层 task 被取消（用户点停止）时，把取消传播到 detached task
-        let (successCount, completedCount, wasCancelled) = await withTaskCancellationHandler {
-            await detachedTask.value
-        } onCancel: {
-            detachedTask.cancel()
+        let (summary, wasCancelled) = await EnrichmentBackgroundExecution().run(
+            named: mode == .aiOnly ? "批量 AI 智能补全" : "批量补全图书信息"
+        ) {
+            await withTaskCancellationHandler {
+                await detachedTask.value
+            } onCancel: {
+                detachedTask.cancel()
+            }
         }
 
         // 停止 metrics 采集
@@ -719,28 +740,16 @@ struct DataMaintenanceView: View {
         isBatchRunning = false
         batchTask = nil
         batchCancelled = false
+        batchSummary = summary
 
         if wasCancelled {
-            cleanResultMessage = "已停止。已补全 \(successCount)/\(completedCount) 本（共 \(totalCount) 本待处理）"
+            cleanResultMessage = "已停止。已处理 \(summary.completedCount)/\(totalCount) 本；\(summary.message)"
         } else {
-            cleanResultMessage = doneMessage(successCount, totalCount)
+            cleanResultMessage = "完成！\(summary.message)"
         }
         showingCleanResult = true
     }
 
-    /// 解析出版日期字符串
-    private func parsePublishDate(_ dateString: String) -> Date? {
-        let formatters: [String] = ["yyyy-MM-dd", "yyyy-MM", "yyyy"]
-        for format in formatters {
-            let formatter = DateFormatter()
-            formatter.dateFormat = format
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            if let date = formatter.date(from: dateString) {
-                return date
-            }
-        }
-        return nil
-    }
 }
 
 // MARK: - 关联图书列表
