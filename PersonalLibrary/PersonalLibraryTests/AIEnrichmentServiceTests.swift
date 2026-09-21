@@ -4,6 +4,32 @@ import Testing
 
 @Suite("AI Enrichment Service Tests")
 struct AIEnrichmentServiceTests {
+    @Test("事实检索返回错误状态时不伪装成未找到")
+    func modelReportedFactErrorIsNotNotFound() async {
+        let unavailable = #"{"status":"error","identity":{"matched_title":"人生问答","matched_author":"成庆","matched_isbn":"9787547330135"},"fields":{}}"#
+        let client = SequencedAICompletionClient(responses: [
+            AICompletionResponse(content: unavailable, usage: .unknown),
+            AICompletionResponse(content: unavailable, usage: .unknown)
+        ])
+        let service = AIEnrichmentService(
+            client: client,
+            config: AIPlatformPreset.bailian.defaultConfig(apiKey: "test-key")
+        )
+
+        let outcome = await service.enrich(
+            draft: BookDraft(
+                title: "人生问答",
+                author: "成庆",
+                isbn: "9787547330135"
+            ),
+            targets: [.translator]
+        )
+
+        #expect(outcome.status == .validationRejected("AI 未按约定返回可验证结果"))
+        #expect(outcome.rejections.isEmpty)
+        #expect(await client.requests.count == 2)
+    }
+
     @Test("AI简介达到独立时间预算后取消请求并返回可重试超时")
     func stopsAtIntroductionDeadline() async {
         let client = DelayedAICompletionClient(

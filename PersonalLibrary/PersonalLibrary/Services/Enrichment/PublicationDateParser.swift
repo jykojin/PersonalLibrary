@@ -7,13 +7,13 @@ enum PublicationDateParser {
         }
 
         let format: String
-        switch value.count {
-        case 4 where value.range(of: #"^\d{4}$"#, options: .regularExpression) != nil:
+        switch value {
+        case _ where value.range(of: #"^\d{4}$"#, options: .regularExpression) != nil:
             format = "yyyy"
-        case 7 where value.range(of: #"^\d{4}-\d{2}$"#, options: .regularExpression) != nil:
-            format = "yyyy-MM"
-        case 10 where value.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil:
-            format = "yyyy-MM-dd"
+        case _ where value.range(of: #"^\d{4}-\d{1,2}$"#, options: .regularExpression) != nil:
+            format = "yyyy-M"
+        case _ where value.range(of: #"^\d{4}-\d{1,2}-\d{1,2}$"#, options: .regularExpression) != nil:
+            format = "yyyy-M-d"
         default:
             return nil
         }

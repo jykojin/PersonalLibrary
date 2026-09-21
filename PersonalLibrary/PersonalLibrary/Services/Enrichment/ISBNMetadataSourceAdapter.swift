@@ -48,6 +48,21 @@ struct ISBNMetadataSourceAdapter: MetadataSourceLookup, Sendable {
                     ) {
                         isbnValidationRejection = .validationRejected("ISBN 候选书名或作者身份不符")
                     } else {
+                        var result = result
+                        if source == .douban,
+                           missingFields.contains(.translator),
+                           result.translator?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+                            let baseTitle = BookTextNormalizer.titleWithoutEditionDecoration(draft.title)
+                            if baseTitle != draft.title.trimmingCharacters(in: .whitespacesAndNewlines),
+                               let relatedPage = try await doubanFetcher.fetchBookPageByTitle(
+                                   title: baseTitle,
+                                   author: draft.author
+                               ),
+                               let translator = relatedPage.translator?.trimmingCharacters(in: .whitespacesAndNewlines),
+                               !translator.isEmpty {
+                                result.translator = translator
+                            }
+                        }
                         return MetadataSourceLookupResult(
                             candidate: Self.draft(from: result),
                             status: .found

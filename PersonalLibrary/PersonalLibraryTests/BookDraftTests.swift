@@ -67,6 +67,18 @@ struct BookDraftTests {
         #expect(PublicationDateParser.parse("2024-19-42") == nil)
     }
 
+    @Test("豆瓣非补零月份和日期可以解析")
+    func parsesNonPaddedDoubanPublicationDates() {
+        let calendar = Calendar(identifier: .gregorian)
+
+        #expect(PublicationDateParser.parse("2026-8").map {
+            calendar.dateComponents([.year, .month, .day], from: $0)
+        } == DateComponents(year: 2026, month: 8, day: 1))
+        #expect(PublicationDateParser.parse("2017-7-1").map {
+            calendar.dateComponents([.year, .month, .day], from: $0)
+        } == DateComponents(year: 2017, month: 7, day: 1))
+    }
+
     @Test("新书的 AI 补全时间默认为空且可设置")
     func aiEnrichmentDateIsPersistable() {
         let book = Book(title: "测试", author: "作者")

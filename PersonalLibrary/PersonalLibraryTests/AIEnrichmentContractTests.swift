@@ -399,6 +399,8 @@ struct AIEnrichmentContractTests {
         #expect(prompt.contains(#""publisher":{"value":"核实值","sources":["https://来源页面"]}"#))
         #expect(prompt.contains(#""total_pages":{"value":320,"sources":["https://来源页面"]}"#))
         #expect(prompt.contains("不得返回或修改 ISBN、封面、评分、备注"))
+        #expect(prompt.contains("即使所有字段都无法确认，也必须返回 status 为 ok"))
+        #expect(prompt.contains("fields 返回空对象"))
     }
 
     @Test("AI 事实字段超过字符配额时逐字段拒绝")

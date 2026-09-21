@@ -113,6 +113,13 @@ struct AIEnrichmentService: AIEnriching, Sendable {
                     rejections.merge(validated.rejections) { _, new in new }
                     break
                 } catch let error as AIEnrichmentContractError {
+                    if error == .unsuccessfulStatus {
+                        finalStatus = .validationRejected(Self.unsuccessfulStatusMessage)
+                        if attempt + 1 < outputTokenBudgets.count {
+                            continue
+                        }
+                        break
+                    }
                     finalStatus = .validationRejected(String(describing: error))
                     if error == .invalidJSON, attempt + 1 < outputTokenBudgets.count {
                         continue
@@ -237,6 +244,7 @@ struct AIEnrichmentService: AIEnriching, Sendable {
     }
 
     private static let outputLimitMessage = "AI 输出达到长度上限，返回内容不完整"
+    private static let unsuccessfulStatusMessage = "AI 未按约定返回可验证结果"
 
     private static func status(for error: Error) -> LookupSourceStatus {
         if error is CancellationError { return .cancelled }

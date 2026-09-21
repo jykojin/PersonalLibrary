@@ -12,6 +12,14 @@ struct ISBNLookupEnrichmentTests {
         #expect(DoubanBookPage.parse(EnrichmentFixtures.doubanMixedTranslatorHTML)?.translator == "译者甲, 译者乙")
     }
 
+    @Test("豆瓣标签后的冒号不会污染作者和译者")
+    func doubanTrailingColonDoesNotBecomeAName() {
+        let page = DoubanBookPage.parse(EnrichmentFixtures.doubanTrailingColonTranslatorHTML)
+
+        #expect(page?.author == "[日] 寄藤文平, [日] 藤田纮一郎")
+        #expect(page?.translator == "吴锵煌")
+    }
+
     @Test("豆瓣页面提供独立 ISBN 身份凭据")
     func parsesDoubanISBNIdentityEvidence() {
         #expect(DoubanBookPage.parse(EnrichmentFixtures.doubanSingleTranslatorHTML)?.isbn == "978-7-0200-0220-7")
@@ -41,10 +49,38 @@ struct ISBNLookupEnrichmentTests {
         let draft = BookDraft(title: "示例图书", author: "示例作者")
 
         let outcome = await SequentialBookMetadataLookup(sources: [source])
-            .lookup(draft: draft, missingFields: [.translator])
+            .lookup(draft: draft, missingFields: [.translator, .publishDate])
 
         #expect(outcome.draft.translator == "示例译者")
+        #expect(outcome.draft.publishDate.map {
+            Calendar(identifier: .gregorian).dateComponents([.year, .month, .day], from: $0)
+        } == DateComponents(year: 2026, month: 8, day: 1))
         #expect(outcome.sourceReports == [MetadataSourceReport(source: .douban, status: .found)])
+    }
+
+    @Test("豆瓣精确版本缺少译者时从身份匹配的其他版本补齐")
+    func doubanISBNLookupFillsTranslatorFromAnotherEdition() async {
+        let client = DoubanEditionTranslatorHTTPClient()
+        let source = ISBNMetadataSourceAdapter(
+            source: .douban,
+            service: ISBNLookupService(httpClient: client),
+            doubanFetcher: DoubanDescriptionFetcher(
+                httpClient: client,
+                waitForRateLimit: {}
+            )
+        )
+        let draft = BookDraft(
+            title: "大便书（纪念版）",
+            author: "(日) 藤田纮一郎 / （日）寄藤文平",
+            isbn: "9787536486003"
+        )
+
+        let result = await source.lookup(draft: draft, missingFields: [.translator])
+
+        #expect(result.status == .found)
+        #expect(result.candidate?.title == "大便书（纪念版）")
+        #expect(result.candidate?.isbn == "9787536486003")
+        #expect(result.candidate?.translator == "吴锵煌")
     }
 
     @Test("普通来源严格按豆瓣、Goodreads、Open Library 查询且高优先级值胜出")
@@ -580,6 +616,36 @@ private actor DoubanSuggestionHTTPClient: HTTPDataClient {
                 .replacingOccurrences(of: "示例作者", with: "另一位作者").utf8)
         case "/subject/2":
             data = Data(EnrichmentFixtures.doubanSingleTranslatorHTML.utf8)
+        default:
+            data = Data()
+        }
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+        return (data, response)
+    }
+}
+
+private actor DoubanEditionTranslatorHTTPClient: HTTPDataClient {
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        let url = request.url!
+        let data: Data
+        switch url.path {
+        case "/isbn/9787536486003":
+            data = Data(EnrichmentFixtures.doubanCommemorativeWithoutTranslatorHTML.utf8)
+        case "/j/subject_suggest":
+            let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?
+                .first(where: { $0.name == "q" })?
+                .value
+            data = query == "大便书"
+                ? Data(#"[{"type":"b","url":"https://book.douban.com/subject/3181927/"}]"#.utf8)
+                : Data("[]".utf8)
+        case "/subject/3181927":
+            data = Data(EnrichmentFixtures.doubanTrailingColonTranslatorHTML.utf8)
         default:
             data = Data()
         }

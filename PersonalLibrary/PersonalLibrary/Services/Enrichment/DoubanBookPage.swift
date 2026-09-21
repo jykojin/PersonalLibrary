@@ -38,7 +38,7 @@ struct DoubanBookPage: Equatable, Sendable {
 
     private static func names(after label: String, in info: String) -> String? {
         guard let area = capture(
-            #"<span[^>]*class="pl"[^>]*>\s*"# + NSRegularExpression.escapedPattern(for: label) + #"\s*:?\s*</span>(.*?)(?:<br\s*/?>|<span[^>]*class="pl")"#,
+            #"<span[^>]*class="pl"[^>]*>\s*"# + NSRegularExpression.escapedPattern(for: label) + #"\s*:?\s*</span>\s*:?\s*(.*?)(?:<br\s*/?>|<span[^>]*class="pl")"#,
             in: info,
             dotMatchesNewlines: true
         ) else { return nil }

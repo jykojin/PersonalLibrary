@@ -656,6 +656,33 @@ xcodebuild -scheme PersonalLibrary \
 | 测试目标行覆盖率 | 97.94%（10247/10462） | `xccov`，来自上述 552 项测试 |
 | 真实前后台切换 | 通过 | `/tmp/PersonalLibrary-Background-Live3.xcresult` |
 
+### 6.6 豆瓣跨版本译者修复（2026-09-22）
+
+- 以《大便书》真实豆瓣 HTML 结构新增红灯测试，复现标签外冒号被解析成作者/译者片段；修复后作者和译者不再含 `:`。
+- 以《大便书（纪念版）》ISBN `9787536486003` 为集成样本新增红灯测试：精确版本无译者时，用去除版本装饰后的书名检索身份匹配版本，只合入译者“吴锵煌”。
+- 精确 ISBN 版本的书名、ISBN 和其他版本相关字段保持不变；跨版本候选继续经过书名与作者身份闸门。
+- 定向 `ISBNLookupEnrichmentTests` 31 项通过；完整单元/集成测试 554 项、79 suites 全部通过。
+- 覆盖率：App 25.18%（8183/32503），测试目标 97.95%（10304/10520）；`DoubanBookPage.swift` 97.80%，`BookTextNormalizer.swift` 96.97%，`ISBNMetadataSourceAdapter.swift` 86.88%。
+- 完整测试证据：`/tmp/PersonalLibrary-DoubanTranslator-Full/Logs/Test/Test-PersonalLibrary-2026.09.22_01-45-14-+0800.xcresult`。
+
+### 6.7 《人生问答》invalidJSON 误分类修复（2026-09-22）
+
+- iPhone 16 Pro 模拟器使用已保存的百炼 `qwen-plus` 配置重放：译者事实检索连续返回语法完整的 `status:error` JSON，随后 AI简介返回完整 JSON 并通过合同。诊断未读取、打印或落盘 API Key。
+- 第一层根因是 `AIEnrichmentContract` 用同一个 `guard` 同时判断 JSON 可解析性和 `status == "ok"`，导致完整非成功响应被误标为 `invalidJSON`；拆分解析后可独立识别 `unsuccessfulStatus`。
+- 用户随后确认“《人生问答》未找到资料”仍是误导语义。以 `AIEnrichmentService.enrich` 为公开 seam，新红灯稳定复现 `.notFound` 和单次请求；修复后非 `ok` 响应在共享 60 秒预算内重试一次，仍失败则返回 `.validationRejected("AI 未按约定返回可验证结果")`。
+- 提示词同时明确：已核实书籍但所有目标字段均无法确认时，仍返回 `status:ok` 与空 `fields`。因此合法空结果保持字段为空且不报字段错误，而 `status:error` 不再伪装成整本书未找到。
+- 真正无法解析的 JSON 仍按 4096 → 8192 扩容重试，证据和身份闸门不变。
+- AI Client、事实合同、AI简介合同和服务层定向回归 102 项通过；完整单元/集成测试 555 项、79 suites 全部通过。
+- 覆盖率：App 25.20% （8195/32515），测试目标 97.95% （10328/10544）；完整测试证据为 `/tmp/PersonalLibrary-LifeQuestions-Full.xcresult`。
+
+### 6.8 《大一统的制度密码》出版日期修复（2026-09-22）
+
+- 读取真实豆瓣详情页确认该书出版年为 `2026-8`；旧 `PublicationDateParser` 只接受补零后的 `yyyy-MM` / `yyyy-MM-dd`，所以常规补全虽然抓到字符串，转换到 `BookDraft` 时变成 `nil`。
+- 先以 `2026-8` 和 `2017-7-1` 建立红灯，随后把月份和日期宽度放宽为 1–2 位；非法日期 `2024-19-42` 仍被拒绝。
+- 豆瓣集成 fixture 改用 `2026-8`，从页面解析、来源 Adapter 到草稿合并均断言得到 2026-08-01。
+- 定向 `BookDraftTests` 7 项和 `ISBNLookupEnrichmentTests` 31 项通过；完整单元/集成测试 556 项、79 suites 全部通过。
+- 覆盖率：App 25.20%（8195/32519），测试目标 97.95%（10343/10559）；完整证据为 `/tmp/PersonalLibrary-Enrichment-Date-Full.xcresult`。
+
 ### 7. 最终独立审查
 
 - Standards 多代理审查：最终修改文件无阻塞性问题，测试边界闭合，`git diff --check` 通过。
