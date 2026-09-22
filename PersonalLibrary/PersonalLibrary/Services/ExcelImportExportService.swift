@@ -355,7 +355,7 @@ actor ExcelImportExportService {
             translator: translator,
             isbn: isbn,
             publisher: publisher,
-            publishDate: parsePublishDate(publishYear),
+            publishDate: PublicationDateParser.parse(publishYear),
             totalPages: totalPages,
             price: priceStr,
             doubanURL: doubanURL,
@@ -479,25 +479,6 @@ actor ExcelImportExportService {
         }
 
         return book
-    }
-
-    private func parsePublishDate(_ yearStr: String?) -> Date? {
-        guard let yearStr else { return nil }
-        let cleaned = yearStr.replacingOccurrences(of: ".0", with: "")
-        if let year = Int(cleaned) {
-            var components = DateComponents()
-            components.year = year
-            return Calendar.current.date(from: components)
-        }
-        // 尝试 "2020-01" 或 "2020-01-15" 格式
-        let formatter = DateFormatter()
-        for format in ["yyyy-MM-dd", "yyyy-MM", "yyyy"] {
-            formatter.dateFormat = format
-            if let date = formatter.date(from: cleaned) {
-                return date
-            }
-        }
-        return nil
     }
 
     private func parseDateTime(_ str: String) -> Date? {

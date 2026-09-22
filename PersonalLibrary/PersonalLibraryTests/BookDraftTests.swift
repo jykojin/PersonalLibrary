@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import Testing
 @testable import PersonalLibrary
 
@@ -79,6 +80,62 @@ struct BookDraftTests {
         } == DateComponents(year: 2017, month: 7, day: 1))
     }
 
+    @Test("出版日期兼容点号、斜杠和中文年月日")
+    func parsesCommonPublicationDateFormats() {
+        let calendar = Calendar(identifier: .gregorian)
+        let examples: [(String, DateComponents)] = [
+            ("2023.09", DateComponents(year: 2023, month: 9, day: 1)),
+            ("2019.09.01", DateComponents(year: 2019, month: 9, day: 1)),
+            ("2022/8", DateComponents(year: 2022, month: 8, day: 1)),
+            ("2022/8/7", DateComponents(year: 2022, month: 8, day: 7)),
+            ("2010年4月", DateComponents(year: 2010, month: 4, day: 1)),
+            ("2010年4月5日", DateComponents(year: 2010, month: 4, day: 5))
+        ]
+
+        for (value, expected) in examples {
+            #expect(PublicationDateParser.parse(value).map {
+                calendar.dateComponents([.year, .month, .day], from: $0)
+            } == expected, "应解析 \(value)")
+        }
+    }
+
+    @Test("出版日期兼容数据源中的年份小数、英文月份和全角分隔符")
+    func parsesSourceSpecificPublicationDateFormats() {
+        let calendar = Calendar(identifier: .gregorian)
+        let examples: [(String, DateComponents)] = [
+            ("2023.0", DateComponents(year: 2023, month: 1, day: 1)),
+            ("April 1, 1999", DateComponents(year: 1999, month: 4, day: 1)),
+            ("Apr 1999", DateComponents(year: 1999, month: 4, day: 1)),
+            ("2023／9／1", DateComponents(year: 2023, month: 9, day: 1))
+        ]
+
+        for (value, expected) in examples {
+            #expect(PublicationDateParser.parse(value).map {
+                calendar.dateComponents([.year, .month, .day], from: $0)
+            } == expected, "应解析 \(value)")
+        }
+        #expect(PublicationDateParser.parse("February 30, 2024") == nil)
+    }
+
+    @Test("历史点号导入产生的异常年份可以确定性还原")
+    func repairsMalformedImportedPublicationDates() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let malformedYearMonth = try #require(calendar.date(from: DateComponents(year: 20239)))
+        let malformedFullDate = try #require(calendar.date(from: DateComponents(year: 201991)))
+        let validDate = try #require(calendar.date(from: DateComponents(year: 2023, month: 9, day: 1)))
+
+        #expect(PublicationDateParser.repairMalformedImportDate(
+            malformedYearMonth,
+            calendar: calendar
+        ).map(PublicationDateParser.format) == "2023-09-01")
+        #expect(PublicationDateParser.repairMalformedImportDate(
+            malformedFullDate,
+            calendar: calendar
+        ).map(PublicationDateParser.format) == "2019-09-01")
+        #expect(PublicationDateParser.repairMalformedImportDate(validDate, calendar: calendar) == nil)
+    }
+
     @Test("新书的 AI 补全时间默认为空且可设置")
     func aiEnrichmentDateIsPersistable() {
         let book = Book(title: "测试", author: "作者")
@@ -138,5 +195,46 @@ struct BookDraftTests {
 
         #expect(book.author == "用户刚刚编辑的作者")
         #expect(book.publisher == "候选出版社")
+    }
+}
+
+@Suite("Publication Date Migration Tests")
+struct PublicationDateMigrationTests {
+    @Test("历史异常日期只修复一次且不改正常日期")
+    @MainActor
+    func repairsOnlyMalformedDatesIdempotently() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let container = try ModelContainer(
+            for: Book.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let context = ModelContext(container)
+        let malformed = Book(title: "异常日期", author: "作者")
+        malformed.publishDate = try #require(calendar.date(from: DateComponents(year: 20239)))
+        let valid = Book(title: "正常日期", author: "作者")
+        valid.publishDate = try #require(calendar.date(from: DateComponents(year: 2023, month: 9, day: 1)))
+        context.insert(malformed)
+        context.insert(valid)
+        try context.save()
+
+        #expect(try PublicationDateMigration.repair(in: context, calendar: calendar) == 1)
+        #expect(PublicationDateParser.format(malformed.publishDate) == "2023-09-01")
+        #expect(PublicationDateParser.format(valid.publishDate) == "2023-09-01")
+        #expect(try PublicationDateMigration.repair(in: context, calendar: calendar) == 0)
+    }
+
+    @Test("历史日期按原导入时区解码并统一存为标准日期")
+    func repairedDateDoesNotShiftAcrossTimeZones() throws {
+        var importCalendar = Calendar(identifier: .gregorian)
+        importCalendar.timeZone = try #require(TimeZone(identifier: "Asia/Shanghai"))
+        let malformed = try #require(importCalendar.date(from: DateComponents(year: 20239)))
+
+        let repaired = PublicationDateParser.repairMalformedImportDate(
+            malformed,
+            calendar: importCalendar
+        )
+
+        #expect(PublicationDateParser.format(repaired) == "2023-09-01")
     }
 }

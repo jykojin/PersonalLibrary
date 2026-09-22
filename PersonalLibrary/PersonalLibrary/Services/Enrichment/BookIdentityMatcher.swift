@@ -1,27 +1,38 @@
 import Foundation
 
 enum BookIdentityMatcher {
+    enum TitleMatchPolicy {
+        case exact
+        case explicitSubtitleWithISBN
+    }
+
     static func matches(
         requestedTitle: String,
         requestedAuthor: String?,
         requestedISBN: String? = nil,
         candidateTitle: String,
         candidateAuthor: String?,
-        candidateISBN: String? = nil
+        candidateISBN: String? = nil,
+        titleMatchPolicy: TitleMatchPolicy = .exact
     ) -> Bool {
-        let requestedTitle = BookTextNormalizer.normalizedTitle(requestedTitle)
-        let candidateTitle = BookTextNormalizer.normalizedTitle(candidateTitle)
-        guard !candidateTitle.isEmpty else { return false }
+        let normalizedRequestedTitle = BookTextNormalizer.normalizedTitle(requestedTitle)
+        let normalizedCandidateTitle = BookTextNormalizer.normalizedTitle(candidateTitle)
+        guard !normalizedCandidateTitle.isEmpty else { return false }
         let hasValidRequestedISBN = normalizedISBN(requestedISBN) != nil
         if hasValidRequestedISBN,
            !isbnMatches(requestedISBN, candidateISBN) {
             return false
         }
-        if requestedTitle.isEmpty && !hasValidRequestedISBN {
+        if normalizedRequestedTitle.isEmpty && !hasValidRequestedISBN {
             return false
         }
-        if !requestedTitle.isEmpty, requestedTitle != candidateTitle {
-            return false
+        if !normalizedRequestedTitle.isEmpty,
+           normalizedRequestedTitle != normalizedCandidateTitle {
+            let permitsSubtitleVariant = titleMatchPolicy == .explicitSubtitleWithISBN
+                && hasValidRequestedISBN
+                && (explicitMainTitle(candidateTitle) == normalizedRequestedTitle
+                    || explicitMainTitle(requestedTitle) == normalizedCandidateTitle)
+            guard permitsSubtitleVariant else { return false }
         }
 
         guard let requestedAuthor,
@@ -51,6 +62,24 @@ enum BookIdentityMatcher {
             return false
         }
         return requestedEquivalent == candidateEquivalent
+    }
+
+    static func hasValidISBN(_ value: String?) -> Bool {
+        normalizedISBN(value) != nil
+    }
+
+    private static func explicitMainTitle(_ value: String) -> String? {
+        guard let separator = value.firstIndex(where: { $0 == ":" || $0 == "：" }) else {
+            return nil
+        }
+        let mainTitle = String(value[..<separator])
+        let subtitle = String(value[value.index(after: separator)...])
+        guard !mainTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !subtitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        let normalizedMainTitle = BookTextNormalizer.normalizedTitle(mainTitle)
+        return normalizedMainTitle.isEmpty ? nil : normalizedMainTitle
     }
 
     private static func normalizedAuthorNames(_ value: String) -> Set<String> {

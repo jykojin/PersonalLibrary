@@ -278,6 +278,143 @@ struct AIIntroductionContractTests {
         }
     }
 
+    @Test("相同 ISBN 和作者允许模型返回带冒号副标题的完整书名")
+    func acceptsSubtitleVariantForMatchingISBNAndAuthor() throws {
+        let endpoint = URL(string: "https://dashscope.aliyuncs.com/compatible-mode/v1")!
+        let json = replacingIdentity(
+            in: makeIntroductionJSON(nonWhitespaceCount: 900),
+            title: "人生问答：生老病死苦的三十个问题",
+            author: "成庆",
+            isbn: "9787547330135",
+            bodyTitle: "人生问答"
+        )
+
+        #expect(throws: Never.self) {
+            try AIIntroductionContract.validateResponse(
+                json,
+                for: BookDraft(
+                    title: "人生问答",
+                    author: "成庆",
+                    isbn: "9787547330135"
+                ),
+                endpoint: endpoint
+            )
+        }
+    }
+
+    @Test("副标题兼容仍拒绝错误作者")
+    func subtitleVariantRejectsWrongAuthor() {
+        let json = replacingIdentity(
+            in: makeIntroductionJSON(nonWhitespaceCount: 900),
+            title: "人生问答：生老病死苦的三十个问题",
+            author: "另一位作者",
+            isbn: "9787547330135",
+            bodyTitle: "人生问答"
+        )
+
+        #expect(throws: AIIntroductionValidationError.identityMismatch) {
+            try AIIntroductionContract.validateResponse(
+                json,
+                for: BookDraft(
+                    title: "人生问答",
+                    author: "成庆",
+                    isbn: "9787547330135"
+                ),
+                endpoint: URL(string: "https://dashscope.aliyuncs.com/compatible-mode/v1")!
+            )
+        }
+    }
+
+    @Test("副标题兼容仍拒绝错误或缺失 ISBN")
+    func subtitleVariantRejectsWrongOrMissingISBN() {
+        let base = makeIntroductionJSON(nonWhitespaceCount: 900)
+        for candidateISBN in ["9787547330142", ""] {
+            let json = replacingIdentity(
+                in: base,
+                title: "人生问答：生老病死苦的三十个问题",
+                author: "成庆",
+                isbn: candidateISBN,
+                bodyTitle: "人生问答"
+            )
+
+            #expect(throws: AIIntroductionValidationError.identityMismatch) {
+                try AIIntroductionContract.validateResponse(
+                    json,
+                    for: BookDraft(
+                        title: "人生问答",
+                        author: "成庆",
+                        isbn: "9787547330135"
+                    ),
+                    endpoint: URL(string: "https://dashscope.aliyuncs.com/compatible-mode/v1")!
+                )
+            }
+        }
+    }
+
+    @Test("AI简介身份必须始终返回字符串 matched_isbn")
+    func requiresMatchedISBNFieldEvenWhenDraftHasNoISBN() {
+        var object = try! JSONSerialization.jsonObject(
+            with: Data(makeIntroductionJSON(nonWhitespaceCount: 900).utf8)
+        ) as! [String: Any]
+        var identity = object["identity"] as! [String: String]
+        identity.removeValue(forKey: "matched_isbn")
+        object["identity"] = identity
+        let json = String(
+            data: try! JSONSerialization.data(withJSONObject: object),
+            encoding: .utf8
+        )!
+
+        #expect(throws: AIIntroductionValidationError.invalidSchema) {
+            try AIIntroductionContract.validateResponse(
+                json,
+                for: BookDraft(title: "示例图书", author: "示例作者"),
+                endpoint: URL(string: "https://dashscope.aliyuncs.com/compatible-mode/v1")!
+            )
+        }
+    }
+
+    @Test("草稿没有 ISBN 时 matched_isbn 必须为空字符串")
+    func requiresEmptyMatchedISBNWhenDraftHasNoISBN() {
+        let json = replacingIdentity(
+            in: makeIntroductionJSON(nonWhitespaceCount: 900),
+            title: "示例图书",
+            author: "示例作者",
+            isbn: "9787547330135",
+            bodyTitle: "示例图书"
+        )
+
+        #expect(throws: AIIntroductionValidationError.invalidSchema) {
+            try AIIntroductionContract.validateResponse(
+                json,
+                for: BookDraft(title: "示例图书", author: "示例作者"),
+                endpoint: URL(string: "https://dashscope.aliyuncs.com/compatible-mode/v1")!
+            )
+        }
+    }
+
+    @Test("相同 ISBN 和作者也不能让普通标题前缀通过")
+    func rejectsOrdinaryTitlePrefixEvenWhenISBNAndAuthorMatch() {
+        let json = replacingIdentity(
+            in: makeIntroductionJSON(nonWhitespaceCount: 900),
+            title: "人生问答续篇",
+            author: "成庆",
+            isbn: "9787547330135",
+            bodyTitle: "人生问答"
+        )
+
+        #expect(throws: AIIntroductionValidationError.identityMismatch) {
+            try AIIntroductionContract.validateResponse(
+                json,
+                for: BookDraft(
+                    title: "人生问答",
+                    author: "成庆",
+                    isbn: "9787547330135"
+                ),
+                endpoint: URL(string: "https://dashscope.aliyuncs.com/compatible-mode/v1")!
+            )
+        }
+    }
+
     @Test("AI简介正文必须明确包含目标书名")
     func rejectsBodyWithoutRequestedTitle() {
         let endpoint = URL(string: "https://dashscope.aliyuncs.com/compatible-mode/v1")!
@@ -737,6 +874,8 @@ struct AIIntroductionContractTests {
         #expect(prompt.contains(#""identity": {"#))
         #expect(prompt.contains(#""matched_title": "与 book_data.title 匹配的书名""#))
         #expect(prompt.contains(#""matched_author": "与 book_data.author 匹配的作者""#))
+        #expect(prompt.contains(#""matched_isbn": "与 book_data.isbn 等价的 ISBN"#))
+        #expect(prompt.contains("identity.matched_isbn 必须返回联网来源核实到的等价 ISBN"))
         for kind in ["overview", "analysis", "experience", "recommendations"] {
             #expect(prompt.contains(#""kind": "\#(kind)""#))
         }
@@ -790,6 +929,11 @@ struct AIIntroductionContractTests {
         )
     }
 
+    @Test("身份不匹配提示包含 ISBN")
+    func identityMismatchFeedbackIncludesISBN() {
+        #expect(AIIntroductionValidationError.identityMismatch.localizedDescription.contains("ISBN"))
+    }
+
     private func makeIntroductionJSON(nonWhitespaceCount: Int) -> String {
         let headings = ["《示例图书》的创作坐标", "核心主题与叙事笔法", "阅读节奏及思想回响", "同类作品比较与延伸阅读"]
         let headingCount = headings.reduce(0) { $0 + $1.count }
@@ -834,7 +978,11 @@ struct AIIntroductionContractTests {
         }
         let object: [String: Any] = [
             "status": "ok",
-            "identity": ["matched_title": "示例图书", "matched_author": "示例作者"],
+            "identity": [
+                "matched_title": "示例图书",
+                "matched_author": "示例作者",
+                "matched_isbn": ""
+            ],
             "sections": sections,
             "sources": ["https://research.example/books/1"],
             "comparison_books": [[
@@ -908,6 +1056,28 @@ struct AIIntroductionContractTests {
         var identity = object["identity"] as! [String: String]
         identity["matched_title"] = title
         object["identity"] = identity
+        return String(data: try! JSONSerialization.data(withJSONObject: object), encoding: .utf8)!
+    }
+
+    private func replacingIdentity(
+        in json: String,
+        title: String,
+        author: String,
+        isbn: String,
+        bodyTitle: String
+    ) -> String {
+        var object = try! JSONSerialization.jsonObject(with: Data(json.utf8)) as! [String: Any]
+        object["identity"] = [
+            "matched_title": title,
+            "matched_author": author,
+            "matched_isbn": isbn
+        ]
+        var sections = object["sections"] as! [[String: String]]
+        sections[0]["content"] = sections[0]["content"]!.replacingOccurrences(
+            of: "《示例图书》",
+            with: "《\(bodyTitle)》"
+        )
+        object["sections"] = sections
         return String(data: try! JSONSerialization.data(withJSONObject: object), encoding: .utf8)!
     }
 

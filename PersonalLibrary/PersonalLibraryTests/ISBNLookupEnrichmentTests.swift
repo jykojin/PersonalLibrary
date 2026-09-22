@@ -155,6 +155,16 @@ struct ISBNLookupEnrichmentTests {
         ))
     }
 
+    @Test("普通来源不能仅凭同作者和冒号主标题接受不同副标题")
+    func ordinaryLookupRejectsSubtitleVariantWithoutISBNAnchor() {
+        #expect(!BookIdentityMatcher.matches(
+            requestedTitle: "人生问答",
+            requestedAuthor: "成庆",
+            candidateTitle: "人生问答：续篇",
+            candidateAuthor: "成庆"
+        ))
+    }
+
     @Test("作者姓名必须完整匹配，但允许匹配多作者列表中的一人")
     func authorIdentityRejectsSubstringsAndMatchesWholeNames() {
         #expect(!BookIdentityMatcher.matches(

@@ -474,7 +474,11 @@ struct AIEnrichmentServiceTests {
         }
         let object: [String: Any] = [
             "status": "ok",
-            "identity": ["matched_title": "示例图书", "matched_author": "示例作者"],
+            "identity": [
+                "matched_title": "示例图书",
+                "matched_author": "示例作者",
+                "matched_isbn": ""
+            ],
             "sections": sections,
             "sources": ["https://research.example/books/1"],
             "comparison_books": [[

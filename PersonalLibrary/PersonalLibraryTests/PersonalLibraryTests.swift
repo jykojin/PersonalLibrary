@@ -673,6 +673,30 @@ struct ExcelImportTests {
         #expect(first.isbn == "9787522872995")
     }
 
+    @Test("Excel 点号出版日期按年月导入")
+    @MainActor
+    func dottedPublicationDateImportsAsYearAndMonth() async throws {
+        var row = [String](repeating: "", count: ExcelImportExportService.columnHeaders.count)
+        row[1] = "点号日期测试书"
+        row[2] = "测试作者"
+        row[5] = "2023.09"
+        let data = try XLSXWriter.write(
+            headers: ExcelImportExportService.columnHeaders,
+            rows: [row],
+            sheetName: "书单"
+        )
+
+        let schema = Schema([Book.self, Bookshelf.self, PersonalLibrary.Tag.self, ReadingRecord.self, ImportRecord.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = ModelContext(container)
+
+        _ = try await ExcelImportExportService().importBooks(data: data, modelContext: context)
+
+        let book = try #require(context.fetch(FetchDescriptor<Book>()).first)
+        #expect(PublicationDateParser.format(book.publishDate) == "2023-09-01")
+    }
+
     @Test("旧表头「书籍介绍」的导出文件仍能导入（0.64 改名前生成的文件）")
     @MainActor
     func legacyIntroHeaderStillImported() async throws {

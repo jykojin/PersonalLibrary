@@ -22,7 +22,7 @@ struct PersonalLibraryApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView(startupError: startupError)
-                .task { if startupError == nil { migrateOldAddSource(); migrateWeReadBookshelf(); mergeDuplicateTags(); seedBookIntroductions(); resetEnrichmentForCollapsedIntros() } }
+                .task { if startupError == nil { repairMalformedPublicationDates(); migrateOldAddSource(); migrateWeReadBookshelf(); mergeDuplicateTags(); seedBookIntroductions(); resetEnrichmentForCollapsedIntros() } }
                 .task { if startupError == nil { await backgroundCoverRefresh() } }
         }
         .modelContainer(modelContainer)
@@ -30,6 +30,23 @@ struct PersonalLibraryApp: App {
             if newPhase == .active {
                 triggerAutoSyncIfNeeded()
             }
+        }
+    }
+
+    /// 一次性修复旧版 Excel 导入将 `yyyy.0M` / `yyyy.0M.0d` 写成异常年份的数据。
+    @MainActor
+    private func repairMalformedPublicationDates() {
+        let migrationKey = "publication_date_import_repair_v1_done"
+        guard !UserDefaults.standard.bool(forKey: migrationKey) else { return }
+
+        do {
+            let repaired = try PublicationDateMigration.repair(in: modelContainer.mainContext)
+            if repaired > 0 {
+                AppLogger.info("已修复 \(repaired) 本书的异常出版日期", category: "Migration")
+            }
+            UserDefaults.standard.set(true, forKey: migrationKey)
+        } catch {
+            AppLogger.error("出版日期修复失败: \(error)", category: "Migration")
         }
     }
 

@@ -134,3 +134,29 @@ final class StorageManager {
         }
     }
 }
+
+enum PublicationDateMigration {
+    @MainActor
+    static func repair(
+        in context: ModelContext,
+        calendar: Calendar = .current
+    ) throws -> Int {
+        let books = try context.fetch(FetchDescriptor<Book>())
+        var repairedCount = 0
+        for book in books {
+            guard let date = book.publishDate,
+                  let repaired = PublicationDateParser.repairMalformedImportDate(
+                      date,
+                      calendar: calendar
+                  ) else {
+                continue
+            }
+            book.publishDate = repaired
+            repairedCount += 1
+        }
+        if repairedCount > 0 {
+            try context.save()
+        }
+        return repairedCount
+    }
+}
