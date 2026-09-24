@@ -1,6 +1,6 @@
 # 图书信息补全升级 Implementation Plan
 
-> 本计划实现 `2026-09-19-ai-enrichment-upgrade-design.md` 的 2026-09-20 最终修订。步骤使用复选框跟踪；实现按 TDD 顺序推进。任何需求变化先回写 spec，再改代码。
+> 本计划实现 `2026-09-19-ai-enrichment-upgrade-design.md` 的 2026-09-23 最终修订。步骤使用复选框跟踪；实现按 TDD 顺序推进。任何需求变化先回写 spec，再改代码。
 
 **Goal:** 建立一个统一的单本补全 Interface，按豆瓣 → Goodreads → Open Library 补普通字段，再由带证据闸门的 AI 检索补余下空值并生成 AI简介；添加、编辑、批量和微信读书同步全部复用。
 
@@ -502,6 +502,7 @@ xcodebuild -scheme PersonalLibrary \
 | 唯一缺失语义和只填空值 | `BookDraft.swift`、`BookDraft+Book.swift` | `BookDraftTests.swift` |
 | 普通来源顺序与逐字段合并 | `BookMetadataLookup.swift`、`ISBNMetadataSourceAdapter.swift` | `ISBNLookupEnrichmentTests.swift` |
 | 豆瓣单页解析、译者和 ISBN 凭据 | `DoubanBookPage.swift`、`DoubanDescriptionFetcher.swift` | `ISBNLookupEnrichmentTests.swift`、`EnrichmentFixtures.swift` |
+| 出版日期公共解析、Excel 导入与历史修复 | `PublicationDateParser.swift`、`ExcelImportExportService.swift`、`StorageManager.swift`、`PersonalLibraryApp.swift` | `BookDraftTests.swift`、`PersonalLibraryTests.swift` |
 | AI 事实字段证据契约 | `AIEnrichmentContract.swift` | `AIEnrichmentContractTests.swift` |
 | AI简介提示词与内容闸门 | `AIIntroductionContract.swift` | `AIIntroductionContractTests.swift` |
 | AI 阶段、重试、超时和 token 汇总 | `AIEnrichmentService.swift` | `AIEnrichmentServiceTests.swift` |
@@ -522,6 +523,7 @@ xcodebuild -scheme PersonalLibrary \
 7. `AIConfigStore` 把平台、Endpoint、模型、联网方式和验证状态写入 `UserDefaults`；API Key 只进入设备 Keychain，采用 destination binding 和 `WhenUnlockedThisDeviceOnly`。
 8. UI 只选择模式并展示 Outcome；批量和微信同步按每本提交，失败或取消不会抹掉已完成结果，也不会把可重试失败标记为终态。
 9. 添加、编辑和批量入口用 `EnrichmentBackgroundExecution` 持有 iOS 短时后台租约。页面消失不再取消任务；添加/编辑补全期间禁止下拉关闭和保存，只有“停止补全”或导航栏“取消”明确取消。后台额度到期只结束系统租约，保留 Swift Task 供回到前台后继续。
+10. `PublicationDateParser` 集中解析和格式化所有出版日期，以公历 UTC 存放日期语义；Excel 导入不再维护独立格式列表。`PublicationDateMigration` 在启动时只修复可确定还原的旧 Excel 异常非空日期；正常值不变，整轮成功后才写入一次性标记。
 
 ### 3. 产品入口实际映射
 
@@ -698,7 +700,21 @@ xcodebuild -scheme PersonalLibrary \
 - 523 本缺字段记录来自微信读书。528 本未归档微信书均有微信元数据同步记录，但仍有 500 本缺页数、415 本缺定价、523 本缺出版日期；微信结构没有总页数字段，价格与出版日期只在远端实际返回合法值时写入，且普通批量按设计只选择纸质书。
 - 对全部 15 本“有已保存豆瓣 URL 且仍缺上述字段”的书逐页核验：所有缺失页数/定价在豆瓣页也确实为空；但《在虚无时代》《大一统的制度密码》《大便书（纪念版）》《小说的细节》《故事的讲法》《章法九讲》《老子：以无驭有》共 7 本的出版日期在豆瓣存在，属于旧版非补零日期解析失败留下的历史空值。
 - 另按缺失组合抽取 14 本有 ISBN、已做过普通补全但无保存豆瓣 URL 的样本：7 个 ISBN 在豆瓣直接入口为 404；其余命中页面的待补字段均在页面本身为空。样本支持“多数页数/定价空值是上游没有，日期中存在历史解析遗留”的结论。
-- 当前 `PublicationDateParser` 已覆盖上述非补零格式；未设置 `lastEnrichmentDate` 的记录可在下次普通补全时修复，已有完成标记的记录仍会被常规批量跳过。全面历史修复需要另行设计可重试/版本化策略，不能从单一完成时间戳可靠回溯每个字段的失败原因。
+- `PublicationDateParser` 已覆盖上述非补零格式；未设置 `lastEnrichmentDate` 的记录可在下次普通补全时修复。已有完成标记的记录虽仍会被常规批量跳过，但启动迁移会单独修复旧 Excel 逻辑产生的、仍保存为 5–6 位异常年份的非空日期。已在旧流程中变成 `nil` 的日期不含可恢复的原始文本，仍需重新访问可靠来源，不能本地猜测。
+
+### 6.11 出版日期多格式、Excel 复用与历史迁移（2026-09-23）
+
+- 按竖向 TDD 先扩展纯函数测试为红灯，覆盖 `yyyy`、`yyyy-M`、`yyyy-M-d`、点号/斜杠、中文年月日、英文月份、Excel `yyyy.0` 和全角点号/斜杠；收敛到 `PublicationDateParser` 后绿灯，同时保持越界日期拒绝。
+- Excel 导入改为直接复用公共解析器，以 `2023.09` 实际 XLSX 导入回归验证得到 `2023-09-01`，不再由导入层自行维护部分格式。
+- 历史修复先以 `20239 → 2023-09-01`、`201991 → 2019-09-01` 和“正常日期不变”建立红灯，再实现只针对 5–6 位异常年份的幂等迁移；用不同时区构造历史值，验证修复后统一为 UTC 日期且不偏移。
+- 迁移挂在 App 启动任务，`publication_date_import_repair_v1_done` 仅在整轮成功后写入；重复执行不修改已正常数据，失败会在下次启动重试。
+- 最终合并回归为 570 个单元/集成测试（80 suites）与 3 个 UI 测试全部通过；模拟器 Debug build 成功。合并结果位于 `/tmp/PersonalLibrary-DerivedData/Logs/Test/Test-PersonalLibrary-2026.09.22_21-39-53-+0800.xcresult`（Xcode 汇总为 573 项）；App 目标行覆盖率 31.46%（10272/32649），测试目标 98.00%（10608/10824）。
+
+### 6.12 v0.68 发布验证（2026-09-25）
+
+- `project.yml` 的 `MARKETING_VERSION` 升为 `0.68`，重新运行 XcodeGen；README、版本时间线和修复追踪表同步到 v0.68。
+- 在 `/tmp` 源码副本执行 `xcodebuild build test`，构建与测试均通过：570 个单元/集成测试（80 suites）和 3 个 UI 测试，失败 0、跳过 0。结果为 `/tmp/PersonalLibrary-v068.zOiP32/ReleaseTests.xcresult`；App 行覆盖率 31.49%（10280/32649），单元测试目标 98.00%（10608/10824）。
+- 直接读取构建产物 `Info.plist`，确认 `CFBundleShortVersionString=0.68`、`CFBundleVersion=1`。历史真机安装记录保留当时的 0.67 版本信息。
 
 ### 7. 最终独立审查
 
@@ -721,3 +737,8 @@ xcodebuild -scheme PersonalLibrary \
 
 - iPhone 16 Pro 模拟器已覆盖安装包含后台连续性修复的 Debug 构建并成功启动；未卸载 App、未清数据、未清 Keychain。
 - “多洛霍夫”iPhone 14 Plus 已从最新源码重新完成 arm64 构建与签名，并通过数据线覆盖安装、成功启动。设备回读为版本 `0.67`（Build `1`）、Bundle ID `com.joe.PersonalLibrary`；未卸载 App、未清数据、未清 Keychain。真机构建产物位于 `/tmp/PersonalLibrary-Background-Device/Build/Products/Debug-iphoneos/PersonalLibrary.app`。
+
+### 8.2 出版日期修订部署（2026-09-23）
+
+- iPhone 16 Pro 模拟器已用公共日期解析、Excel 复用和历史迁移的最终代码完成 Debug build；全量 570+3 测试同一轮通过。
+- “多洛霍夫”iPhone 14 Plus 已从同一最终源码完成 arm64 签名构建，通过数据线覆盖安装并成功启动；未卸载 App，因此原有书库、Endpoint 与 Keychain 密钥均保留。真机构建产物为 `/tmp/PersonalLibrary-DeviceDerivedData/Build/Products/Debug-iphoneos/PersonalLibrary.app`。
