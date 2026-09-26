@@ -5,6 +5,125 @@ import Testing
 
 @Suite("AI Completion Client Tests")
 struct AICompletionClientTests {
+    @Test("同一补全先原生事实再 Chat 简介，来源模式不污染简介深度思考")
+    func nativeFactsThenChatIntroduction() async throws {
+        let facts = #"{"status":"ok","identity":{"matched_title":"示例图书","matched_author":"示例作者"},"fields":{"price":{"value":"人民币88元","sources":["[ref_1]"]}}}"#
+        let native: [String: Any] = ["output": [
+            "choices": [["message": ["content": facts]]],
+            "search_info": ["search_results": [["index": 1, "url": "https://research.example/book"]]]
+        ]]
+        let introduction: [String: Any] = [
+            "status": "ok",
+            "identity": ["matched_title": "示例图书", "matched_author": "示例作者", "matched_isbn": ""],
+            "sections": [
+                ["kind": "overview", "heading": "书中的时代坐标", "content": "《示例图书》讨论个人与时代的联系。"],
+                ["kind": "analysis", "heading": "叙述视角的变化", "content": "通过不同人物的选择展开分析。"],
+                ["kind": "experience", "heading": "缓慢展开的思考", "content": "细节留给读者反复思考的空间。"],
+                ["kind": "recommendations", "heading": "适合关注历史的读者", "content": "可以进一步阅读同一时期的相关著作。"]
+            ],
+            "sources": ["https://research.example/book"]
+        ]
+        let introText = String(data: try JSONSerialization.data(withJSONObject: introduction), encoding: .utf8)!
+        let chat: [String: Any] = ["choices": [["message": ["content": introText]]]]
+        let http = SequenceHTTPDataClient(responses: [
+            (try JSONSerialization.data(withJSONObject: native), 200, [:]),
+            (try JSONSerialization.data(withJSONObject: chat), 200, [:])
+        ])
+        let service = AIEnrichmentService(client: OpenAICompatibleAIClient(httpClient: http), config: AIPlatformPreset.bailian.defaultConfig(apiKey: "test-key"))
+
+        let outcome = await service.enrich(draft: BookDraft(title: "示例图书", author: "示例作者"), targets: [.price, .aiIntroduction])
+
+        #expect(outcome.status == .found)
+        #expect(outcome.draft.price == "人民币88元")
+        #expect(outcome.draft.aiIntroduction?.contains("示例图书") == true)
+        let requests = await http.requests
+        #expect(requests.map { $0.url!.path } == ["/api/v1/services/aigc/text-generation/generation", "/compatible-mode/v1/chat/completions"])
+        let introRequest = try #require(requests.last)
+        let body = try #require(JSONSerialization.jsonObject(with: introRequest.httpBody!) as? [String: Any])
+        #expect(body["enable_thinking"] as? Bool == true)
+        #expect(body["thinking_budget"] as? Int == 4_096)
+        #expect(body["parameters"] == nil)
+        #expect((body["search_options"] as? [String: Any])?["enable_source"] == nil)
+    }
+
+    @Test("要求平台来源时不会把其他接口或地区的密钥迁移到百炼北京原生接口", arguments: [
+        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        "https://api.example.com/v1",
+        "https://dashscope.aliyuncs.com/other-path"
+    ])
+    func nativeSearchDoesNotRedirectConfiguredCredentials(endpoint: String) async {
+        let http = StubHTTPDataClient(data: Data(), statusCode: 200)
+        let client = OpenAICompatibleAIClient(httpClient: http)
+        let config = AIConfig(platform: .bailian, endpoint: URL(string: endpoint)!, apiKey: "test-key", model: "qwen-plus", searchStrategy: .enableSearch)
+        await #expect(throws: AIClientError.searchUnsupported) {
+            _ = try await client.complete(
+                request: AICompletionRequest(messages: [], requiresSearchReferences: true), config: config
+            )
+        }
+        #expect(await http.lastRequest == nil)
+    }
+
+    @Test("百炼原生来源重复编号拒绝而不是选择任意链接")
+    func rejectsDuplicateProviderReferenceIndices() async {
+        let data = #"{"output":{"choices":[{"message":{"content":"{}"}}],"search_info":{"search_results":[{"index":1,"url":"https://one.example/book"},{"index":1,"url":"https://two.example/book"}]}}}"#.data(using: .utf8)!
+        let client = OpenAICompatibleAIClient(httpClient: StubHTTPDataClient(data: data, statusCode: 200))
+        await #expect(throws: AIClientError.invalidResponse) {
+            _ = try await client.complete(
+                request: AICompletionRequest(messages: [], requiresSearchReferences: true),
+                config: AIPlatformPreset.bailian.defaultConfig(apiKey: "test-key")
+            )
+        }
+    }
+
+    @Test("百炼缺少来源列表仍返回空来源集合防止模型 URL 绕过绑定")
+    func nativeResponseWithoutSourcesKeepsEmptyBinding() async throws {
+        let data = #"{"output":{"choices":[{"message":{"content":"{}"}}]}}"#.data(using: .utf8)!
+        let client = OpenAICompatibleAIClient(httpClient: StubHTTPDataClient(data: data, statusCode: 200))
+        let response = try await client.complete(
+            request: AICompletionRequest(messages: [], requiresSearchReferences: true),
+            config: AIPlatformPreset.bailian.defaultConfig(apiKey: "test-key")
+        )
+        #expect(response.searchReferences == [:])
+    }
+
+    @Test("百炼事实补全通过平台搜索编号绑定真实来源并保留带币种定价")
+    func bailianFactsResolveProviderCitations() async throws {
+        let content = #"{"status":"ok","identity":{"matched_title":"南怀瑾的最后100天","matched_author":"王国平","matched_isbn":"9787559860774"},"fields":{"publish_date":{"value":"2023-08-01","sources":["[ref_4]"]},"price":{"value":"人民币88.00元","sources":["[ref_4]"]}}}"#
+        let envelope: [String: Any] = [
+            "output": [
+                "choices": [["message": ["content": content], "finish_reason": "stop"]],
+                "search_info": ["search_results": [["index": 4, "title": "南怀瑾的最后100天(增订版)", "url": "https://product.dangdang.com/29617355.html"]]]
+            ],
+            "usage": ["input_tokens": 120, "output_tokens": 80, "total_tokens": 200]
+        ]
+        let http = StubHTTPDataClient(data: try JSONSerialization.data(withJSONObject: envelope), statusCode: 200)
+        let service = AIEnrichmentService(
+            client: OpenAICompatibleAIClient(httpClient: http),
+            config: AIPlatformPreset.bailian.defaultConfig(apiKey: "test-key")
+        )
+
+        let outcome = await service.enrich(
+            draft: BookDraft(title: "南怀瑾的最后100天", author: "王国平", isbn: "9787559860774"),
+            targets: [.publishDate, .price]
+        )
+
+        #expect(outcome.status == .found)
+        #expect(outcome.draft.publishDate == PublicationDateParser.parse("2023-08-01"))
+        #expect(outcome.draft.price == "人民币88.00元")
+        #expect(outcome.evidence[.price] == [URL(string: "https://product.dangdang.com/29617355.html")!])
+        #expect(outcome.tokenUsage == AITokenUsage(input: 120, output: 80, total: 200))
+        let request = try #require(await http.lastRequest)
+        #expect(request.url?.absoluteString == "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation")
+        let body = try #require(JSONSerialization.jsonObject(with: request.httpBody!) as? [String: Any])
+        let parameters = try #require(body["parameters"] as? [String: Any])
+        let search = try #require(parameters["search_options"] as? [String: Any])
+        #expect(search["forced_search"] as? Bool == true)
+        #expect(search["enable_source"] as? Bool == true)
+        #expect(search["enable_citation"] as? Bool == true)
+        #expect(search["citation_format"] as? String == "[ref_<number>]")
+        #expect(parameters["enable_thinking"] as? Bool == false)
+    }
+
     @Test("读取模型列表时去重并优先展示平台推荐模型")
     func listsModels() async throws {
         let data = #"{"data":[{"id":"qwen-plus"},{"id":"qwen-max"},{"id":"qwen-plus"}]}"#.data(using: .utf8)!
@@ -939,6 +1058,7 @@ private actor StubHTTPDataClient: HTTPDataClient {
 private actor SequenceHTTPDataClient: HTTPDataClient {
     private var responses: [(Data, Int, [String: String])]
     private(set) var requestCount = 0
+    private(set) var requests: [URLRequest] = []
 
     init(responses: [(Data, Int, [String: String])]) {
         self.responses = responses
@@ -946,6 +1066,7 @@ private actor SequenceHTTPDataClient: HTTPDataClient {
 
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
         requestCount += 1
+        requests.append(request)
         let next = responses.removeFirst()
         return (
             next.0,

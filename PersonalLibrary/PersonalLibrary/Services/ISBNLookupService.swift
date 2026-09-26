@@ -34,6 +34,7 @@ actor DoubanRateLimiter {
 enum LookupSourceStatus: Equatable, Sendable {
     case notAttempted       // 未尝试（如没有ISBN则跳过ISBN类查询）
     case found             // 找到数据
+    case noNewFields       // 已匹配图书，但没有可补全的缺失字段
     case notFound          // 查询成功但没有数据
     case retryableFailure(String)
     case fatalFailure(String)
@@ -45,6 +46,7 @@ enum LookupSourceStatus: Equatable, Sendable {
         switch self {
         case .notAttempted: return "未尝试"
         case .found: return "已找到"
+        case .noNewFields: return "已匹配，暂无可补全字段"
         case .notFound: return "未找到"
         case .retryableFailure(let msg): return "稍后可重试: \(msg)"
         case .fatalFailure(let msg): return "失败: \(msg)"

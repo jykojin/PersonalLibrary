@@ -716,6 +716,55 @@ xcodebuild -scheme PersonalLibrary \
 - 在 `/tmp` 源码副本执行 `xcodebuild build test`，构建与测试均通过：570 个单元/集成测试（80 suites）和 3 个 UI 测试，失败 0、跳过 0。结果为 `/tmp/PersonalLibrary-v068.zOiP32/ReleaseTests.xcresult`；App 行覆盖率 31.49%（10280/32649），单元测试目标 98.00%（10608/10824）。
 - 直接读取构建产物 `Info.plist`，确认 `CFBundleShortVersionString=0.68`、`CFBundleVersion=1`。历史真机安装记录保留当时的 0.67 版本信息。
 
+### 6.13 来源标题装饰与合著署名（2026-09-25，未发布）
+
+- 复现：用历史手机数据库的书名/作者/ISBN 与本次真实豆瓣页面回放生产解析器。《文化中国的青春岁月》失败，《南怀瑾的最后100天》通过；前者单独修正标题或作者仍失败，同时修正才通过。
+- TDD：在 `SequentialBookMetadataLookup.lookup` 经真实 `ISBNMetadataSourceAdapter`、页面解析器的边界先加入失败测试（仅 HTTP 为 fixture），确认来源被拒且出版社未补入，再实现修复并转绿。随后分别以“归一化后空书名”和“单空格音译姓名误拆”先红后绿收紧边界。
+- 实现仅涉及 `BookTextNormalizer` 与 `BookIdentityMatcher`：ISBN/已知作者共同约束来源装饰比较，合著署名只作比较规范化。原 `.explicitSubtitleWithISBN` 的 AI简介副标题行为保留，普通来源不继承它。
+- 防回归覆盖普通补全不改已有书名/作者、AI事实/AI简介公共契约、错误或缺失 ISBN、未知/错误作者、单册与套装、宣传语引用书名、无边界续篇、英文/音译完整姓名；真实页面最小片段记录在 `EnrichmentFixtures`。
+- 证据目录：`/tmp/PersonalLibrary-IdentityRepair.exminr/`。`RedCultureRetry.xcresult` 为预期失败；`GreenCulture.xcresult` 为同一回归转绿；`RedEmptyTitle.xcresult`、`RedAuthor.xcresult` 为边界测试红灯。
+- 《南怀瑾》仅确认普通检索身份链路正常；手机日志无具体 AI 失败原因，已向用户请求完整错误。标准身份对照测试不代表真实 AI 调用成功，不作猜测性放宽。
+- 第一轮全量 `Full.xcresult`：580 个单元/集成测试、3 个 UI 测试与 build 通过。随后独立 Spec 审查发现组合“单册＋版本”括号被旧清理逻辑删除，按 `RedVolumeEdition.xcresult` 先红后绿，装饰比较改为保留其他文字。
+- 新宣传正则压力回放显示输入倍增时耗时近似平方增长（500/1000/2000 个书名号片段约 0.053/0.157/0.654 秒）。按 `RedTitleBudget.xcresult` 先建立超长兼容红灯，再为新分支增加 2048 Unicode scalar 上限；超限不截断、不采用装饰兼容。修复后 1000/2000 片段检查均低于 0.001 秒；ISBN/作者未匹配时不执行新分支。
+- 最终 `FinalFull.xcresult`：Debug build 成功，582 个单元/集成测试（80 suites）和 3 个 UI 测试通过，失败 0。App 行覆盖率 31.61%（10337/32706）；本次生产文件 `BookIdentityMatcher` 为 97.04%（164/169），`BookTextNormalizer` 为 97.96%（48/49）。再次回放两份原始豆瓣 HTML，身份匹配均通过；未调用真实 AI，也未部署或提交。
+- 独立审查：Standards 无问题；Spec 初审的单册/版本组合误匹配已修复并经增量复审闭合；Security 初始快照发现同一正则资源问题的四条来源路径（豆瓣、Goodreads、Open Library、AI简介），均为低风险。2048 scalar 上限及前置身份门槛修复后，独立增量安全复核确认四条路径共同闭合，无新绕过。最终审查 patch SHA256：`f14364b8feee9a5e20d3f804bb263e4e0684e60bffc16c565e245fdabab7f5db`（不含本条收尾记录）。
+- 原始快照 Codex Security Scan ID：`8a26901b-f2ea-4648-b508-4b3aa58906e2`。报告：`/private/var/folders/kx/6gs9wm0n6yv69bx9zv6p00980000gn/T/codex-security-scans-zTKq7x/私人图书馆/76b44b1c2b17c90ce0efb1287ffc192bd7c5b959_20260925T143942Z_eulby3wj/report.md`。报告保留初始问题，不代表最终代码仍有四个未修复问题；工具在封存时仍保留先前 checkpoint 的两个 deferred 描述，将 coverage 标为 partial，虽然随后候选已全部分类、六个文件均审过。不得把该封存报告描述成完整覆盖证书；最终修复依据上述回归与独立增量复核。工具累计统计 totalTokens=9520975、inputTokens=9484940、cachedInputTokens=9048209，不换算为本次新增费用。
+
+### 6.14 2026-09-26 南怀瑾截图诊断与修订（未发布）
+
+- 取得用户截图，确认并非所有来源身份失败：豆瓣空命中被 `SequentialBookMetadataLookup` 改写成验证拒绝；Goodreads 的真实 JSON-LD 书名尾部为 `(增订版)(精)`，作者和 ISBN 一致；Open Library 为 TLS 失败；AI 为原成功空结果状态。
+- 外部事实：豆瓣抓取页无日期/页数/定价；Goodreads ISBN 页和搜索首项 `/book/show/213682104` 均返回上述装帧标题、王国平和 ISBN `9787559860774`，结构化页数为 0。历史手机快照已有 892 字 AI简介。未获取截图对应 AI 原始响应，不猜测其检索过程，不使用密钥发起额外模型调用。
+- 实现：`BookTextNormalizer.normalizedISBNAnchoredTitle` 在既有锚点/长度限制下剥离末尾精确装帧标签；普通与 AI 共用，保留单册、错作者、缺失/冲突 ISBN 和超长拒绝。新增 `LookupSourceStatus.noNewFields` 贯通普通合并、AI 成功空结果、表单显示、批量统计和尝试标记，避免空命中冒充验证失败或写入成功。
+- TDD 证据均在 `/tmp/PersonalLibrary-IdentityRepair.exminr/`：`RedNanNoNewFieldsRetry.xcresult` 复现原误报；明确新提示后的 `RedNanStatus.xcresult` 两例失败、`GreenNanStatus.xcresult` 两例通过；真实 Goodreads 样本 `RedNanGoodreads.xcresult` 失败、`GreenNanGoodreads.xcresult` 通过；`RedNanAIEmpty.xcresult` 失败、`GreenNanAIEmpty.xcresult` 两例通过。第一次 `RedNanNoNewFields.xcresult` 因测试文件未同步执行了 0 个测试，作废，不计入红绿证据。
+- 补充回归：装帧双向兼容、无锚点/错误身份/单册与套装边界、AI简介装帧身份、AI 空事实保留旧简介与 Token、普通空命中不记完成且批量统计无资料。
+- 最终 `NanFull.xcresult`：Debug build 成功，586 个单元/集成测试（80 suites）与 3 个 UI 测试通过，失败 0。App 行覆盖率 31.57%（10327/32712）；`BookIdentityMatcher` 97.04%（164/169）、`BookTextNormalizer` 98.15%（53/54）、`BookMetadataLookup` 90.48%（57/63）、`AIEnrichmentService` 88.51%（231/261）、`EnrichmentPolicies` 96.34%（237/246）、`EnrichmentTypes` 98.25%（56/57）。这些是行覆盖率，不等于真实模型检索成功率；UI 测试为现有启动/添加/备份烟测，来源与 AI 回归使用固定 HTTP/模型响应。
+- 多代理审查：Standards 0 项、Spec 0 项；独立安全代理覆盖 8 个生产文件，主代理覆盖 6 个测试/fixture 文件，未发现可报告安全候选。冻结审查 patch SHA256：`141f4dd9f9bfbd57f00ecee862ba51a6eeab1799d88462fed395bc0ddbbf69f4`（不含本条收尾记录）。最终 `git diff --check` 通过；未新增调试日志。
+- Codex Security Scan `35f94d90-3975-4a26-88e6-80a6e663ec5d` 已完成并回读封存产物：14/14 个变更 Swift 文件覆盖，`completeness: complete`、0 findings、无 deferred。报告：`/private/var/folders/kx/6gs9wm0n6yv69bx9zv6p00980000gn/T/codex-security-scans-zTKq7x/私人图书馆/76b44b1c2b17c90ce0efb1287ffc192bd7c5b959_20260925T165729Z_wsy5y2ya/report.md`。沿用的旧架构模型原文予以保留，当前门槛/长度上限及截图进展在 scan scope 中明确纠正；没有重新声称旧快照问题仍存在。工具用量：totalTokens 2,912,830、inputTokens 2,900,232、cachedInputTokens 2,731,753、outputTokens 12,598、threadCount 4；这是工具的 rollout 统计，不作为新增费用估算。Daybreak 查询为 `unknown`，已告知仅属报告展示权限提示，不阻断审查。
+- 需求、设计、实现及测试证据已同步规格第 25 节和 `PROJECT_NOTES.md` 问题 15。审查完成时未改版本、提交、推送、安装手机或调用真实 AI provider；后续按用户要求安装手机的结果见 8.3。
+
+### 6.15 2026-09-26 缺失出版信息补查（未发布）
+
+- 原因已通过公开 `AIEnrichmentService.enrich` 接口复现：首次合法空事实结果立即终止，即使第二份响应含同 ISBN 的有来源日期/定价，也不会被消费。初始提示词缺少出版社及替代查询指引；百炼已有 `enable_search` / `forced_search`，不是忘记启用联网。没有原手机模型响应，不能断言历史每个空值的唯一原因。
+- 最小实现仅改 `AIEnrichmentService.swift` 与 `AIEnrichmentContract.swift`：受限出版社上下文、同版多查询/交叉核对提示，未拒绝的空出版字段补查一次；与技术重试共用两次请求及 60 秒 deadline。已合入事实、证据、Token 与拒绝累积，首轮成功不被第二轮空值覆盖，真实错误不吞掉。
+- TDD 证据位于 `/tmp/PersonalLibrary-IdentityRepair.exminr/`：`RedPublicationResearchContext.xcresult` → `GreenPublicationResearch.xcresult`（漏补日期/定价）；`RedPublicationPartial.xcresult` → `GreenPublicationPartial.xcresult`（首轮部分成功）；`RedPublicationRejection.xcresult` → `GreenPublicationRejection.xcresult`（拒绝不被后续空结果掩盖）。均执行实际 Swift Testing 方法，非 0 测试空跑。
+- 补充回归覆盖仅重查空出版字段、已填值/简介/来源保持、译者空值不多查、技术重试共用次数、后续身份/JSON/超时失败、出版社不可信输入转义和长度预算。模拟 HTTP/provider 响应不代表真实模型的召回率。
+- 第一轮 `PublicationFocused.xcresult` 为 46 测试/2 suites 通过，`PublicationFull.xcresult` 为 build、594 单元/集成测试/80 suites 和 3 UI 测试通过。独立 Spec 审查随后发现“补查验证失败＋简介成功”会覆盖事实错误；按 `RedPublicationIntroduction.xcresult` 对身份/JSON 两种错误复现，简介继续独立生成但成功时保留事实阶段验证拒绝。Standards 提出的测试客户端命名判断项一并修正为 `FirstResponseThenDelayedClient`。
+- 上述组合回归在 `GreenPublicationIntroduction.xcresult` 两个 case 均转绿。最终 `PublicationFinalFull.xcresult`：Debug build 成功，595 个单元/集成测试（80 suites）和 3 个 UI 测试通过，失败 0；App 行覆盖率 31.65%（10363/32744），本次生产文件 `AIEnrichmentService` 89.72%（253/282）、`AIEnrichmentContract` 95.47%（274/287）。两次完整测试均使用模拟器；UI 仍为现有启动/添加/备份烟测，不代表已通过真实 AI 联网检索。
+- 多代理 Standards 和 Spec 初审意见均已修复并增量复审闭合，各剩余 0 项。冻结审查补丁为 `publication-review-v2.patch`，SHA256 `b3e4ce562171e0903544357f4fd285861b9d80005bd6f2cf72778b4dec38fa50`；只覆盖本次两个生产 Swift 文件、两个对应测试文件及文档差异，不把先前身份/状态修复重复计入本次工作量。
+- 实网预检：临时模拟器测试尝试使用 App 内保存的配置，但 `isAvailable` 为 false，在调用 provider 前终止；没有发出模型请求或改配置。断言诊断里的密钥属性为空串，没有记录有效密钥。临时测试已从构建副本移除，正式测试不依赖用户密钥。该结果不计为产品回归失败，也不计为真实检索通过；重新配置后仍需实网验证。
+- 页数 376/356 的冲突暂未解决；日期/定价可确认但不直接写用户书库。未改普通来源优先级、TLS/endpoint/凭据安全策略或版本号，未部署手机、提交或推送。
+
+### 6.16 2026-09-26 真机事实检索与平台引用绑定
+
+- 真机只读诊断使用 App 内已有配置及 Keychain；不导出密钥、不保存补全结果。原结构化请求、`max`、搜索范围干预均返回空事实；DashScope 来源列表显示搜索偏向作者及其他图书。分离规则与简短 user 查询后命中本书，但模型自行填写的 URL 仍可能虚构，因此继续采用平台引用编号绑定，而非只改提示词交付。
+- `AIEnrichmentContract.retrievalQuery` 生成受限书名/作者/中文目标字段；`AIEnrichmentService` 分离 system/user 消息、只在官方北京配置的事实阶段请求来源。`AIConfig.supportsBailianSearchReferences` 将迁移限定到精确官方 endpoint；`AICompletionClient` 封装原生请求、解码来源与原生 token 用量。合同先把编号映射到同次平台来源，再执行原 URL/身份/字段验证。
+- TDD：`QueryRed.xcresult` 先复现单消息搜索问题，`QueryGreen.xcresult` 转绿；`CitationRed.xcresult` 先复现原生来源无法消费/无法填入日期定价，`CitationGreen.xcresult` 转绿。均通过公开服务/客户端边界，不调用真实密钥。另覆盖未知编号、伪造 URL、空来源表、非 HTTP(S)/endpoint 来源、重复编号、其他地区/自定义地址不迁移凭据及关键词资源限制。
+- 2026-09-26 13:59、14:00 两次真实手机调用同一保存配置 `qwen-plus-latest`，均完成返回日期 `2023-08-01`、定价 `人民币88.00元`、页数 `376`，日期与价格匹配此前独立公开资料核查；引用解析为增订版百科/当当实际搜索记录，没有采用模型杜撰 URL。页数 376 与出版社标注一致，但另一书店为 356，该冲突仍未通过实书解决。测试未把结果写回用户书库。
+- 真机证据及 TDD 结果保存在 `/tmp/PersonalLibrary-NanLiveRepair.YAxlOA/`。`FinalFull.xcresult` 首轮全量暴露一条新增测试预期错误：旧来源 validator 只限制 HTTP(S) 和非 endpoint，不对仅作线索且不发请求的 URL 拒绝私网地址。改用 `file://` 反例以验证真实约束，未修改生产安全策略；另按 Standards 建议增加事实原生 → 简介 Chat 的连续服务测试。
+- `FinalVerified.xcresult`：正常 Debug build 成功，604 个单元/集成测试（80 suites）及 3 个 UI 测试全部通过，失败 0。App 行覆盖率 31.90%（10476/32840）；修改模块 `AIEnrichmentContract` 95.82%（298/311）、`AIEnrichmentService` 89.97%（260/289）、`AICompletionClient` 85.87%（717/835）、`AIConfig` 88.35%（273/309）。不是全 App 100% 覆盖。
+- 独立 Standards、Spec 审查仅针对本轮 4 个生产和 3 个测试文件，均为 0 项；连续路径测试建议已补齐并独立复核通过。冻结补丁 `review.patch` SHA256 `6555848195280472b2252cd89cdafd4fa79db3b89f6515de7a6f58e3f52cd7d2`，后续仅测试补丁 `test-followup.patch` SHA256 `b642d18a3541ad1c93a5ebea50aa9d9d745d40b0d218937115c9f43ce232f1c0`。安全源码审查未发现候选，正式报告封存结果见最终部署记录。
+- 临时诊断源文件及 App 启动分支已删除，构建副本与仓库完整 App 源码一致；正常真机构建成功、签名验证通过，二进制中未检出诊断入口。诊断从未保存图书补全结果或导出密钥，正常安装后由用户在原书库重新执行补全。
+
 ### 7. 最终独立审查
 
 - Standards 多代理审查：最终修改文件无阻塞性问题，测试边界闭合，`git diff --check` 通过。
@@ -742,3 +791,25 @@ xcodebuild -scheme PersonalLibrary \
 
 - iPhone 16 Pro 模拟器已用公共日期解析、Excel 复用和历史迁移的最终代码完成 Debug build；全量 570+3 测试同一轮通过。
 - “多洛霍夫”iPhone 14 Plus 已从同一最终源码完成 arm64 签名构建，通过数据线覆盖安装并成功启动；未卸载 App，因此原有书库、Endpoint 与 Keychain 密钥均保留。真机构建产物为 `/tmp/PersonalLibrary-DeviceDerivedData/Build/Products/Debug-iphoneos/PersonalLibrary.app`。
+
+### 8.3 来源身份与无新增字段修订部署（2026-09-26）
+
+- 按用户“安装到我手机”的要求，确认“多洛霍夫”iPhone 14 Plus（UDID `00008110-000118911185401E`）通过 `localNetwork` 无线连接。构建副本的完整 App 源码及 `project.yml` 与已测试/审查的当前工作区一致。
+- 从该源码完成 Debug arm64 真机构建，`BUILD SUCCEEDED`，签名校验通过；使用 `devicectl device install app` 无线覆盖安装成功，并从手机回读 `com.joe.PersonalLibrary` 版本 `0.68`、Build `1`，随后成功启动（PID `19261`）。包含《文化中国的青春岁月》《南怀瑾的最后100天》本轮修复，版本号未额外递增。
+- 未卸载 App、未清理书库或 Keychain、未修改 AI 配置、未提交或推送。真机模型联网效果待用户测试。
+- 构建产物：`/tmp/PersonalLibrary-DeviceDerivedData/Build/Products/Debug-iphoneos/PersonalLibrary.app`。构建/安装/回读/启动证据位于 `/tmp/PersonalLibrary-IdentityRepair.exminr/` 下的 `nan-device-build.log`、`nan-device-install.json`、`nan-device-installed-app.json`、`nan-device-launch.json`。
+
+### 8.4 出版信息补充检索无线部署（2026-09-26）
+
+- 按用户“安装到我手机，无线模式”的要求，确认“多洛霍夫”iPhone 14 Plus（UDID `00008110-000118911185401E`）连接方式为 `localNetwork`。
+- 核对构建副本的全部 App 源码、`project.yml` 及签名配置与当前工作区一致；该源码此前已通过 `PublicationFinalFull.xcresult` 的 595 个单元/集成测试和 3 个 UI 测试。重新完成 Debug arm64 真机构建与签名校验，`BUILD SUCCEEDED`。
+- 无线覆盖安装成功，设备端回读确认为 `com.joe.PersonalLibrary`、版本 `0.68`、Build `1`，随后成功启动。包含第 26 节的出版信息补查及简介成功时保留事实失败状态的修复；未卸载、未清理书库或 Keychain、未修改 AI 配置，未递增版本或提交/推送。
+- 真实手机 AI 联网效果仍待用户测试；此部署不代表此前被路径校验阻断的安全报告封存已经完成。
+- 构建产物：`/tmp/PersonalLibrary-DeviceDerivedData/Build/Products/Debug-iphoneos/PersonalLibrary.app`。证据位于 `/tmp/PersonalLibrary-IdentityRepair.exminr/` 下的 `publication-device-build.log`、`publication-device-install.json`、`publication-device-installed-app.json`、`publication-device-launch.json`。
+
+### 8.5 事实检索与平台引用绑定无线部署（2026-09-26）
+
+- `FinalVerified.xcresult` 的正常构建及 604+3 测试通过后，将同一生产源码的签名 arm64 构建无线覆盖安装至“多洛霍夫”iPhone 14 Plus。`device-connection.json` 确认 `localNetwork`；`final-device-install.json` 确认安装成功；`final-installed-app.json` 回读 `com.joe.PersonalLibrary`、版本 `0.68`、Build `1`；`final-device-launch.json` 确认无诊断参数启动成功（PID `22531`）。
+- 交付构建已移除 `TemporaryPublicationProbe` 及全部诊断启动分支，源码比较与二进制字符串检查通过。未卸载 App、未清书库或 Keychain、未修改用户 endpoint/模型/密钥，未新增版本号、提交或推送。真机两次只读事实补全验证见 6.16，用户仍可在正常编辑界面重新执行 AI 补全并保存。
+- 本轮独立安全审核已完成并正式封存，覆盖 7/7 改动文件及后续测试补丁，0 个漏洞、0 个待定项。报告：`/private/tmp/PersonalLibrary-NanLiveRepair.YAxlOA/security/report.md`，另有封存 canonical JSON 与 SARIF。该审核只针对本轮增量；此前另一份旧报告的路径封存问题不冒充在本轮被修复。Token 用量不可测；Daybreak 权限检查为 `unknown`，不影响本地审核。
+- 最终构建：`/tmp/PersonalLibrary-DeviceDerivedData/Build/Products/Debug-iphoneos/PersonalLibrary.app`；测试、覆盖率、无线安装与启动日志均位于 `/tmp/PersonalLibrary-NanLiveRepair.YAxlOA/`。页数 376/356 的跨来源差异仍按研究记录披露，未宣称实书核验完成。

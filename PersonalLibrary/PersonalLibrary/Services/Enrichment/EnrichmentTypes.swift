@@ -102,7 +102,7 @@ struct EnrichmentOutcome: Equatable, Sendable {
         switch aiStatus {
         case .retryableFailure, .fatalFailure, .validationRejected, .error:
             return aiStatus.displayText
-        case .notAttempted, .found, .notFound, .cancelled:
+        case .notAttempted, .found, .noNewFields, .notFound, .cancelled:
             return nil
         }
     }

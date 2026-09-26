@@ -4,6 +4,252 @@ import Testing
 
 @Suite("AI Enrichment Service Tests")
 struct AIEnrichmentServiceTests {
+    @Test("事实检索问题与合同规则分离以避免搜索被 JSON 示例带偏")
+    func factSearchSeparatesQueryFromContract() async throws {
+        let response = #"{"status":"ok","identity":{"matched_title":"南怀瑾的最后100天","matched_author":"王国平","matched_isbn":"9787559860774"},"fields":{}}"#
+        let client = SequencedAICompletionClient(responses: [
+            AICompletionResponse(content: response, usage: .unknown),
+            AICompletionResponse(content: response, usage: .unknown)
+        ])
+        let service = AIEnrichmentService(client: client, config: AIPlatformPreset.bailian.defaultConfig(apiKey: "test-key"))
+        let draft = BookDraft(title: "南怀瑾的最后100天", author: "王国平", isbn: "9787559860774")
+
+        let outcome = await service.enrich(draft: draft, targets: [.publishDate, .totalPages, .price])
+
+        #expect(outcome.draft == draft)
+        let requests = await client.requests
+        #expect(requests.count == 2)
+        for request in requests {
+            #expect(request.messages.map(\.role) == ["system", "user"])
+            let query = try #require(request.messages.last?.content)
+            #expect(query == "请检索《南怀瑾的最后100天》，作者王国平，查找定价、出版日期、页数。")
+            #expect(!query.contains("9787559860774"))
+            #expect(!query.contains("requested_fields"))
+            #expect(request.messages[0].content.contains("9787559860774"))
+            #expect(request.messages[0].content.contains("不可信数据"))
+            #expect(request.enableThinking == false)
+            #expect(request.timeoutInterval! <= 60)
+        }
+    }
+
+    @Test("简介成功不掩盖出版补查的身份或 JSON 失败", arguments: [
+        (#"{"status":"ok""#, "invalidJSON"),
+        (#"{"status":"ok","identity":{"matched_title":"另一本书","matched_author":"其他作者"},"fields":{}}"#, "identityMismatch")
+    ])
+    func introductionSuccessPreservesPublicationFailure(response: String, error: String) async {
+        let empty = #"{"status":"ok","identity":{"matched_title":"示例图书","matched_author":"示例作者"},"fields":{}}"#
+        let client = SequencedAICompletionClient(responses: [
+            AICompletionResponse(content: empty, usage: .unknown),
+            AICompletionResponse(content: response, usage: .unknown),
+            AICompletionResponse(content: validIntroductionJSON(), usage: .unknown)
+        ])
+        let service = AIEnrichmentService(client: client, config: AIPlatformPreset.bailian.defaultConfig(apiKey: "test-key"))
+
+        let outcome = await service.enrich(
+            draft: BookDraft(title: "示例图书", author: "示例作者"),
+            targets: [.publishDate, .aiIntroduction]
+        )
+
+        #expect(outcome.status == .validationRejected(error))
+        #expect(outcome.draft.publishDate == nil)
+        #expect(outcome.draft.aiIntroduction != nil)
+        #expect(outcome.evidence[.aiIntroduction] == [URL(string: "https://research.example/books/1")!])
+        #expect(await client.requests.count == 3)
+    }
+
+    @Test("补充检索的身份或 JSON 错误仍作为验证失败返回", arguments: [
+        (#"{"status":"ok""#, "invalidJSON"),
+        (#"{"status":"ok","identity":{"matched_title":"另一本书","matched_author":"其他作者"},"fields":{}}"#, "identityMismatch")
+    ])
+    func publicationFollowUpDoesNotHideInvalidResponses(response: String, error: String) async {
+        let empty = #"{"status":"ok","identity":{"matched_title":"示例图书","matched_author":"示例作者"},"fields":{}}"#
+        let client = SequencedAICompletionClient(responses: [
+            AICompletionResponse(content: empty, usage: .unknown),
+            AICompletionResponse(content: response, usage: .unknown)
+        ])
+        let service = AIEnrichmentService(client: client, config: AIPlatformPreset.bailian.defaultConfig(apiKey: "test-key"))
+        let draft = BookDraft(title: "示例图书", author: "示例作者", aiIntroduction: "已有简介")
+
+        let outcome = await service.enrich(draft: draft, targets: [.publishDate])
+
+        #expect(outcome.status == .validationRejected(error))
+        #expect(outcome.draft == draft)
+        #expect(await client.requests.count == 2)
+    }
+
+    @Test("技术重试和出版信息补查共享两次请求上限")
+    func publicationFollowUpSharesTechnicalRetryBudget() async {
+        let empty = #"{"status":"ok","identity":{"matched_title":"示例图书","matched_author":"示例作者"},"fields":{}}"#
+        let client = SequencedAICompletionClient(responses: [
+            AICompletionResponse(content: #"{"status":"ok""#, usage: .unknown),
+            AICompletionResponse(content: empty, usage: .unknown)
+        ])
+        let service = AIEnrichmentService(client: client, config: AIPlatformPreset.bailian.defaultConfig(apiKey: "test-key"))
+        let draft = BookDraft(title: "示例图书", author: "示例作者")
+
+        let outcome = await service.enrich(draft: draft, targets: [.publishDate])
+
+        #expect(outcome.status == .noNewFields)
+        #expect(outcome.draft == draft)
+        #expect(await client.requests.count == 2)
+    }
+
+    @Test("出版信息补查超时保留首轮字段并返回可重试失败")
+    func publicationFollowUpDeadlinePreservesFirstFacts() async {
+        let first = #"{"status":"ok","identity":{"matched_title":"示例图书","matched_author":"示例作者"},"fields":{"publish_date":{"value":"2023-08-01","sources":["https://research.example/books/1"]}}}"#
+        let client = FirstResponseThenDelayedClient(factResponse: first)
+        let service = AIEnrichmentService(
+            client: client,
+            config: AIPlatformPreset.bailian.defaultConfig(apiKey: "test-key"),
+            factTimeout: .milliseconds(100)
+        )
+
+        let outcome = await service.enrich(
+            draft: BookDraft(title: "示例图书", author: "示例作者"),
+            targets: [.publishDate, .price]
+        )
+
+        guard case .retryableFailure = outcome.status else {
+            Issue.record("补充检索超时不应掩盖为无新增字段")
+            return
+        }
+        #expect(outcome.draft.publishDate == PublicationDateParser.parse("2023-08-01"))
+        #expect(outcome.draft.price == nil)
+        #expect(outcome.evidence[.publishDate] == [URL(string: "https://research.example/books/1")!])
+        #expect(await client.requestCount == 2)
+    }
+
+    @Test("所需出版信息首轮已齐时不额外补查")
+    func completePublicationFactsNeedOnlyOneRequest() async {
+        let first = #"{"status":"ok","identity":{"matched_title":"示例图书","matched_author":"示例作者"},"fields":{"publish_date":{"value":"2023-08-01","sources":["https://research.example/books/1"]}}}"#
+        let client = SequencedAICompletionClient(responses: [AICompletionResponse(content: first, usage: .unknown)])
+        let service = AIEnrichmentService(client: client, config: AIPlatformPreset.bailian.defaultConfig(apiKey: "test-key"))
+
+        let outcome = await service.enrich(draft: BookDraft(title: "示例图书", author: "示例作者"), targets: [.publishDate])
+
+        #expect(outcome.status == .found)
+        #expect(outcome.draft.publishDate == PublicationDateParser.parse("2023-08-01"))
+        #expect(await client.requests.count == 1)
+    }
+
+    @Test("补充检索不重试被拒字段也不抹掉首轮验证错误")
+    func publicationFollowUpPreservesRejections() async {
+        let rejected = #"{"status":"ok","identity":{"matched_title":"示例图书","matched_author":"示例作者"},"fields":{"total_pages":{"value":376,"sources":[]}}}"#
+        let empty = #"{"status":"ok","identity":{"matched_title":"示例图书","matched_author":"示例作者"},"fields":{}}"#
+        let client = SequencedAICompletionClient(responses: [
+            AICompletionResponse(content: rejected, usage: .unknown),
+            AICompletionResponse(content: empty, usage: .unknown)
+        ])
+        let service = AIEnrichmentService(
+            client: client,
+            config: AIPlatformPreset.bailian.defaultConfig(apiKey: "test-key")
+        )
+        let draft = BookDraft(title: "示例图书", author: "示例作者")
+
+        let outcome = await service.enrich(draft: draft, targets: [.totalPages, .price])
+
+        #expect(outcome.status == .validationRejected("AI 返回字段未通过证据或格式验证"))
+        #expect(outcome.draft == draft)
+        #expect(outcome.rejections[.totalPages] == "缺少有效来源")
+        let requests = await client.requests
+        #expect(requests.count == 2)
+        #expect(requests.last?.messages[0].content.contains(#""requested_fields":["price"]"#) == true)
+    }
+
+    @Test("补充检索为空也保留首轮成功字段、来源和已有值")
+    func publicationFollowUpPreservesEarlierFacts() async {
+        let first = #"{"status":"ok","identity":{"matched_title":"示例图书","matched_author":"示例作者"},"fields":{"publish_date":{"value":"2023-08-01","sources":["https://research.example/books/1"]}}}"#
+        let empty = #"{"status":"ok","identity":{"matched_title":"示例图书","matched_author":"示例作者"},"fields":{}}"#
+        let client = SequencedAICompletionClient(responses: [
+            AICompletionResponse(content: first, usage: AITokenUsage(input: 100, output: 30, total: 130)),
+            AICompletionResponse(content: empty, usage: AITokenUsage(input: 100, output: 30, total: 130))
+        ])
+        let service = AIEnrichmentService(
+            client: client,
+            config: AIPlatformPreset.bailian.defaultConfig(apiKey: "test-key")
+        )
+        let draft = BookDraft(title: "示例图书", author: "示例作者", price: "已录入定价", aiIntroduction: "已有简介")
+
+        let outcome = await service.enrich(draft: draft, targets: [.publishDate, .totalPages, .price])
+
+        #expect(outcome.status == .found)
+        #expect(outcome.draft.publishDate == PublicationDateParser.parse("2023-08-01"))
+        #expect(outcome.draft.totalPages == 0)
+        #expect(outcome.draft.price == draft.price)
+        #expect(outcome.draft.aiIntroduction == draft.aiIntroduction)
+        #expect(outcome.evidence[.publishDate] == [URL(string: "https://research.example/books/1")!])
+        #expect(outcome.tokenUsage.total == 260)
+        let requests = await client.requests
+        #expect(requests.count == 2)
+        #expect(requests.last?.messages[0].content.contains(#""requested_fields":["total_pages"]"#) == true)
+    }
+
+    @Test("首次事实检索漏掉出版信息时换检索路径补齐可核实字段")
+    func retriesUnresolvedPublicationFacts() async {
+        let empty = #"{"status":"ok","identity":{"matched_title":"南怀瑾的最后100天","matched_author":"王国平","matched_isbn":"9787559860774"},"fields":{}}"#
+        let verified = #"{"status":"ok","identity":{"matched_title":"南怀瑾的最后100天（增订版）","matched_author":"王国平","matched_isbn":"9787559860774"},"fields":{"publish_date":{"value":"2023-08-01","sources":["http://www.bbtpress.com/bookview/23472.html"]},"price":{"value":"88.00 元","sources":["http://www.bbtpress.com/bookview/23472.html"]}}}"#
+        let client = SequencedAICompletionClient(responses: [
+            AICompletionResponse(content: empty, usage: AITokenUsage(input: 100, output: 30, total: 130)),
+            AICompletionResponse(content: verified, usage: AITokenUsage(input: 150, output: 80, total: 230))
+        ])
+        let service = AIEnrichmentService(
+            client: client,
+            config: AIPlatformPreset.bailian.defaultConfig(apiKey: "test-key")
+        )
+        let draft = BookDraft(
+            title: "南怀瑾的最后100天", author: "王国平", isbn: "9787559860774",
+            publisher: "广西师范大学出版社", aiIntroduction: "已有 AI 简介"
+        )
+
+        let outcome = await service.enrich(draft: draft, targets: [.publishDate, .totalPages, .price])
+
+        #expect(outcome.status == .found)
+        #expect(outcome.draft.publishDate == PublicationDateParser.parse("2023-08-01"))
+        #expect(outcome.draft.price == "88.00 元")
+        #expect(outcome.draft.totalPages == 0)
+        #expect(outcome.draft.aiIntroduction == draft.aiIntroduction)
+        #expect(outcome.tokenUsage.total == 360)
+        let requests = await client.requests
+        #expect(requests.count == 2)
+        if requests.count == 2 {
+            let followUp = requests[1].messages[0].content
+            #expect(followUp != requests[0].messages[0].content)
+            #expect(followUp.contains(#""publisher":"广西师范大学出版社""#))
+            #expect(followUp.contains("补充检索"))
+            #expect(followUp.contains("冲突"))
+            #expect(requests[1].timeoutInterval! < requests[0].timeoutInterval!)
+        }
+    }
+
+    @Test("AI已匹配南怀瑾但缺失事实未查到时不提示整本书未找到")
+    func nanEmptyFactsPreserveExistingIntroductionAndReportNoNewFields() async {
+        let response = #"{"status":"ok","identity":{"matched_title":"南怀瑾的最后100天(增订版)(精)","matched_author":"王国平","matched_isbn":"9787559860774"},"fields":{}}"#
+        let client = SequencedAICompletionClient(responses: [
+            AICompletionResponse(content: response, usage: AITokenUsage(input: 100, output: 30, total: 130)),
+            AICompletionResponse(content: response, usage: AITokenUsage(input: 100, output: 30, total: 130))
+        ])
+        let service = AIEnrichmentService(
+            client: client,
+            config: AIPlatformPreset.bailian.defaultConfig(apiKey: "test-key")
+        )
+        let draft = BookDraft(
+            title: "南怀瑾的最后100天", author: "王国平", isbn: "9787559860774",
+            publisher: "广西师范大学出版社", bookDescription: "已有图书简介",
+            authorDescription: "已有作者简介", aiIntroduction: "已有 AI 简介"
+        )
+
+        let outcome = await service.enrich(draft: draft, targets: draft.missingFields)
+
+        #expect(outcome.status == .noNewFields)
+        #expect(outcome.draft == draft)
+        #expect(outcome.rejections.isEmpty)
+        #expect(outcome.tokenUsage.total == 260)
+        #expect(AIEnrichmentAttemptPolicy.shouldRecordCompletion(for: outcome.status))
+        let presentation = EnrichmentOutcome(originalDraft: draft, draft: outcome.draft, aiStatus: outcome.status)
+        #expect(presentation.aiIssueDescription == nil)
+        #expect(await client.requests.count == 2)
+    }
+
     @Test("事实检索返回错误状态时不伪装成未找到")
     func modelReportedFactErrorIsNotNotFound() async {
         let unavailable = #"{"status":"error","identity":{"matched_title":"人生问答","matched_author":"成庆","matched_isbn":"9787547330135"},"fields":{}}"#
@@ -85,7 +331,7 @@ struct AIEnrichmentServiceTests {
     @Test("AI简介阶段超时时保留此前已验证的事实字段")
     func preservesVerifiedFactsWhenIntroductionTimesOut() async {
         let factResponse = #"{"status":"ok","identity":{"matched_title":"示例图书","matched_author":"示例作者"},"fields":{"publisher":{"value":"示例出版社","sources":["https://research.example/books/1"]}}}"#
-        let client = FactThenDelayedIntroductionClient(factResponse: factResponse)
+        let client = FirstResponseThenDelayedClient(factResponse: factResponse)
         let service = AIEnrichmentService(
             client: client,
             config: AIPlatformPreset.bailian.defaultConfig(apiKey: "test-key"),
@@ -381,7 +627,8 @@ struct AIEnrichmentServiceTests {
 
         #expect(outcome.draft.translator == nil)
         #expect(outcome.rejections[.translator] == nil)
-        #expect(outcome.status == .notFound)
+        #expect(outcome.status == .noNewFields)
+        #expect(await client.requests.count == 1)
     }
 
     @Test("客户端重试后仍限流会返回批量应立即中止的失败")
@@ -519,6 +766,10 @@ private actor SequencedAICompletionClient: AICompletionClient {
 
     func complete(request: AICompletionRequest, config: AIConfig) async throws -> AICompletionResponse {
         requests.append(request)
+        guard !responses.isEmpty else {
+            Issue.record("AI 请求超出测试约定的次数")
+            throw AIClientError.invalidResponse
+        }
         return responses.removeFirst()
     }
 }
@@ -585,7 +836,7 @@ private actor NonCooperativeDelayedAICompletionClient: AICompletionClient {
     }
 }
 
-private actor FactThenDelayedIntroductionClient: AICompletionClient {
+private actor FirstResponseThenDelayedClient: AICompletionClient {
     private let factResponse: String
     private(set) var requestCount = 0
 

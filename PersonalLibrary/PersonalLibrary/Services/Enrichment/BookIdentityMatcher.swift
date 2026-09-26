@@ -26,27 +26,28 @@ enum BookIdentityMatcher {
         if normalizedRequestedTitle.isEmpty && !hasValidRequestedISBN {
             return false
         }
+        let requestedNames = normalizedAuthorNames(requestedAuthor ?? "")
+        let candidateNames = normalizedAuthorNames(candidateAuthor ?? "")
+        let requestedAuthorText = (requestedAuthor ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasKnownAuthor = !requestedAuthorText.isEmpty && requestedAuthorText != "未知作者"
+        let authorsMatch = hasKnownAuthor && !requestedNames.isEmpty
+            && !requestedNames.isDisjoint(with: candidateNames)
         if !normalizedRequestedTitle.isEmpty,
            normalizedRequestedTitle != normalizedCandidateTitle {
             let permitsSubtitleVariant = titleMatchPolicy == .explicitSubtitleWithISBN
                 && hasValidRequestedISBN
                 && (explicitMainTitle(candidateTitle) == normalizedRequestedTitle
                     || explicitMainTitle(requestedTitle) == normalizedCandidateTitle)
-            guard permitsSubtitleVariant else { return false }
+            var permitsSourceDecoration = false
+            if hasValidRequestedISBN && authorsMatch {
+                let anchoredRequestedTitle = BookTextNormalizer.normalizedISBNAnchoredTitle(requestedTitle)
+                permitsSourceDecoration = !anchoredRequestedTitle.isEmpty
+                    && anchoredRequestedTitle == BookTextNormalizer.normalizedISBNAnchoredTitle(candidateTitle)
+            }
+            guard permitsSubtitleVariant || permitsSourceDecoration else { return false }
         }
 
-        guard let requestedAuthor,
-              !requestedAuthor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              requestedAuthor.trimmingCharacters(in: .whitespacesAndNewlines) != "未知作者" else {
-            return true
-        }
-        guard let candidateAuthor else { return false }
-
-        let requestedNames = normalizedAuthorNames(requestedAuthor)
-        let candidateNames = normalizedAuthorNames(candidateAuthor)
-        return !requestedNames.isEmpty
-            && !candidateNames.isEmpty
-            && !requestedNames.isDisjoint(with: candidateNames)
+        return !hasKnownAuthor || authorsMatch
     }
 
     static func isbnMatches(_ requested: String?, _ candidate: String?) -> Bool {
@@ -90,6 +91,21 @@ enum BookIdentityMatcher {
         )
         return Set(separatedConjunctions
             .components(separatedBy: CharacterSet(charactersIn: "/、,，;；&＆\n"))
+            .flatMap { name -> [String] in
+                let withoutRole = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(
+                        of: #"\s+(?:著|编著|主编)$"#, with: "", options: .regularExpression
+                    )
+                // Multiple spaces separate coauthors on source pages. A single space
+                // may be part of a transliterated full name; English names stay intact.
+                if withoutRole.range(
+                    of: #"^\p{Han}{2,4}(?:\s{2,}\p{Han}{2,4})+$"#,
+                    options: .regularExpression
+                ) != nil {
+                    return withoutRole.split(whereSeparator: \.isWhitespace).map(String.init)
+                }
+                return [withoutRole]
+            }
             .map(BookTextNormalizer.normalized)
             .filter { !$0.isEmpty })
     }

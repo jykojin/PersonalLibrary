@@ -532,7 +532,7 @@ struct EditBookView: View {
         switch status {
         case .found: return .green
         case .notFound: return .red
-        case .notAttempted: return .gray
+        case .notAttempted, .noNewFields: return .gray
         case .retryableFailure, .error: return .orange
         case .fatalFailure, .validationRejected: return .red
         case .cancelled: return .gray

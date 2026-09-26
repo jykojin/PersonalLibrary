@@ -86,7 +86,7 @@ struct SequentialBookMetadataLookup: BookMetadataLookup, Sendable {
             current = merged
             let status: LookupSourceStatus
             if !accepted, sourceResult.status == .found {
-                status = .validationRejected("来源未返回可合入字段")
+                status = .noNewFields
             } else {
                 status = sourceResult.status
             }

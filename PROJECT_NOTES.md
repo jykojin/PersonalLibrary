@@ -231,6 +231,13 @@ iOS 个人藏书管理 + 阅读进度跟踪 App。SwiftUI + SwiftData，iOS 17+�
 | 11 | 《大便书（纪念版）》译者没有补出 | v0.68 | `84daed6` | 豆瓣精确版本缺译者且标签外冒号干扰解析；身份核验后仅借用其他版本译者 | `ISBNLookupEnrichmentTests` | 实施计划 6.6 |
 | 12 | 《人生问答》提示 invalid JSON 或书名与作者不匹配 | v0.68 | `84daed6`、`e6bf307` | 完整非成功 JSON 被误分类，副标题被全等比较误拒；拆分状态，并以 ISBN 与作者约束副标题兼容 | `AIEnrichmentContractTests`、`AIEnrichmentServiceTests`、`AIIntroductionContractTests` | 实施计划 6.7、6.9 |
 | 13 | 出版日期为空，或 Excel 导入后变成异常年份 | v0.68 | `84daed6`、`e6bf307` | 非补零等格式不兼容且 Excel 使用独立解析；现共用 UTC 解析器并定向迁移异常非空日期 | `BookDraftTests`、`PublicationDateMigrationTests`、Excel 导入回归 | 实施计划 6.8、6.11 |
+| 14 | 《文化中国的青春岁月》来源 ISBN 一致但书名/作者验证失败 | 未发布 | 未提交 | 来源标题含上下卷及宣传尾句，合著作者以多空白分隔且含署名后缀；只在 ISBN 和已知作者匹配时兼容来源装饰，不改用户数据 | `ISBNLookupEnrichmentTests`、`AIEnrichmentContractTests`、`AIIntroductionContractTests` | 规格第 24 节、实施计划 6.13 |
+| 15 | 《南怀瑾的最后100天》普通/AI 补全无结果被误解为身份失败 | 未发布 | 未提交 | Goodreads 同 ISBN/作者标题末尾 `(增订版)(精)` 未被兼容；豆瓣已匹配但无新增字段被误标验证拒绝。增加锚定装帧兼容和 `noNewFields` 状态，保留字段证据与重试边界 | `ISBNLookupEnrichmentTests`、`AIIntroductionContractTests`、`AIEnrichmentServiceTests`、`EnrichmentCoordinatorTests` | 规格第 25 节、实施计划 6.14 |
+| 16 | 普通来源缺字段后，AI 合法空/部分结果使出版信息检索提前结束 | 未发布 | 未提交 | 出版社上下文及替代查询策略缺失；首轮合法响应立即结束。对未拒绝的空日期/页数/定价补查一次，共用原两次/60 秒预算，累积事实与拒绝，不猜填冲突 | `AIEnrichmentServiceTests`、`AIEnrichmentContractTests` | 规格第 26 节、实施计划 6.15、南怀瑾出版元数据核查 |
+
+| 17 | 出版信息补查后仍为空，模型错误否认真实 ISBN 或编造来源 URL | 未发布 | 未提交 | 真机搜索列表显示复杂单消息让检索偏向作者；分离合同与图书查询，百炼官方事实请求改用平台搜索编号绑定，定价明确带币种字符串；不迁移其他 endpoint 的凭据 | `AICompletionClientTests`、`AIEnrichmentServiceTests`、`AIEnrichmentContractTests` | 规格第 27 节、实施计划 6.16 |
+
+2026-09-26《南怀瑾的最后100天》补充截图后已复现上述两个来源误报；AI 成功空事实结果改为“已匹配，暂无可补全字段”。抓取的豆瓣页没有出版日期、页数和定价，Goodreads 结构化页数为 0；不把来源缺字段归咎于日期解析。随后通过手机内只读诊断复现并修复检索方向及来源绑定，两次真实调用均返回日期与人民币定价（见 6.16）；模型页数 376 与另一书店 356 的差异仍需实书核实。Open Library TLS 失败仍按可重试处理。
 
 同轮的工程改进（非用户可见 bug）：
 

@@ -4,6 +4,43 @@ import Testing
 
 @Suite("AI Introduction Contract Tests")
 struct AIIntroductionContractTests {
+    @Test("AI简介复用有 ISBN 和作者锚点的来源书名兼容")
+    func acceptsVerifiedCultureYouthSourceIdentity() throws {
+        let page = try #require(DoubanBookPage.parse(EnrichmentFixtures.doubanCultureYouthHTML))
+        let json = replacingIdentity(
+            in: makeIntroductionJSON(nonWhitespaceCount: 900),
+            title: page.title, author: try #require(page.author),
+            isbn: try #require(page.isbn), bodyTitle: "文化中国的青春岁月"
+        )
+        let draft = BookDraft(title: "文化中国的青春岁月", author: "刘刚; 李冬君", isbn: page.isbn)
+        let endpoint = URL(string: "https://api.example.com/v1")!
+
+        #expect(throws: Never.self) {
+            try AIIntroductionContract.validateResponse(json, for: draft, endpoint: endpoint)
+        }
+        var wrongAuthor = draft
+        wrongAuthor.author = "另一位作者"
+        #expect(throws: AIIntroductionValidationError.identityMismatch) {
+            try AIIntroductionContract.validateResponse(json, for: wrongAuthor, endpoint: endpoint)
+        }
+    }
+
+    @Test("南怀瑾的最后100天来源身份和完整正文能够通过 AI简介契约",
+          arguments: ["南怀瑾的最后100天", "南怀瑾的最后100天(增订版)(精)"])
+    func acceptsNanLastHundredDaysIdentity(sourceTitle: String) throws {
+        let json = replacingIdentity(
+            in: makeIntroductionJSON(nonWhitespaceCount: 900),
+            title: sourceTitle, author: "王国平",
+            isbn: "9787559860774", bodyTitle: "南怀瑾的最后100天"
+        )
+        #expect(throws: Never.self) {
+            try AIIntroductionContract.validateResponse(
+                json, for: BookDraft(title: "南怀瑾的最后100天", author: "王国平", isbn: "9787559860774"),
+                endpoint: URL(string: "https://api.example.com/v1")!
+            )
+        }
+    }
+
     @Test("结构完整且来源有效的精炼 AI简介不因总字数较少被拒绝")
     func acceptsConciseValidIntroduction() throws {
         let draft = BookDraft(title: "示例图书", author: "示例作者", bookDescription: "一段不会与生成文本重复的短简介")

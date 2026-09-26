@@ -19,6 +19,30 @@ enum BookTextNormalizer {
         normalized(titleWithoutEditionDecoration(value))
     }
 
+    /// Comparison only: callers must first match source ISBN and a known author.
+    /// Keep single-volume labels; a set must not become interchangeable with one volume.
+    static func normalizedISBNAnchoredTitle(_ value: String) -> String {
+        // Reject, never truncate: an oversized suffix must not consume unbounded regex work
+        // or turn a clipped unrelated title into a match.
+        guard value.unicodeScalars.prefix(2_049).count <= 2_048 else { return "" }
+        let withoutPromotion = value.replacingOccurrences(
+            of: #"(?:《[^》\r\n]{1,100}》\s*)+作者\s+[\p{Han}\s]{2,40}\s+重磅力作\s*$"#,
+            with: "",
+            options: .regularExpression
+        )
+        let withoutBindingLabels = withoutPromotion.replacingOccurrences(
+            of: #"(?:\s*[（(](?:增订版|修订版|新版|精装版?|平装版?|精|平)[）)])+\s*$"#,
+            with: "",
+            options: .regularExpression
+        )
+        let withoutSetLabel = withoutBindingLabels.replacingOccurrences(
+            of: #"\s*[（(]上下[卷册][）)]\s*$"#,
+            with: "",
+            options: .regularExpression
+        )
+        return normalized(withoutSetLabel)
+    }
+
     static func normalized(_ value: String) -> String {
         let simplified = value.applyingTransform(
             StringTransform("Traditional-Simplified"),

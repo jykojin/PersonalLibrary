@@ -124,6 +124,12 @@ struct AIConfig: Equatable, Sendable {
         Self.destinationID(platform: platform, endpoint: endpoint)
     }
 
+    // Native search references are supported only at the known, same-region official endpoint.
+    var supportsBailianSearchReferences: Bool {
+        platform == .bailian && endpoint == AIPlatformPreset.bailian.defaultEndpoint
+            && searchStrategy == .enableSearch
+    }
+
     mutating func replaceAPIKey(_ value: String) {
         apiKey = value
         if value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

@@ -45,7 +45,7 @@ enum EnrichmentBatchPolicy {
 enum AIEnrichmentAttemptPolicy {
     static func shouldRecordCompletion(for status: LookupSourceStatus) -> Bool {
         switch status {
-        case .found, .notFound, .validationRejected:
+        case .found, .noNewFields, .notFound, .validationRejected:
             return true
         case .notAttempted, .retryableFailure, .fatalFailure, .cancelled, .error:
             return false
@@ -275,7 +275,7 @@ struct EnrichmentBatchSummary: Equatable, Sendable {
         switch status {
         case .retryableFailure, .fatalFailure, .cancelled, .error:
             return true
-        case .notAttempted, .found, .notFound, .validationRejected:
+        case .notAttempted, .found, .noNewFields, .notFound, .validationRejected:
             return false
         }
     }

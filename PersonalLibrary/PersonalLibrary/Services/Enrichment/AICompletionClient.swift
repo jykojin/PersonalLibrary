@@ -18,6 +18,7 @@ struct AICompletionRequest: Equatable, Sendable {
     var enableThinking: Bool?
     var thinkingBudget: Int?
     var timeoutInterval: TimeInterval?
+    var requiresSearchReferences: Bool = false
 }
 
 struct AITokenUsage: Equatable, Sendable {
@@ -91,15 +92,18 @@ struct AICompletionResponse: Equatable, Sendable {
     let content: String
     let usage: AITokenUsage
     let finishReason: AICompletionFinishReason
+    let searchReferences: [String: String]?
 
     init(
         content: String,
         usage: AITokenUsage,
-        finishReason: AICompletionFinishReason = .unspecified
+        finishReason: AICompletionFinishReason = .unspecified,
+        searchReferences: [String: String]? = nil
     ) {
         self.content = content
         self.usage = usage
         self.finishReason = finishReason
+        self.searchReferences = searchReferences
     }
 
     var reachedOutputLimit: Bool {
@@ -188,6 +192,9 @@ struct OpenAICompatibleAIClient: AICompletionClient, Sendable {
         guard config.apiKeyDestinationID == config.credentialDestinationID else {
             throw AIClientError.credentialDestinationMismatch
         }
+        guard !completion.requiresSearchReferences || config.supportsBailianSearchReferences else {
+            throw AIClientError.searchUnsupported
+        }
         let url = try AIEndpointPolicy.appending("chat/completions", to: config.endpoint)
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -230,6 +237,23 @@ struct OpenAICompatibleAIClient: AICompletionClient, Sendable {
         case .none:
             break
         }
+        if completion.requiresSearchReferences {
+            var parameters = body
+            parameters.removeValue(forKey: "model")
+            parameters.removeValue(forKey: "messages")
+            parameters["result_format"] = "message"
+            parameters["search_options"] = [
+                "forced_search": true, "enable_source": true,
+                "enable_citation": true, "citation_format": "[ref_<number>]"
+            ]
+            body = [
+                "model": model,
+                "input": ["messages": completion.messages.map { ["role": $0.role, "content": $0.content] }],
+                "parameters": parameters
+            ]
+            // The exact endpoint gate above prevents moving a custom/other-region credential.
+            request.url = URL(string: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation")!
+        }
         let bodyData = try JSONSerialization.data(withJSONObject: body)
         guard bodyData.count <= AITextBudget.maximumRequestBytes else {
             throw AIClientError.requestTooLarge
@@ -254,19 +278,52 @@ struct OpenAICompatibleAIClient: AICompletionClient, Sendable {
                 let promptTokens: Int?
                 let completionTokens: Int?
                 let totalTokens: Int?
+                let inputTokens: Int?
+                let outputTokens: Int?
 
                 enum CodingKeys: String, CodingKey {
                     case promptTokens = "prompt_tokens"
                     case completionTokens = "completion_tokens"
                     case totalTokens = "total_tokens"
+                    case inputTokens = "input_tokens"
+                    case outputTokens = "output_tokens"
                 }
             }
-            let choices: [Choice]
+            struct NativeOutput: Decodable {
+                struct SearchInfo: Decodable {
+                    struct Result: Decodable {
+                        let index: Int
+                        let url: String
+                    }
+                    let searchResults: [Result]?
+                    enum CodingKeys: String, CodingKey { case searchResults = "search_results" }
+                }
+                let choices: [Choice]
+                let searchInfo: SearchInfo?
+                enum CodingKeys: String, CodingKey {
+                    case choices
+                    case searchInfo = "search_info"
+                }
+            }
+            let choices: [Choice]?
+            let output: NativeOutput?
             let usage: Usage?
         }
         guard let response = try? JSONDecoder().decode(CompletionEnvelope.self, from: data),
-              let choice = response.choices.first else {
+              let choice = (completion.requiresSearchReferences ? response.output?.choices : response.choices)?.first else {
             throw AIClientError.invalidResponse
+        }
+        var searchReferences: [String: String]?
+        if completion.requiresSearchReferences {
+            var references: [String: String] = [:]
+            for source in response.output?.searchInfo?.searchResults ?? [] {
+                let key = "[ref_\(source.index)]"
+                guard source.index > 0, references[key] == nil else {
+                    throw AIClientError.invalidResponse
+                }
+                references[key] = source.url
+            }
+            searchReferences = references
         }
         let finishReason = AICompletionFinishReason(rawValue: choice.finishReason)
         let content = choice.message.content ?? ""
@@ -276,11 +333,12 @@ struct OpenAICompatibleAIClient: AICompletionClient, Sendable {
         return AICompletionResponse(
             content: content,
             usage: AITokenUsage(
-                input: response.usage?.promptTokens,
-                output: response.usage?.completionTokens,
+                input: completion.requiresSearchReferences ? response.usage?.inputTokens : response.usage?.promptTokens,
+                output: completion.requiresSearchReferences ? response.usage?.outputTokens : response.usage?.completionTokens,
                 total: response.usage?.totalTokens
             ),
-            finishReason: finishReason
+            finishReason: finishReason,
+            searchReferences: searchReferences
         )
     }
 

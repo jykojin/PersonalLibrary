@@ -62,6 +62,8 @@ struct AIEnrichmentService: AIEnriching, Sendable {
             let factClock = ContinuousClock()
             let factDeadline = factClock.now.advanced(by: factTimeout)
             let outputTokenBudgets = [4_096, 8_192]
+            var requestedFacts = factTargets
+            var isPublicationFollowUp = false
             for (attempt, outputTokenBudget) in outputTokenBudgets.enumerated() {
                 do {
                     let remainingTimeout = factClock.now.duration(to: factDeadline)
@@ -72,14 +74,24 @@ struct AIEnrichmentService: AIEnriching, Sendable {
                         request: AICompletionRequest(
                             messages: [
                                 AIChatMessage(
+                                    role: "system",
+                                    content: AIEnrichmentContract.retrievalPrompt(
+                                        for: current,
+                                        targets: requestedFacts,
+                                        isPublicationFollowUp: isPublicationFollowUp,
+                                        usesSearchReferences: config.supportsBailianSearchReferences
+                                    )
+                                ),
+                                AIChatMessage(
                                     role: "user",
-                                    content: AIEnrichmentContract.retrievalPrompt(for: current, targets: factTargets)
+                                    content: AIEnrichmentContract.retrievalQuery(for: current, targets: requestedFacts)
                                 )
                             ],
                             temperature: 0,
                             maximumOutputTokens: outputTokenBudget,
                             enableThinking: false,
-                            timeoutInterval: Self.timeInterval(from: remainingTimeout)
+                            timeoutInterval: Self.timeInterval(from: remainingTimeout),
+                            requiresSearchReferences: config.supportsBailianSearchReferences
                         ),
                         timeout: remainingTimeout
                     )
@@ -98,19 +110,29 @@ struct AIEnrichmentService: AIEnriching, Sendable {
                         response.content,
                         for: current,
                         endpoint: config.endpoint,
-                        requestedFields: factTargets
+                        requestedFields: requestedFacts,
+                        searchReferences: response.searchReferences
                     )
-                    let merged = current.fillingMissingFields(from: validated.candidate, limitedTo: factTargets)
-                    if merged != current {
+                    let merged = current.fillingMissingFields(from: validated.candidate, limitedTo: requestedFacts)
+                    if merged != draft {
                         finalStatus = .found
-                    } else if !validated.rejections.isEmpty {
+                    } else if !validated.rejections.isEmpty || !rejections.isEmpty {
                         finalStatus = .validationRejected("AI 返回字段未通过证据或格式验证")
                     } else {
-                        finalStatus = .notFound
+                        finalStatus = .noNewFields
                     }
                     current = merged
                     evidence.merge(validated.evidence) { _, new in new }
                     rejections.merge(validated.rejections) { _, new in new }
+                    let missingPublicationFacts = factTargets
+                        .intersection(current.missingFields)
+                        .intersection([.publishDate, .totalPages, .price])
+                        .subtracting(rejections.keys)
+                    if !missingPublicationFacts.isEmpty, attempt + 1 < outputTokenBudgets.count {
+                        requestedFacts = missingPublicationFacts
+                        isPublicationFollowUp = true
+                        continue
+                    }
                     break
                 } catch let error as AIEnrichmentContractError {
                     if error == .unsuccessfulStatus {
@@ -150,12 +172,13 @@ struct AIEnrichmentService: AIEnriching, Sendable {
                     rejections: rejections,
                     tokenUsage: usage
                 )
-            case .notAttempted, .found, .notFound, .validationRejected:
+            case .notAttempted, .found, .noNewFields, .notFound, .validationRejected:
                 break
             }
         }
 
         if targets.contains(.aiIntroduction), current.missingFields.contains(.aiIntroduction) {
+            let factStatus = finalStatus
             let completionTokenBudgets = [12_288, 16_384]
             var previousFailure: String?
             for (attempt, completionTokenBudget) in completionTokenBudgets.enumerated() {
@@ -201,7 +224,11 @@ struct AIEnrichmentService: AIEnriching, Sendable {
                     current = current.fillingMissingFields(from: candidate, limitedTo: [.aiIntroduction])
                     evidence[.aiIntroduction] = validated.sources
                     rejections.removeValue(forKey: .aiIntroduction)
-                    finalStatus = .found
+                    if case .validationRejected = factStatus {
+                        finalStatus = factStatus
+                    } else {
+                        finalStatus = .found
+                    }
                     break
                 } catch let error as AIIntroductionValidationError {
                     previousFailure = error.localizedDescription

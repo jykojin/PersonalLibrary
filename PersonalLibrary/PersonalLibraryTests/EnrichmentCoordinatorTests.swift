@@ -135,10 +135,13 @@ struct EnrichmentCoordinatorTests {
         )
 
         #expect(outcome.draft == original)
-        #expect(outcome.sourceReports == [
-            MetadataSourceReport(source: .douban, status: .validationRejected("来源未返回可合入字段"))
-        ])
+        #expect(outcome.sourceReports.map(\.status.displayText) == ["已匹配，暂无可补全字段"])
         #expect(!MetadataEnrichmentAttemptPolicy.shouldRecordCompletion(for: outcome))
+        var summary = EnrichmentBatchSummary(totalCount: 1)
+        summary.record(outcome)
+        #expect(summary.noDataCount == 1)
+        #expect(summary.validationRejectedCount == 0)
+        #expect(summary.successCount == 0)
     }
 }
 
